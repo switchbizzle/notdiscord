@@ -1,0 +1,55 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env files / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Python (planned backend)
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+
+# Node / Electron
+node_modules/
+chat-client/node_modules/
+chat-client/dist/
+chat-client/out/
+chat-client/.eslintcache
+chat-client/*.log*
+
+# Build outputs / archives
+build/
+dist/
+out/
+*.zip
+*.tar
+*.tar.gz
+
+# Misc
+*.tmp
+*.swp
