@@ -21,6 +21,16 @@ async fn handle_socket(socket: WebSocket, state: SharedState, user: User) {
     let (mut sink, mut stream) = socket.split();
     let mut events = state.events.subscribe();
 
+    let came_online = {
+        let mut presence = state.presence.lock().unwrap();
+        let count = presence.entry(user.id).or_insert(0);
+        *count += 1;
+        *count == 1
+    };
+    if came_online {
+        let _ = state.events.send(ServerEvent::PresenceChanged { user: user.clone(), online: true });
+    }
+
     loop {
         tokio::select! {
             // Broadcast events fan out to every connected client.
@@ -52,6 +62,23 @@ async fn handle_socket(socket: WebSocket, state: SharedState, user: User) {
             }
         }
     }
+    let went_offline = {
+        let mut presence = state.presence.lock().unwrap();
+        match presence.get_mut(&user.id) {
+            Some(count) if *count <= 1 => {
+                presence.remove(&user.id);
+                true
+            }
+            Some(count) => {
+                *count -= 1;
+                false
+            }
+            None => false,
+        }
+    };
+    if went_offline {
+        let _ = state.events.send(ServerEvent::PresenceChanged { user: user.clone(), online: false });
+    }
     tracing::info!("ws disconnected: {}", user.username);
 }
 
@@ -81,6 +108,9 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 created_at,
             };
             let _ = state.events.send(ServerEvent::MessageCreated { message });
+        }
+        ClientEvent::Typing { channel_id } => {
+            let _ = state.events.send(ServerEvent::Typing { channel_id, user: user.clone() });
         }
     }
     Ok(())

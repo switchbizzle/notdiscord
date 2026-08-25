@@ -26,6 +26,13 @@ pub struct Message {
     pub created_at: i64,
 }
 
+/// A user plus their current connection state, as returned by `/api/users`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserStatus {
+    pub user: User,
+    pub online: bool,
+}
+
 // ---------- REST request/response bodies ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +70,8 @@ pub struct ApiError {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     SendMessage { channel_id: i64, content: String },
+    /// Sent (throttled) while the user is typing in a channel.
+    Typing { channel_id: i64 },
 }
 
 /// Events pushed from server to all connected clients.
@@ -71,5 +80,7 @@ pub enum ClientEvent {
 pub enum ServerEvent {
     MessageCreated { message: Message },
     ChannelCreated { channel: Channel },
+    PresenceChanged { user: User, online: bool },
+    Typing { channel_id: i64, user: User },
     Error { message: String },
 }

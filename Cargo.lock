@@ -477,6 +477,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dioxus",
+ "dirs",
  "futures-util",
  "reqwest",
  "serde",

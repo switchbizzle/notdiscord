@@ -23,8 +23,11 @@ async fn register(http: &reqwest::Client, username: &str) -> AuthResponse {
     resp.json().await.expect("auth response")
 }
 
-async fn next_event(
+/// Read events until one matches `pred` (presence/typing broadcasts from other
+/// connections can interleave with what a test is waiting for).
+async fn wait_for(
     socket: &mut (impl StreamExt<Item = Result<WsMsg, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    pred: impl Fn(&ServerEvent) -> bool,
 ) -> ServerEvent {
     let deadline = std::time::Duration::from_secs(5);
     loop {
@@ -34,7 +37,10 @@ async fn next_event(
             .expect("ws closed")
             .expect("ws error");
         if let WsMsg::Text(text) = msg {
-            return serde_json::from_str(&text).expect("valid server event");
+            let event: ServerEvent = serde_json::from_str(&text).expect("valid server event");
+            if pred(&event) {
+                return event;
+            }
         }
     }
 }
@@ -67,6 +73,26 @@ async fn main() {
     let (mut ws_alice, _) = connect_async(format!("{ws_base}/ws?token={}", alice.token)).await.unwrap();
     let (mut ws_bob, _) = connect_async(format!("{ws_base}/ws?token={}", bob.token)).await.unwrap();
 
+    // Alice should see bob come online.
+    let bob_id = bob.user.id;
+    wait_for(&mut ws_alice, |e| {
+        matches!(e, ServerEvent::PresenceChanged { user, online: true } if user.id == bob_id)
+    })
+    .await;
+    println!("alice saw bob come online");
+
+    // Bob types; alice should see the typing indicator.
+    let typing = ClientEvent::Typing { channel_id: general.id };
+    ws_bob
+        .send(WsMsg::Text(serde_json::to_string(&typing).unwrap().into()))
+        .await
+        .unwrap();
+    wait_for(&mut ws_alice, |e| {
+        matches!(e, ServerEvent::Typing { user, .. } if user.id == bob_id)
+    })
+    .await;
+    println!("alice saw bob typing");
+
     let content = format!("hello from smoke test {nonce}");
     let event = ClientEvent::SendMessage { channel_id: general.id, content: content.clone() };
     ws_alice
@@ -75,9 +101,8 @@ async fn main() {
         .unwrap();
 
     for (name, socket) in [("alice", &mut ws_alice), ("bob", &mut ws_bob)] {
-        let ServerEvent::MessageCreated { message } = next_event(socket).await else {
-            panic!("{name}: expected MessageCreated");
-        };
+        let event = wait_for(socket, |e| matches!(e, ServerEvent::MessageCreated { .. })).await;
+        let ServerEvent::MessageCreated { message } = event else { unreachable!() };
         assert_eq!(message.content, content);
         assert_eq!(message.author.id, alice.user.id);
         println!("{name} received the broadcast");

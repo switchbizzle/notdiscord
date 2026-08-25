@@ -116,8 +116,19 @@ input:focus { border-color: #5865f2; }
     background: #232428;
     font-size: 13px;
 }
+.me-info { display: flex; flex-direction: column; min-width: 0; }
 .me-name { font-weight: 600; color: #fff; }
 .me-status { color: #949ba4; font-size: 11px; }
+.logout {
+    background: transparent;
+    color: #949ba4;
+    font-size: 16px;
+    padding: 4px 8px;
+    border-radius: 5px;
+}
+.logout:hover { background: #35373c; color: #fa777c; }
+
+.splash { color: #fff; font-size: 28px; font-weight: 700; }
 
 .main {
     flex: 1;
@@ -153,6 +164,58 @@ input:focus { border-color: #5865f2; }
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+
+.load-older {
+    align-self: center;
+    margin: 8px 0;
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: #3a3c42;
+    color: #b5bac1;
+    font-size: 13px;
+}
+.load-older:hover { background: #404249; color: #fff; }
+.load-older:disabled { opacity: 0.5; cursor: default; }
+
+.typing-line {
+    height: 20px;
+    padding: 0 18px;
+    font-size: 12px;
+    font-style: italic;
+    color: #b5bac1;
+}
+
+.members {
+    width: 200px;
+    background: #2b2d31;
+    padding: 8px;
+    overflow-y: auto;
+}
+.members-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #949ba4;
+    padding: 8px 10px 4px;
+}
+.member {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border-radius: 5px;
+    color: #80848e;
+    font-size: 14px;
+}
+.member-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4e5058;
+    flex-shrink: 0;
+}
+.member.online { color: #dbdee1; }
+.member.online .member-dot { background: #23a55a; }
 
 .compose { padding: 0 16px 20px; }
 .compose input {

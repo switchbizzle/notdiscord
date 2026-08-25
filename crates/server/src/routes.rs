@@ -6,7 +6,7 @@ use sqlx::Row;
 
 use shared::{
     AuthResponse, Channel, CreateChannelRequest, LoginRequest, Message, RegisterRequest,
-    ServerEvent, User,
+    ServerEvent, User, UserStatus,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -77,6 +77,31 @@ async fn create_session(state: &SharedState, user_id: i64) -> ApiResult<String> 
         .await
         .map_err(internal)?;
     Ok(token)
+}
+
+pub async fn me(AuthUser(user): AuthUser) -> Json<User> {
+    Json(user)
+}
+
+pub async fn list_users(
+    State(state): State<SharedState>,
+    _user: AuthUser,
+) -> ApiResult<Json<Vec<UserStatus>>> {
+    let rows = sqlx::query("SELECT id, username FROM users ORDER BY username COLLATE NOCASE")
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?;
+    let online: std::collections::HashSet<i64> =
+        state.presence.lock().unwrap().keys().copied().collect();
+    let users = rows
+        .into_iter()
+        .map(|r| {
+            let user = User { id: r.get(0), username: r.get(1) };
+            let is_online = online.contains(&user.id);
+            UserStatus { user, online: is_online }
+        })
+        .collect();
+    Ok(Json(users))
 }
 
 pub async fn list_channels(

@@ -2,7 +2,8 @@ mod auth;
 mod routes;
 mod ws;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -12,10 +13,11 @@ use tokio::sync::broadcast;
 
 use shared::ServerEvent;
 
-#[derive(Clone)]
 pub struct AppState {
     pub db: SqlitePool,
     pub events: broadcast::Sender<ServerEvent>,
+    /// user id -> number of live WebSocket connections.
+    pub presence: Mutex<HashMap<i64, u32>>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -46,11 +48,13 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!().run(&db).await?;
 
     let (events, _) = broadcast::channel(256);
-    let state = Arc::new(AppState { db, events });
+    let state = Arc::new(AppState { db, events, presence: Mutex::new(HashMap::new()) });
 
     let app = Router::new()
         .route("/api/register", post(routes::register))
         .route("/api/login", post(routes::login))
+        .route("/api/me", get(routes::me))
+        .route("/api/users", get(routes::list_users))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
         .route("/ws", any(ws::ws_handler))
