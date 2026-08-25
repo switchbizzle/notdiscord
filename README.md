@@ -1,79 +1,65 @@
 # NotDiscord
 
-Discord-style chat app focused on self-hosted text and voice communication.
+Self-hosted, Discord-style chat for a private group of friends. Full-Rust stack:
 
-This repository currently contains the Electron desktop client and project planning docs. The FastAPI backend and infra services are planned in upcoming phases.
+- **Client**: [Dioxus](https://dioxuslabs.com) desktop app (Rust UI components, rendered in the system WebView)
+- **Server**: [axum](https://github.com/tokio-rs/axum) with plain WebSockets for real-time events, SQLite via sqlx
+- **Shared**: one crate of protocol types (REST DTOs + WebSocket events) used by both sides, so client and server can never disagree about the wire format
+- **Voice (planned)**: [LiveKit](https://livekit.io) self-hosted SFU via the official LiveKit Rust SDK
 
-## Project Status
-
-- Current: Electron + React desktop client scaffolded and buildable
-- Next: Auth, real-time text chat, and backend API integration
-- Planned: LiveKit voice chat and optional web client
-
-## Stack
-
-- Desktop client: Electron, React, TypeScript, Vite
-- Real-time client transport: Socket.IO client
-- Voice client SDK: LiveKit
-- Planned backend: FastAPI, python-socketio, MariaDB, Redis
-
-## Repository Layout
+## Repository layout
 
 ```text
-.
-|-- chat-client/               # Electron + React app
-|-- phases/                    # Phase-by-phase implementation docs
-|-- project-overview.md        # Architecture and scope
-`-- server-setup.sh            # Server bootstrap notes/scripts
+crates/
+|-- shared/    # Wire types: entities, REST bodies, ClientEvent/ServerEvent enums
+|-- server/    # axum REST + WebSocket server, SQLite storage, auth
+`-- client/    # Dioxus desktop client
+phases/        # Original phase-by-phase planning docs (written for the old
+               # Electron/FastAPI stack -- feature checklist still applies)
 ```
 
-## Quick Start (Desktop Client)
+## Development
 
-### Prerequisites
+Prerequisites: Rust (stable, via [rustup](https://rustup.rs)). On Windows you also need MSVC Build Tools and the WebView2 runtime (preinstalled on Windows 11).
 
-- Node.js 20 LTS+
-- npm 10+
-
-### Install
+Run the server (defaults to `127.0.0.1:3000`, SQLite file `notdiscord.db` in the working directory):
 
 ```bash
-cd chat-client
-npm install
+cargo run -p server
 ```
 
-### Run in development
+Run the desktop client:
 
 ```bash
-npm run dev
+cargo run -p client
 ```
 
-### Build
+Register an account in the client, then chat. Open a second client to see real-time delivery.
 
-```bash
-# Windows installer
-npm run build:win
+### Server configuration
 
-# macOS
-npm run build:mac
+| Env var | Default | Purpose |
+|---|---|---|
+| `NOTDISCORD_ADDR` | `127.0.0.1:3000` | Listen address |
+| `NOTDISCORD_DB` | `notdiscord.db` | SQLite database path |
 
-# Linux
-npm run build:linux
-```
+### Client configuration
 
-## Planned Features
+| Env var | Default | Purpose |
+|---|---|---|
+| `NOTDISCORD_SERVER` | `http://127.0.0.1:3000` | Prefilled server URL on the login screen |
 
-- Account auth (register/login with JWT)
-- Server/channel model
-- Real-time text chat
-- DMs, typing indicators, reactions, mentions
-- Voice channels via LiveKit + coturn
+## Status
 
-## Docs
-
-- Architecture: [project-overview.md](project-overview.md)
-- Phase plan: [phases/phase-1-project-setup.md](phases/phase-1-project-setup.md)
+- [x] Accounts (argon2 password hashing, opaque session tokens)
+- [x] Channels (create, list)
+- [x] Real-time text chat over WebSockets with message history
+- [ ] DMs, typing indicators, presence
+- [ ] Message editing/deletion, reactions, mentions, attachments
+- [ ] Voice channels (LiveKit Rust SDK + self-hosted LiveKit/coturn)
+- [ ] Deployment guide for the Virtualmin server (single static binary + nginx reverse proxy for WSS)
 
 ## Notes
 
-- This project is intended for private/self-hosted deployment.
-- Keep secrets out of git (API keys, DB credentials, TURN secrets, cert files).
+- Intended for private/self-hosted deployment; registration is open, so keep the server behind your own domain/firewall and share the URL only with friends.
+- For remote use, terminate TLS at nginx and the client will speak `https`/`wss` automatically when given an `https://` server URL.
