@@ -152,14 +152,36 @@ impl winit::application::ApplicationHandler for ViewerApp {
         if self.window.is_some() {
             return;
         }
+        // dioxus's tao already registered the Win32 class "Window Class" (both
+        // libraries' default!) with ITS window procedure. Without a distinct
+        // class name here, winit's registration silently no-ops and this window
+        // would be created with tao's wndproc on the wrong thread — freezing
+        // the whole app and then crashing it.
+        use winit::platform::windows::WindowAttributesExtWindows;
         let attrs = winit::window::Window::default_attributes()
             .with_title(self.title.clone())
+            .with_class_name("NotDiscordViewer")
             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 560.0));
-        let window = Rc::new(event_loop.create_window(attrs).expect("viewer window"));
-        let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
-        let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
-        self.window = Some(window);
-        self.surface = Some(surface);
+        let window = match event_loop.create_window(attrs) {
+            Ok(window) => Rc::new(window),
+            Err(_) => {
+                self.alive.store(false, Ordering::Relaxed);
+                event_loop.exit();
+                return;
+            }
+        };
+        let surface = softbuffer::Context::new(window.clone())
+            .and_then(|context| softbuffer::Surface::new(&context, window.clone()));
+        match surface {
+            Ok(surface) => {
+                self.window = Some(window);
+                self.surface = Some(surface);
+            }
+            Err(_) => {
+                self.alive.store(false, Ordering::Relaxed);
+                event_loop.exit();
+            }
+        }
     }
 
     fn window_event(

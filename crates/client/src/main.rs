@@ -23,6 +23,27 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use shared::{Channel, ClientEvent, GifResult, Message, Profile, ServerEvent, Tag, UpdateProfileRequest, User, UserStatus};
 
 fn main() {
+    // Panics land in a crash log (release builds have no console to read).
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(dir) = dirs::config_dir() {
+            let path = dir.join("NotDiscord").join("crash.log");
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let entry = format!(
+                "[{}] thread '{}' {}\n{}\n\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                std::thread::current().name().unwrap_or("?"),
+                info,
+                std::backtrace::Backtrace::force_capture(),
+            );
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(entry.as_bytes());
+            }
+        }
+        default_panic(info);
+    }));
+
     // Clean up the previous binary left behind by a self-update.
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_file_name("NotDiscord.old.exe"));

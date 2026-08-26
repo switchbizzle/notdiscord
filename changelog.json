@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.23.1",
+    "date": "2026-08-26",
+    "changes": [
+      "Fixed the crash when clicking Watch on someone's screen share (the viewer window was colliding with the main window's internals)",
+      "Crashes now leave a crash.log next to your settings so we can actually diagnose them"
+    ]
+  },
+  {
     "version": "0.23.0",
     "date": "2026-08-26",
     "changes": [
