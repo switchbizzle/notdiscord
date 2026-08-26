@@ -30,6 +30,7 @@ pub struct VoiceParticipant {
     pub speaking: bool,
     pub is_me: bool,
     pub sharing: bool,
+    pub camera: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -41,6 +42,8 @@ pub struct VoiceStatus {
     pub deafened: bool,
     /// We are currently sharing our screen.
     pub sharing_self: bool,
+    /// Our webcam is currently on.
+    pub camera_self: bool,
     /// Push-to-talk mode is active and the key is currently held.
     pub ptt_held: bool,
     pub participants: Vec<VoiceParticipant>,
@@ -66,6 +69,10 @@ pub enum VoiceCmd {
     StopScreenShare,
     /// Open a viewer window for this participant's screen share.
     WatchScreen { identity: String },
+    StartCamera,
+    StopCamera,
+    /// Open a viewer window for this participant's webcam.
+    WatchCamera { identity: String },
 }
 
 pub fn parse_ptt_key(name: &str) -> device_query::Keycode {
@@ -202,9 +209,17 @@ struct ActiveCall {
     _ptt_stop: std_mpsc::Sender<()>,
     /// Active screen capture + its published track sid.
     share: Option<(crate::share::ShareControl, livekit::id::TrackSid)>,
-    /// Remote screenshare tracks by participant identity.
-    video_tracks: Arc<Mutex<HashMap<String, RemoteVideoTrack>>>,
+    /// Active webcam capture + its published track sid.
+    camera: Option<(crate::camera::CameraHandle, livekit::id::TrackSid)>,
+    /// Remote video tracks by participant identity, split by source.
+    video_tracks: Arc<Mutex<VideoTracks>>,
     event_task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct VideoTracks {
+    screen: HashMap<String, RemoteVideoTrack>,
+    camera: HashMap<String, RemoteVideoTrack>,
 }
 
 async fn stop_share(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
@@ -217,6 +232,28 @@ async fn stop_share(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
     if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
         me.sharing = false;
     }
+}
+
+async fn stop_camera(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
+    if let Some((handle, sid)) = active.camera.take() {
+        handle.stop();
+        let _ = active.room.local_participant().unpublish_track(&sid).await;
+    }
+    let mut s = status.write();
+    s.camera_self = false;
+    if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
+        me.camera = false;
+    }
+}
+
+fn participant_name(status: VoiceStatusSignal, identity: &str) -> String {
+    status
+        .peek()
+        .participants
+        .iter()
+        .find(|p| p.identity == identity)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| identity.to_owned())
 }
 
 fn gain_handle(
@@ -252,6 +289,7 @@ pub async fn voice_task(
                 // Leave any current room first.
                 if let Some(mut old) = call.take() {
                     stop_share(&mut old, status).await;
+                    stop_camera(&mut old, status).await;
                     old.room.close().await.ok();
                 }
                 status.set(VoiceStatus {
@@ -276,6 +314,7 @@ pub async fn voice_task(
             VoiceCmd::Leave => {
                 if let Some(mut old) = call.take() {
                     stop_share(&mut old, status).await;
+                    stop_camera(&mut old, status).await;
                     old.room.close().await.ok();
                 }
                 status.set(VoiceStatus::default());
@@ -331,19 +370,82 @@ pub async fn voice_task(
             }
             VoiceCmd::WatchScreen { identity } => {
                 if let Some(active) = &call {
-                    let track = active.video_tracks.lock().unwrap().get(&identity).cloned();
+                    let track = active.video_tracks.lock().unwrap().screen.get(&identity).cloned();
                     match track {
                         Some(track) => {
-                            let name = status
-                                .peek()
-                                .participants
-                                .iter()
-                                .find(|p| p.identity == identity)
-                                .map(|p| p.name.clone())
-                                .unwrap_or_else(|| identity.clone());
+                            let name = participant_name(status, &identity);
                             crate::share::open_viewer(track, format!("{name}'s screen — NotDiscord"));
                         }
                         None => status.write().error = "that screen share is no longer available".into(),
+                    }
+                }
+            }
+            VoiceCmd::StartCamera => {
+                if let Some(active) = call.as_mut() {
+                    if active.camera.is_none() {
+                        let source = NativeVideoSource::new(
+                            VideoResolution { width: 1280, height: 720 },
+                            false,
+                        );
+                        let track = LocalVideoTrack::create_video_track(
+                            "camera",
+                            RtcVideoSource::Native(source.clone()),
+                        );
+                        match active
+                            .room
+                            .local_participant()
+                            .publish_track(
+                                LocalTrack::Video(track),
+                                TrackPublishOptions {
+                                    source: TrackSource::Camera,
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                        {
+                            Ok(publication) => {
+                                // Opening the webcam can take seconds; don't
+                                // stall the voice command loop while it does.
+                                let opened = tokio::task::spawn_blocking(move || {
+                                    crate::camera::start_camera(source)
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(format!("camera thread panicked: {e}")));
+                                match opened {
+                                    Ok(handle) => {
+                                        active.camera = Some((handle, publication.sid()));
+                                        let mut s = status.write();
+                                        s.camera_self = true;
+                                        if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
+                                            me.camera = true;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let sid = publication.sid();
+                                        let _ = active.room.local_participant().unpublish_track(&sid).await;
+                                        status.write().error = e;
+                                    }
+                                }
+                            }
+                            Err(e) => status.write().error = format!("camera failed: {e}"),
+                        }
+                    }
+                }
+            }
+            VoiceCmd::StopCamera => {
+                if let Some(active) = call.as_mut() {
+                    stop_camera(active, status).await;
+                }
+            }
+            VoiceCmd::WatchCamera { identity } => {
+                if let Some(active) = &call {
+                    let track = active.video_tracks.lock().unwrap().camera.get(&identity).cloned();
+                    match track {
+                        Some(track) => {
+                            let name = participant_name(status, &identity);
+                            crate::share::open_viewer(track, format!("{name}'s camera — NotDiscord"));
+                        }
+                        None => status.write().error = "that camera is no longer available".into(),
                     }
                 }
             }
@@ -656,7 +758,7 @@ async fn connect(
     }
     let playback_stops: Arc<Mutex<HashMap<String, std_mpsc::Sender<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let video_tracks: Arc<Mutex<HashMap<String, RemoteVideoTrack>>> = Arc::new(Mutex::new(HashMap::new()));
+    let video_tracks: Arc<Mutex<VideoTracks>> = Arc::new(Mutex::new(VideoTracks::default()));
     let tracks_for_events = video_tracks.clone();
     let gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>> = Arc::new(Mutex::new(HashMap::new()));
     let stops = playback_stops.clone();
@@ -682,23 +784,38 @@ async fn connect(
                             stops.lock().unwrap().insert(sid, stop);
                         }
                         RemoteTrack::Video(video) => {
-                            if publication.source() == TrackSource::Screenshare {
-                                tracks_for_events
-                                    .lock()
-                                    .unwrap()
-                                    .insert(participant.identity().to_string(), video);
+                            let identity = participant.identity().to_string();
+                            let mut tracks = tracks_for_events.lock().unwrap();
+                            match publication.source() {
+                                TrackSource::Screenshare => {
+                                    tracks.screen.insert(identity, video);
+                                }
+                                TrackSource::Camera => {
+                                    tracks.camera.insert(identity, video);
+                                }
+                                _ => {}
                             }
                         }
                     }
                     refresh_participants(&room_handle, status, &tracks_for_events);
                 }
-                RoomEvent::TrackUnsubscribed { track, participant, .. } => {
+                RoomEvent::TrackUnsubscribed { track, publication, participant } => {
                     match track {
                         RemoteTrack::Audio(audio) => {
                             stops.lock().unwrap().remove(&audio.sid().to_string());
                         }
                         RemoteTrack::Video(_) => {
-                            tracks_for_events.lock().unwrap().remove(&participant.identity().to_string());
+                            let identity = participant.identity().to_string();
+                            let mut tracks = tracks_for_events.lock().unwrap();
+                            match publication.source() {
+                                TrackSource::Screenshare => {
+                                    tracks.screen.remove(&identity);
+                                }
+                                TrackSource::Camera => {
+                                    tracks.camera.remove(&identity);
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     refresh_participants(&room_handle, status, &tracks_for_events);
@@ -747,6 +864,7 @@ async fn connect(
         ptt_key,
         _ptt_stop: ptt_stop_tx,
         share: None,
+        camera: None,
         video_tracks,
         event_task,
     })
@@ -808,17 +926,22 @@ fn play_voice_blip(_join: bool) {}
 fn refresh_participants(
     room: &Room,
     status: VoiceStatusSignal,
-    video_tracks: &Mutex<HashMap<String, RemoteVideoTrack>>,
+    video_tracks: &Mutex<VideoTracks>,
 ) {
     let mut s = status;
-    let sharing_ids: std::collections::HashSet<String> =
-        video_tracks.lock().unwrap().keys().cloned().collect();
+    let (sharing_ids, camera_ids): (std::collections::HashSet<String>, std::collections::HashSet<String>) = {
+        let tracks = video_tracks.lock().unwrap();
+        (
+            tracks.screen.keys().cloned().collect(),
+            tracks.camera.keys().cloned().collect(),
+        )
+    };
     // Preserve current speaking flags so a roster refresh doesn't blink them off.
-    let (previous, self_sharing) = {
+    let (previous, self_sharing, self_camera) = {
         let st = s.peek();
         let prev: HashMap<String, bool> =
             st.participants.iter().map(|p| (p.identity.clone(), p.speaking)).collect();
-        (prev, st.sharing_self)
+        (prev, st.sharing_self, st.camera_self)
     };
 
     let mut list: Vec<VoiceParticipant> = Vec::new();
@@ -830,12 +953,14 @@ fn refresh_participants(
         name: me.name().to_string(),
         is_me: true,
         sharing: self_sharing,
+        camera: self_camera,
     });
     for (_, p) in room.remote_participants() {
         let identity = p.identity().to_string();
         list.push(VoiceParticipant {
             speaking: *previous.get(&identity).unwrap_or(&false),
             sharing: sharing_ids.contains(&identity),
+            camera: camera_ids.contains(&identity),
             identity,
             name: p.name().to_string(),
             is_me: false,

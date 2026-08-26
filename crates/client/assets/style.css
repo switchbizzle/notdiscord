@@ -421,6 +421,17 @@ input:focus { border-color: #5865f2; }
 }
 .watch-btn:hover { filter: brightness(1.15); }
 .voice-btn.sharing { background: #6b2a2c; color: #f23f43; }
+.cam-pill {
+    background: #23a55a;
+    color: #fff;
+    font-size: 8px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 4px;
+    letter-spacing: 0.6px;
+    flex-shrink: 0;
+}
+.voice-btn.camera-on { background: #1e4d33; color: #23a55a; }
 .volume-slider {
     width: 64px;
     height: 4px;

@@ -1,6 +1,6 @@
 ﻿[package]
 name = "client"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2021"
 
 [dependencies]
@@ -24,6 +24,7 @@ nnnoiseless = { version = "0.5", default-features = false }
 device_query = "4"
 tray-icon = "0.21"
 windows-capture = "2"
+nokhwa = { version = "0.10", features = ["input-native", "output-threaded"] }
 winit = "0.30"
 softbuffer = "0.4"
 arboard = "3"

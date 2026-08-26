@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.22.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Video calls! Hit the camera button in the voice panel to turn on your webcam",
+      "People with cameras on get a green CAM pill — click Watch to open their video",
+      "Works everywhere voice does: channels and private DM calls alike"
+    ]
+  },
+  {
     "version": "0.21.0",
     "date": "2026-08-26",
     "changes": [

@@ -25,8 +25,8 @@ pub struct AppState {
     pub events: broadcast::Sender<Envelope>,
     /// user id -> number of live WebSocket connections.
     pub presence: Mutex<HashMap<i64, u32>>,
-    /// user id -> (voice channel id, user, sharing screen) for everyone in voice.
-    pub voice: Mutex<HashMap<i64, (i64, shared::User, bool)>>,
+    /// user id -> (voice channel id, user, sharing screen, camera on) for everyone in voice.
+    pub voice: Mutex<HashMap<i64, (i64, shared::User, bool, bool)>>,
 }
 
 impl AppState {

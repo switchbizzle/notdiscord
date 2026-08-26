@@ -3,6 +3,7 @@
 mod api;
 mod icons;
 mod md;
+mod camera;
 mod share;
 mod tray;
 mod voice;
@@ -387,7 +388,7 @@ fn MainView(session: api::Session) -> Element {
     let mut loading_older = use_signal(|| false);
     let mut unread = use_signal(HashSet::<i64>::new);
     let mut confirm = use_signal(|| None::<ConfirmAction>);
-    let mut voice_rosters = use_signal(HashMap::<i64, Vec<(User, bool)>>::new);
+    let mut voice_rosters = use_signal(HashMap::<i64, Vec<(User, bool, bool)>>::new);
     let window = use_window();
 
     // Mirror unread state onto the tray badge.
@@ -724,20 +725,20 @@ fn MainView(session: api::Session) -> Element {
                                 stickers.write().retain(|s| s.id != sticker_id);
                             }
                             ServerEvent::VoiceSnapshot { entries } => {
-                                let mut map = HashMap::<i64, Vec<(User, bool)>>::new();
+                                let mut map = HashMap::<i64, Vec<(User, bool, bool)>>::new();
                                 for entry in entries {
-                                    map.entry(entry.channel_id).or_default().push((entry.user, entry.sharing));
+                                    map.entry(entry.channel_id).or_default().push((entry.user, entry.sharing, entry.camera));
                                 }
                                 voice_rosters.set(map);
                             }
-                            ServerEvent::VoiceStateChanged { user, channel_id, sharing } => {
+                            ServerEvent::VoiceStateChanged { user, channel_id, sharing, camera } => {
                                 {
                                     let mut map = voice_rosters.write();
                                     for users in map.values_mut() {
-                                        users.retain(|(u, _)| u.id != user.id);
+                                        users.retain(|(u, _, _)| u.id != user.id);
                                     }
                                     if let Some(ch) = channel_id {
-                                        map.entry(ch).or_default().push((user.clone(), sharing));
+                                        map.entry(ch).or_default().push((user.clone(), sharing, camera));
                                     }
                                     map.retain(|_, users| !users.is_empty());
                                 }
@@ -817,13 +818,14 @@ fn MainView(session: api::Session) -> Element {
 
     // Announce our own voice channel over the chat WebSocket whenever it
     // changes, so everyone's sidebar shows who's in voice.
-    let mut announced_voice = use_signal(|| (None::<i64>, false));
+    let mut announced_voice = use_signal(|| (None::<i64>, false, false));
     use_effect(move || {
         let current = voice_status().channel_id.filter(|_| !voice_status().connecting);
         let sharing = voice_status().sharing_self;
-        if *announced_voice.peek() != (current, sharing) {
-            announced_voice.set((current, sharing));
-            ws.send(ClientEvent::VoiceState { channel_id: current, sharing });
+        let camera = voice_status().camera_self;
+        if *announced_voice.peek() != (current, sharing, camera) {
+            announced_voice.set((current, sharing, camera));
+            ws.send(ClientEvent::VoiceState { channel_id: current, sharing, camera });
         }
     });
 
@@ -1958,12 +1960,15 @@ fn MainView(session: api::Session) -> Element {
                         }
                         if let Some(occupants) = voice_rosters().get(&ch_id).cloned() {
                             div { class: "voice-occupants",
-                                for (occupant, occ_sharing) in occupants {
+                                for (occupant, occ_sharing, occ_camera) in occupants {
                                     div { key: "{occupant.id}", class: "voice-occupant",
                                         UserAvatar { user: occupant.clone(), class: "dm-avatar occupant-avatar" }
                                         span { class: "voice-occupant-name", "{occupant.username}" }
                                         if occ_sharing {
                                             span { class: "live-pill", "LIVE" }
+                                        }
+                                        if occ_camera {
+                                            span { class: "cam-pill", "CAM" }
                                         }
                                     }
                                 }
@@ -2021,6 +2026,22 @@ fn MainView(session: api::Session) -> Element {
                                                 onclick: {
                                                     let identity = p.identity.clone();
                                                     move |_| voice.send(voice::VoiceCmd::WatchScreen {
+                                                        identity: identity.clone(),
+                                                    })
+                                                },
+                                                "Watch"
+                                            }
+                                        }
+                                    }
+                                    if p.camera {
+                                        span { class: "cam-pill", "CAM" }
+                                        if !p.is_me {
+                                            button {
+                                                class: "watch-btn",
+                                                title: "Watch {p.name}'s camera",
+                                                onclick: {
+                                                    let identity = p.identity.clone();
+                                                    move |_| voice.send(voice::VoiceCmd::WatchCamera {
                                                         identity: identity.clone(),
                                                     })
                                                 },
@@ -2088,6 +2109,18 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     },
                                     Icon { name: "screen" }
+                                }
+                                button {
+                                    class: if voice_status().camera_self { "voice-btn camera-on" } else { "voice-btn" },
+                                    title: if voice_status().camera_self { "Turn off your camera" } else { "Turn on your camera" },
+                                    onclick: move |_| {
+                                        if voice_status().camera_self {
+                                            voice.send(voice::VoiceCmd::StopCamera);
+                                        } else {
+                                            voice.send(voice::VoiceCmd::StartCamera);
+                                        }
+                                    },
+                                    Icon { name: "camera" }
                                 }
                                 button {
                                     class: "voice-btn leave",

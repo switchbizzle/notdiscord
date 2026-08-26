@@ -292,6 +292,8 @@ pub enum ClientEvent {
         channel_id: Option<i64>,
         #[serde(default)]
         sharing: bool,
+        #[serde(default)]
+        camera: bool,
     },
 }
 
@@ -301,6 +303,8 @@ pub struct VoiceStateEntry {
     pub user: User,
     #[serde(default)]
     pub sharing: bool,
+    #[serde(default)]
+    pub camera: bool,
 }
 
 /// Events pushed from server to all connected clients.
@@ -330,6 +334,8 @@ pub enum ServerEvent {
         channel_id: Option<i64>,
         #[serde(default)]
         sharing: bool,
+        #[serde(default)]
+        camera: bool,
     },
     /// Full voice occupancy, sent to a client right after it connects.
     VoiceSnapshot { entries: Vec<VoiceStateEntry> },
