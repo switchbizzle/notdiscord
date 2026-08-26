@@ -18,6 +18,13 @@ pub async fn register(
     State(state): State<SharedState>,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
+    if let Ok(required) = std::env::var("NOTDISCORD_INVITE") {
+        let supplied = req.invite.as_deref().map(str::trim).unwrap_or_default();
+        if !required.is_empty() && supplied != required {
+            return Err(err(StatusCode::FORBIDDEN, "invalid invite code"));
+        }
+    }
+
     let username = req.username.trim().to_owned();
     if username.len() < 2 || username.len() > 32 {
         return Err(err(StatusCode::BAD_REQUEST, "username must be 2-32 characters"));
@@ -325,7 +332,7 @@ pub async fn channel_messages(
     let before = q.before.unwrap_or(i64::MAX);
 
     let rows = sqlx::query(
-        "SELECT m.id, m.channel_id, m.content, m.created_at, u.id, u.username \
+        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username \
          FROM messages m JOIN users u ON u.id = m.author_id \
          WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?",
     )
@@ -344,9 +351,29 @@ pub async fn channel_messages(
             channel_id: r.get(1),
             content: r.get(2),
             created_at: r.get(3),
-            author: User { id: r.get(4), username: r.get(5) },
+            edited_at: r.get(4),
+            author: User { id: r.get(5), username: r.get(6) },
+            reactions: Vec::new(),
         })
         .collect();
     messages.reverse();
+
+    if !messages.is_empty() {
+        // Ids come straight from our own rows, so inlining them is safe.
+        let ids: Vec<String> = messages.iter().map(|m| m.id.to_string()).collect();
+        let reaction_rows = sqlx::query(&format!(
+            "SELECT message_id, emoji, user_id FROM reactions WHERE message_id IN ({}) ORDER BY id",
+            ids.join(",")
+        ))
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?;
+        for row in reaction_rows {
+            let message_id: i64 = row.get(0);
+            if let Some(msg) = messages.iter_mut().find(|m| m.id == message_id) {
+                msg.reactions.push(shared::ReactionEntry { emoji: row.get(1), user_id: row.get(2) });
+            }
+        }
+    }
     Ok(Json(messages))
 }

@@ -24,6 +24,17 @@ pub struct Message {
     pub author: User,
     pub content: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub edited_at: Option<i64>,
+    #[serde(default)]
+    pub reactions: Vec<ReactionEntry>,
+}
+
+/// One user's reaction on a message; the client aggregates these per emoji.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReactionEntry {
+    pub emoji: String,
+    pub user_id: i64,
 }
 
 /// A user plus their current connection state, as returned by `/api/users`.
@@ -39,6 +50,9 @@ pub struct UserStatus {
 pub struct RegisterRequest {
     pub username: String,
     pub password: String,
+    /// Required when the server sets NOTDISCORD_INVITE.
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +101,12 @@ pub enum ClientEvent {
     SendMessage { channel_id: i64, content: String },
     /// Sent (throttled) while the user is typing in a channel.
     Typing { channel_id: i64 },
+    /// Add the reaction if the user hasn't reacted with this emoji, else remove it.
+    ToggleReaction { message_id: i64, emoji: String },
+    /// Edit own message.
+    EditMessage { message_id: i64, content: String },
+    /// Delete own message.
+    DeleteMessage { message_id: i64 },
 }
 
 /// Events pushed from server to all connected clients.
@@ -97,5 +117,9 @@ pub enum ServerEvent {
     ChannelCreated { channel: Channel },
     PresenceChanged { user: User, online: bool },
     Typing { channel_id: i64, user: User },
+    ReactionAdded { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
+    ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
+    MessageEdited { channel_id: i64, message_id: i64, content: String, edited_at: i64 },
+    MessageDeleted { channel_id: i64, message_id: i64 },
     Error { message: String },
 }

@@ -2,6 +2,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
+use sqlx::Row;
 
 use shared::{ClientEvent, Message, ServerEvent, User};
 
@@ -106,11 +107,100 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 author: user.clone(),
                 content,
                 created_at,
+                edited_at: None,
+                reactions: Vec::new(),
             };
             let _ = state.events.send(ServerEvent::MessageCreated { message });
         }
         ClientEvent::Typing { channel_id } => {
             let _ = state.events.send(ServerEvent::Typing { channel_id, user: user.clone() });
+        }
+        ClientEvent::ToggleReaction { message_id, emoji } => {
+            if emoji.is_empty() || emoji.chars().count() > 8 || emoji.chars().any(char::is_whitespace) {
+                return Ok(());
+            }
+            let Some(row) = sqlx::query("SELECT channel_id FROM messages WHERE id = ?")
+                .bind(message_id)
+                .fetch_optional(&state.db)
+                .await?
+            else {
+                return Ok(());
+            };
+            let channel_id: i64 = row.get(0);
+
+            let removed = sqlx::query(
+                "DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+            )
+            .bind(message_id)
+            .bind(user.id)
+            .bind(&emoji)
+            .execute(&state.db)
+            .await?
+            .rows_affected();
+
+            if removed > 0 {
+                let _ = state.events.send(ServerEvent::ReactionRemoved {
+                    channel_id,
+                    message_id,
+                    emoji,
+                    user_id: user.id,
+                });
+            } else {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)",
+                )
+                .bind(message_id)
+                .bind(user.id)
+                .bind(&emoji)
+                .bind(now_ms())
+                .execute(&state.db)
+                .await?;
+                let _ = state.events.send(ServerEvent::ReactionAdded {
+                    channel_id,
+                    message_id,
+                    emoji,
+                    user_id: user.id,
+                });
+            }
+        }
+        ClientEvent::EditMessage { message_id, content } => {
+            let content = content.trim().to_owned();
+            if content.is_empty() || content.len() > 4000 {
+                return Ok(());
+            }
+            let edited_at = now_ms();
+            let Some(row) = sqlx::query("SELECT channel_id FROM messages WHERE id = ? AND author_id = ?")
+                .bind(message_id)
+                .bind(user.id)
+                .fetch_optional(&state.db)
+                .await?
+            else {
+                return Ok(());
+            };
+            let channel_id: i64 = row.get(0);
+            sqlx::query("UPDATE messages SET content = ?, edited_at = ? WHERE id = ?")
+                .bind(&content)
+                .bind(edited_at)
+                .bind(message_id)
+                .execute(&state.db)
+                .await?;
+            let _ = state.events.send(ServerEvent::MessageEdited { channel_id, message_id, content, edited_at });
+        }
+        ClientEvent::DeleteMessage { message_id } => {
+            let Some(row) = sqlx::query("SELECT channel_id FROM messages WHERE id = ? AND author_id = ?")
+                .bind(message_id)
+                .bind(user.id)
+                .fetch_optional(&state.db)
+                .await?
+            else {
+                return Ok(());
+            };
+            let channel_id: i64 = row.get(0);
+            sqlx::query("DELETE FROM messages WHERE id = ?")
+                .bind(message_id)
+                .execute(&state.db)
+                .await?;
+            let _ = state.events.send(ServerEvent::MessageDeleted { channel_id, message_id });
         }
     }
     Ok(())

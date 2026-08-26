@@ -80,8 +80,9 @@ pub async fn login(base_url: &str, username: String, password: String) -> Result
     Ok(Session { base_url: normalize_base(base_url), token: auth.token, user: auth.user })
 }
 
-pub async fn register(base_url: &str, username: String, password: String) -> Result<Session, String> {
-    let auth = auth_request(base_url, "register", RegisterRequest { username, password }).await?;
+pub async fn register(base_url: &str, username: String, password: String, invite: String) -> Result<Session, String> {
+    let invite = Some(invite.trim().to_owned()).filter(|s| !s.is_empty());
+    let auth = auth_request(base_url, "register", RegisterRequest { username, password, invite }).await?;
     Ok(Session { base_url: normalize_base(base_url), token: auth.token, user: auth.user })
 }
 

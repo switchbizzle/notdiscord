@@ -161,9 +161,82 @@ input:focus { border-color: #5865f2; }
     gap: 12px;
     padding: 2px 16px;
     margin-top: 12px;
+    position: relative;
 }
 .msg.compact { margin-top: 0; }
 .msg:hover { background: #2e3035; }
+
+.msg-actions {
+    display: none;
+    position: absolute;
+    top: -12px;
+    right: 16px;
+    background: #313338;
+    border: 1px solid #26272b;
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+    z-index: 5;
+}
+.msg:hover .msg-actions { display: flex; }
+.msg-actions button {
+    background: transparent;
+    padding: 4px 7px;
+    border-radius: 6px;
+    font-size: 15px;
+}
+.msg-actions button:hover { background: #404249; }
+
+.emoji-palette {
+    position: absolute;
+    top: 18px;
+    right: 16px;
+    display: flex;
+    gap: 2px;
+    background: #232428;
+    border: 1px solid #1a1b1e;
+    border-radius: 10px;
+    padding: 4px;
+    z-index: 6;
+}
+.emoji-palette button {
+    background: transparent;
+    font-size: 18px;
+    padding: 4px 6px;
+    border-radius: 6px;
+}
+.emoji-palette button:hover { background: #404249; }
+
+.reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.react-chip {
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 13px;
+    color: #dbdee1;
+}
+.react-chip:hover { border-color: #4e5058; }
+.react-chip.mine { background: #3b405f; border-color: #5865f2; }
+
+.mention {
+    background: rgba(88, 101, 242, 0.3);
+    color: #c9cdfb;
+    border-radius: 3px;
+    padding: 0 2px;
+    font-weight: 500;
+}
+
+.edited-tag { color: #949ba4; font-size: 11px; }
+.edit-input {
+    width: 100%;
+    background: #383a40;
+    border: none;
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin-top: 2px;
+}
+.edit-hint { color: #949ba4; font-size: 11px; margin-top: 3px; }
 
 .avatar {
     width: 40px;

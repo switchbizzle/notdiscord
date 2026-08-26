@@ -18,7 +18,11 @@ async fn register(http: &reqwest::Client, username: &str) -> AuthResponse {
     let base = base_url();
     let resp = http
         .post(format!("{base}/api/register"))
-        .json(&RegisterRequest { username: username.into(), password: "hunter2hunter2".into() })
+        .json(&RegisterRequest {
+            username: username.into(),
+            password: "hunter2hunter2".into(),
+            invite: std::env::var("NOTDISCORD_INVITE").ok(),
+        })
         .send()
         .await
         .expect("server reachable");

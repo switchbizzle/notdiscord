@@ -124,10 +124,49 @@ pub fn Md(nodes: Vec<MdNode>) -> Element {
     }
 }
 
+/// Split text into plain runs and `@mention` tokens for highlighting.
+fn mention_segments(text: &str) -> Vec<(bool, String)> {
+    let mut segments: Vec<(bool, String)> = Vec::new();
+    let mut plain = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let at_boundary = i == 0 || !chars[i - 1].is_alphanumeric();
+        if chars[i] == '@' && at_boundary {
+            let mut j = i + 1;
+            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            if j > i + 1 {
+                if !plain.is_empty() {
+                    segments.push((false, std::mem::take(&mut plain)));
+                }
+                segments.push((true, chars[i..j].iter().collect()));
+                i = j;
+                continue;
+            }
+        }
+        plain.push(chars[i]);
+        i += 1;
+    }
+    if !plain.is_empty() {
+        segments.push((false, plain));
+    }
+    segments
+}
+
 #[component]
 fn MdOne(node: MdNode) -> Element {
     match node {
-        MdNode::Text(t) => rsx! { "{t}" },
+        MdNode::Text(t) => rsx! {
+            for (i, (is_mention, seg)) in mention_segments(&t).into_iter().enumerate() {
+                if is_mention {
+                    span { key: "{i}", class: "mention", "{seg}" }
+                } else {
+                    span { key: "{i}", "{seg}" }
+                }
+            }
+        },
         MdNode::Bold(c) => rsx! { strong { Md { nodes: c } } },
         MdNode::Italic(c) => rsx! { em { Md { nodes: c } } },
         MdNode::Strike(c) => rsx! { del { Md { nodes: c } } },

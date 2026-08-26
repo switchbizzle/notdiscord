@@ -68,6 +68,7 @@ fn LoginView(session: Signal<Option<api::Session>>) -> Element {
     });
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
+    let mut invite = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
 
@@ -79,7 +80,7 @@ fn LoginView(session: Signal<Option<api::Session>>) -> Element {
             busy.set(true);
             error.set(String::new());
             let result = if register {
-                api::register(&base_url(), username(), password()).await
+                api::register(&base_url(), username(), password(), invite()).await
             } else {
                 api::login(&base_url(), username(), password()).await
             };
@@ -120,6 +121,11 @@ fn LoginView(session: Signal<Option<api::Session>>) -> Element {
                         }
                     },
                 }
+                label { "Invite code (only needed to register)" }
+                input {
+                    value: "{invite}",
+                    oninput: move |e| invite.set(e.value()),
+                }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
                 }
@@ -149,6 +155,7 @@ const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 #[component]
 fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -> Element {
     let session = use_signal(move || session);
+    use_context_provider(|| session);
     let mut channels = use_signal(Vec::<Channel>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
@@ -243,8 +250,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             ServerEvent::MessageCreated { message } => {
                                 // A real message replaces the author's typing indicator.
                                 typing.write().remove(&message.author.id);
-                                let mine = message.author.id == session().user.id;
-                                if !mine && !window.window.is_focused() {
+                                let me = session().user;
+                                let mentioned = message.author.id != me.id
+                                    && message
+                                        .content
+                                        .to_lowercase()
+                                        .contains(&format!("@{}", me.username.to_lowercase()));
+                                if mentioned && !window.window.is_focused() {
                                     window.window.request_user_attention(Some(UserAttentionType::Informational));
                                     play_notification_sound();
                                 }
@@ -252,6 +264,38 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     messages.write().push(message);
                                 } else {
                                     unread.write().insert(message.channel_id);
+                                }
+                            }
+                            ServerEvent::ReactionAdded { channel_id, message_id, emoji, user_id } => {
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    let mut list = messages.write();
+                                    if let Some(m) = list.iter_mut().find(|m| m.id == message_id) {
+                                        if !m.reactions.iter().any(|r| r.emoji == emoji && r.user_id == user_id) {
+                                            m.reactions.push(shared::ReactionEntry { emoji, user_id });
+                                        }
+                                    }
+                                }
+                            }
+                            ServerEvent::ReactionRemoved { channel_id, message_id, emoji, user_id } => {
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    let mut list = messages.write();
+                                    if let Some(m) = list.iter_mut().find(|m| m.id == message_id) {
+                                        m.reactions.retain(|r| !(r.emoji == emoji && r.user_id == user_id));
+                                    }
+                                }
+                            }
+                            ServerEvent::MessageEdited { channel_id, message_id, content, edited_at } => {
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    let mut list = messages.write();
+                                    if let Some(m) = list.iter_mut().find(|m| m.id == message_id) {
+                                        m.content = content;
+                                        m.edited_at = Some(edited_at);
+                                    }
+                                }
+                            }
+                            ServerEvent::MessageDeleted { channel_id, message_id } => {
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    messages.write().retain(|m| m.id != message_id);
                                 }
                             }
                             ServerEvent::ChannelCreated { channel } => {
@@ -602,12 +646,76 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, String) {
     }
 }
 
+const REACTION_EMOJIS: &[&str] = &["👍", "😂", "❤️", "🔥", "😮", "😭"];
+
 #[component]
 fn MessageRow(msg: Message, compact: bool) -> Element {
+    let session = use_context::<Signal<api::Session>>();
+    let ws = use_coroutine_handle::<ClientEvent>();
+    let mut palette_open = use_signal(|| false);
+    let mut editing = use_signal(|| false);
+    let mut edit_draft = use_signal(String::new);
+
     let hue = avatar_hue(msg.author.id);
     let (images, files, text) = extract_media(&msg.content);
+    let me_id = session().user.id;
+    let own = msg.author.id == me_id;
+    let msg_id = msg.id;
+    let content_for_edit = msg.content.clone();
+
+    // Aggregate raw reaction entries into (emoji, count, reacted-by-me).
+    let mut reaction_groups: Vec<(String, usize, bool)> = Vec::new();
+    for entry in &msg.reactions {
+        match reaction_groups.iter_mut().find(|(emoji, _, _)| *emoji == entry.emoji) {
+            Some(group) => {
+                group.1 += 1;
+                group.2 |= entry.user_id == me_id;
+            }
+            None => reaction_groups.push((entry.emoji.clone(), 1, entry.user_id == me_id)),
+        }
+    }
+
     rsx! {
         div { class: if compact { "msg compact" } else { "msg" },
+            div { class: "msg-actions",
+                button {
+                    title: "React",
+                    onclick: move |_| palette_open.set(!palette_open()),
+                    "🙂"
+                }
+                if own {
+                    button {
+                        title: "Edit",
+                        onclick: move |_| {
+                            edit_draft.set(content_for_edit.clone());
+                            editing.set(true);
+                        },
+                        "✏️"
+                    }
+                    button {
+                        title: "Delete",
+                        onclick: move |_| ws.send(ClientEvent::DeleteMessage { message_id: msg_id }),
+                        "🗑️"
+                    }
+                }
+            }
+            if palette_open() {
+                div { class: "emoji-palette",
+                    for emoji in REACTION_EMOJIS {
+                        button {
+                            key: "{emoji}",
+                            onclick: move |_| {
+                                ws.send(ClientEvent::ToggleReaction {
+                                    message_id: msg_id,
+                                    emoji: emoji.to_string(),
+                                });
+                                palette_open.set(false);
+                            },
+                            "{emoji}"
+                        }
+                    }
+                }
+            }
             if compact {
                 div { class: "msg-gutter" }
             } else {
@@ -628,8 +736,31 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                         span { class: "msg-time", {format_time(msg.created_at)} }
                     }
                 }
-                if !text.is_empty() {
-                    div { class: "msg-body", md::Md { nodes: md::parse_markdown(&text) } }
+                if editing() {
+                    input {
+                        class: "edit-input",
+                        value: "{edit_draft}",
+                        oninput: move |e| edit_draft.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                let content = edit_draft().trim().to_string();
+                                if !content.is_empty() {
+                                    ws.send(ClientEvent::EditMessage { message_id: msg_id, content });
+                                }
+                                editing.set(false);
+                            } else if e.key() == Key::Escape {
+                                editing.set(false);
+                            }
+                        },
+                    }
+                    div { class: "edit-hint", "Enter to save · Esc to cancel" }
+                } else if !text.is_empty() {
+                    div { class: "msg-body",
+                        md::Md { nodes: md::parse_markdown(&text) }
+                        if msg.edited_at.is_some() {
+                            span { class: "edited-tag", " (edited)" }
+                        }
+                    }
                 }
                 for (i, src) in images.into_iter().enumerate() {
                     img { key: "{i}", class: "msg-img", src: "{src}", loading: "lazy" }
@@ -648,6 +779,24 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                                 span { class: "msg-file-icon", "📄" }
                                 span { class: "msg-file-name", "{filename}" }
                                 span { class: "msg-file-dl", "Download" }
+                            }
+                        }
+                    }
+                }
+                if !reaction_groups.is_empty() {
+                    div { class: "reactions",
+                        for (emoji, count, mine) in reaction_groups {
+                            button {
+                                key: "{emoji}",
+                                class: if mine { "react-chip mine" } else { "react-chip" },
+                                onclick: {
+                                    let emoji = emoji.clone();
+                                    move |_| ws.send(ClientEvent::ToggleReaction {
+                                        message_id: msg_id,
+                                        emoji: emoji.clone(),
+                                    })
+                                },
+                                "{emoji} {count}"
                             }
                         }
                     }
