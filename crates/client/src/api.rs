@@ -1,7 +1,7 @@
 //! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, LoginRequest, Message, RegisterRequest, User, UserStatus};
+use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, LoginRequest, Message, RegisterRequest, UploadResponse, User, UserStatus};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
@@ -115,6 +115,20 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
         path.push_str(&format!("&before={before}"));
     }
     get(session, path).await
+}
+
+/// Upload an image; returns the absolute URL to embed in a message.
+pub async fn upload(session: &Session, filename: &str, bytes: Vec<u8>) -> Result<String, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/upload", session.base_url))
+        .query(&[("name", filename)])
+        .bearer_auth(&session.token)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let uploaded: UploadResponse = handle(resp).await?;
+    Ok(format!("{}{}", session.base_url, uploaded.url))
 }
 
 pub async fn create_channel(session: &Session, name: String) -> Result<Channel, String> {

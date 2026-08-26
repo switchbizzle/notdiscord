@@ -1,12 +1,14 @@
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use sqlx::Row;
 
 use shared::{
     AuthResponse, Channel, CreateChannelRequest, LoginRequest, Message, RegisterRequest,
-    ServerEvent, User, UserStatus,
+    ServerEvent, UploadResponse, User, UserStatus,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -146,6 +148,72 @@ pub async fn create_channel(
     let channel = Channel { id, name };
     let _ = state.events.send(ServerEvent::ChannelCreated { channel: channel.clone() });
     Ok(Json(channel))
+}
+
+const IMAGE_EXTENSIONS: &[&str] = &["gif", "png", "jpg", "jpeg", "webp"];
+
+#[derive(Deserialize)]
+pub struct UploadQuery {
+    pub name: String,
+}
+
+pub async fn upload(
+    State(_state): State<SharedState>,
+    _user: AuthUser,
+    Query(q): Query<UploadQuery>,
+    body: Bytes,
+) -> ApiResult<Json<UploadResponse>> {
+    let ext = q
+        .name
+        .rsplit('.')
+        .next()
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(err(StatusCode::BAD_REQUEST, "only gif/png/jpg/webp uploads are supported"));
+    }
+    if body.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "empty upload"));
+    }
+
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).expect("os rng");
+    let filename = format!("{}.{ext}", hex::encode(id));
+    let path = crate::uploads_dir().join(&filename);
+    tokio::fs::write(&path, &body).await.map_err(internal)?;
+
+    Ok(Json(UploadResponse { url: format!("/files/{filename}") }))
+}
+
+pub async fn serve_file(Path(name): Path<String>) -> Response {
+    // Only names we generate: 32 hex chars, a dot, a short lowercase extension.
+    let valid = name.len() < 40
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
+        && name.matches('.').count() == 1;
+    if !valid {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let ext = name.rsplit('.').next().unwrap_or_default();
+    let content_type = match ext {
+        "gif" => "image/gif",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    };
+
+    match tokio::fs::read(crate::uploads_dir().join(&name)).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[derive(Deserialize)]

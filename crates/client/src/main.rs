@@ -3,9 +3,10 @@
 mod api;
 mod md;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
+use dioxus::desktop::tao::window::UserAttentionType;
+use dioxus::desktop::{use_window, Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
@@ -154,11 +155,14 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut members = use_signal(Vec::<UserStatus>::new);
     let mut has_more = use_signal(|| false);
     let mut loading_older = use_signal(|| false);
+    let mut unread = use_signal(HashSet::<i64>::new);
+    let window = use_window();
     // user id -> (channel they are typing in, username, expiry timestamp)
     let mut typing = use_signal(HashMap::<i64, (i64, String, i64)>::new);
     let mut last_typing_sent = use_signal(|| 0i64);
     let mut draft = use_signal(String::new);
     let mut new_channel = use_signal(String::new);
+    let mut uploading = use_signal(|| false);
     let mut status = use_signal(|| "connecting…".to_string());
 
     // Initial data load: channel list, then history for the first channel.
@@ -194,7 +198,10 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
 
     // WebSocket task: forwards outgoing events, applies incoming ones.
     // Reconnects with a delay if the connection drops.
-    let ws = use_coroutine(move |mut rx: UnboundedReceiver<ClientEvent>| async move {
+    let notif_window = window.clone();
+    let ws = use_coroutine(move |mut rx: UnboundedReceiver<ClientEvent>| {
+        let window = notif_window.clone();
+        async move {
         loop {
             status.set("connecting…".into());
             let Ok((mut socket, _)) = connect_async(api::ws_url(&session())).await else {
@@ -232,8 +239,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             ServerEvent::MessageCreated { message } => {
                                 // A real message replaces the author's typing indicator.
                                 typing.write().remove(&message.author.id);
+                                let mine = message.author.id == session().user.id;
+                                if !mine && !window.window.is_focused() {
+                                    window.window.request_user_attention(Some(UserAttentionType::Informational));
+                                    play_notification_sound();
+                                }
                                 if selected().map(|c| c.id) == Some(message.channel_id) {
                                     messages.write().push(message);
+                                } else {
+                                    unread.write().insert(message.channel_id);
                                 }
                             }
                             ServerEvent::ChannelCreated { channel } => {
@@ -264,7 +278,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             status.set("disconnected, retrying…".into());
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
-    });
+    }});
 
     let mut send = move || {
         let content = draft().trim().to_string();
@@ -350,9 +364,16 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     for channel in channels() {
                         button {
                             key: "{channel.id}",
-                            class: if selected_id == Some(channel.id) { "channel active" } else { "channel" },
+                            class: if selected_id == Some(channel.id) {
+                                "channel active"
+                            } else if unread().contains(&channel.id) {
+                                "channel unread"
+                            } else {
+                                "channel"
+                            },
                             onclick: move |_| {
                                 let channel = channel.clone();
+                                unread.write().remove(&channel.id);
                                 selected.set(Some(channel.clone()));
                                 messages.set(Vec::new());
                                 has_more.set(false);
@@ -408,6 +429,36 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 }
                 div { class: "typing-line", "{typing_line}" }
                 div { class: "compose",
+                    button {
+                        class: "attach",
+                        title: "Upload an image or GIF",
+                        disabled: uploading(),
+                        onclick: move |_| {
+                            let Some(channel) = selected() else { return };
+                            spawn(async move {
+                                let Some(file) = rfd::AsyncFileDialog::new()
+                                    .add_filter("Images", &["gif", "png", "jpg", "jpeg", "webp"])
+                                    .pick_file()
+                                    .await
+                                else {
+                                    return;
+                                };
+                                let name = file.file_name();
+                                let bytes = file.read().await;
+                                if bytes.len() > 10 * 1024 * 1024 {
+                                    status.set("image too large (max 10 MB)".into());
+                                    return;
+                                }
+                                uploading.set(true);
+                                match api::upload(&session(), &name, bytes).await {
+                                    Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
+                                    Err(e) => status.set(e),
+                                }
+                                uploading.set(false);
+                            });
+                        },
+                        if uploading() { "…" } else { "+" }
+                    }
                     input {
                         placeholder: "Message #{selected_name}",
                         value: "{draft}",
@@ -457,9 +508,34 @@ fn group_messages(messages: &[Message]) -> Vec<(Message, bool)> {
     out
 }
 
+/// Split a message into image URLs (rendered inline) and remaining text.
+fn extract_images(content: &str) -> (Vec<String>, String) {
+    let is_image_url = |word: &str| {
+        (word.starts_with("http://") || word.starts_with("https://"))
+            && ["gif", "png", "jpg", "jpeg", "webp"]
+                .iter()
+                .any(|ext| word.to_lowercase().ends_with(&format!(".{ext}")))
+    };
+    let mut images = Vec::new();
+    let mut rest = Vec::new();
+    for word in content.split_whitespace() {
+        if is_image_url(word) {
+            images.push(word.to_owned());
+        } else {
+            rest.push(word);
+        }
+    }
+    if images.is_empty() {
+        (images, content.to_owned())
+    } else {
+        (images, rest.join(" "))
+    }
+}
+
 #[component]
 fn MessageRow(msg: Message, compact: bool) -> Element {
     let hue = avatar_hue(msg.author.id);
+    let (images, text) = extract_images(&msg.content);
     rsx! {
         div { class: if compact { "msg compact" } else { "msg" },
             if compact {
@@ -474,11 +550,20 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
             div { class: "msg-content",
                 if !compact {
                     div { class: "msg-head",
-                        span { class: "msg-author", "{msg.author.username}" }
+                        span {
+                            class: "msg-author",
+                            style: "color: hsl({hue}, 65%, 68%)",
+                            "{msg.author.username}"
+                        }
                         span { class: "msg-time", {format_time(msg.created_at)} }
                     }
                 }
-                div { class: "msg-body", md::Md { nodes: md::parse_markdown(&msg.content) } }
+                if !text.is_empty() {
+                    div { class: "msg-body", md::Md { nodes: md::parse_markdown(&text) } }
+                }
+                for (i, src) in images.into_iter().enumerate() {
+                    img { key: "{i}", class: "msg-img", src: "{src}", loading: "lazy" }
+                }
             }
         }
     }
@@ -487,6 +572,18 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
 fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
 }
+
+#[cfg(windows)]
+fn play_notification_sound() {
+    use winapi::um::playsoundapi::{PlaySoundW, SND_ALIAS, SND_ASYNC};
+    let alias: Vec<u16> = "SystemAsterisk\0".encode_utf16().collect();
+    unsafe {
+        PlaySoundW(alias.as_ptr(), std::ptr::null_mut(), SND_ALIAS | SND_ASYNC);
+    }
+}
+
+#[cfg(not(windows))]
+fn play_notification_sound() {}
 
 fn initial(username: &str) -> String {
     username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()

@@ -63,6 +63,12 @@ pub struct ApiError {
     pub error: String,
 }
 
+/// Response from POST /api/upload; `url` is server-relative (e.g. `/files/ab12….gif`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadResponse {
+    pub url: String,
+}
+
 // ---------- WebSocket protocol ----------
 
 /// Events sent from client to server over the WebSocket.

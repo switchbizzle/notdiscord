@@ -17,3 +17,7 @@ chrono = "0.4"
 dirs = "6"
 pulldown-cmark = { version = "0.13", default-features = false }
 open = "5"
+rfd = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["playsoundapi"] }

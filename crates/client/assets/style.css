@@ -101,6 +101,8 @@ input:focus { border-color: #5865f2; }
 }
 .channel:hover { background: #35373c; color: #dbdee1; }
 .channel.active { background: #404249; color: #fff; }
+.channel.unread { color: #fff; font-weight: 600; }
+.channel.unread::after { content: " ●"; color: #f23f43; font-size: 9px; }
 
 .new-channel {
     margin: 8px;
@@ -284,11 +286,31 @@ input:focus { border-color: #5865f2; }
 .member.online { color: #dbdee1; }
 .member.online .member-dot { background: #23a55a; }
 
-.compose { padding: 0 16px 20px; }
+.compose { display: flex; gap: 8px; padding: 0 16px 20px; }
 .compose input {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     background: #383a40;
     border: none;
     padding: 12px 14px;
     border-radius: 8px;
+}
+.attach {
+    width: 44px;
+    border-radius: 8px;
+    background: #383a40;
+    color: #b5bac1;
+    font-size: 22px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+.attach:hover { color: #fff; background: #404249; }
+.attach:disabled { opacity: 0.5; cursor: default; }
+
+.msg-img {
+    display: block;
+    max-width: min(420px, 100%);
+    max-height: 320px;
+    border-radius: 8px;
+    margin-top: 4px;
 }

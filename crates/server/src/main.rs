@@ -22,6 +22,12 @@ pub struct AppState {
 
 pub type SharedState = Arc<AppState>;
 
+pub fn uploads_dir() -> std::path::PathBuf {
+    std::env::var("NOTDISCORD_UPLOADS")
+        .unwrap_or_else(|_| "uploads".into())
+        .into()
+}
+
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -57,8 +63,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users", get(routes::list_users))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
+        .route(
+            "/api/upload",
+            post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route("/files/{name}", get(routes::serve_file))
         .route("/ws", any(ws::ws_handler))
         .with_state(state);
+
+    std::fs::create_dir_all(uploads_dir())?;
 
     let addr = std::env::var("NOTDISCORD_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
