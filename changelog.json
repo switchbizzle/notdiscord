@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.16.2",
+    "date": "2026-08-26",
+    "changes": [
+      "Better on flaky connections: requests now retry automatically instead of instantly failing with 'cannot reach server'"
+    ]
+  },
+  {
     "version": "0.16.1",
     "date": "2026-08-26",
     "changes": [

@@ -1,4 +1,4 @@
-//! REST calls to the NotDiscord server.
+﻿//! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
 use shared::{ApiError, AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest, CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, SetBanRequest, SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
@@ -105,22 +105,18 @@ pub fn remove_server(index: usize) -> ServersFile {
 
 pub async fn server_info(base_url: &str) -> Result<shared::ServerInfo, String> {
     let base = normalize_base(base_url);
-    let resp = reqwest::Client::new()
-        .get(format!("{base}/api/server/info"))
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let resp = send_retry(http()
+        .get(format!("{base}/api/server/info")))
+        .await?;
     handle(resp).await
 }
 
 pub async fn search(session: &Session, query: &str) -> Result<Vec<shared::SearchResult>, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .get(format!("{}/api/search", session.base_url))
         .query(&[("q", query)])
-        .bearer_auth(&session.token)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .bearer_auth(&session.token))
+        .await?;
     handle(resp).await
 }
 
@@ -129,35 +125,29 @@ pub async fn tags(session: &Session) -> Result<Vec<shared::Tag>, String> {
 }
 
 pub async fn create_tag(session: &Session, name: String, color: String) -> Result<shared::Tag, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/tags", session.base_url))
         .bearer_auth(&session.token)
-        .json(&shared::CreateTagRequest { name, color })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&shared::CreateTagRequest { name, color }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn delete_tag(session: &Session, tag_id: i64) -> Result<(), String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .delete(format!("{}/api/tags/{tag_id}", session.base_url))
-        .bearer_auth(&session.token)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .bearer_auth(&session.token))
+        .await?;
     let _: serde_json::Value = handle(resp).await?;
     Ok(())
 }
 
 pub async fn assign_tag(session: &Session, user_id: i64, tag_id: i64, assigned: bool) -> Result<(), String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/tags/assign", session.base_url))
         .bearer_auth(&session.token)
-        .json(&shared::AssignTagRequest { user_id, tag_id, assigned })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&shared::AssignTagRequest { user_id, tag_id, assigned }))
+        .await?;
     let _: serde_json::Value = handle(resp).await?;
     Ok(())
 }
@@ -167,24 +157,20 @@ pub async fn get_retention(session: &Session) -> Result<shared::RetentionSetting
 }
 
 pub async fn set_retention(session: &Session, days: i64) -> Result<shared::RetentionSetting, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/server/retention", session.base_url))
         .bearer_auth(&session.token)
-        .json(&shared::RetentionSetting { days })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&shared::RetentionSetting { days }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn rename_server(session: &Session, name: String) -> Result<shared::ServerInfo, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/server/name", session.base_url))
         .bearer_auth(&session.token)
-        .json(&shared::RenameServerRequest { name })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&shared::RenameServerRequest { name }))
+        .await?;
     handle(resp).await
 }
 
@@ -291,6 +277,37 @@ pub fn save_settings(settings: &Settings) {
     }
 }
 
+/// Shared HTTP client with a connect timeout so flaky networks fail fast
+/// instead of hanging.
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("http client")
+    })
+}
+
+/// Send with up to 3 attempts on connection-level failures (request never
+/// reached the server), with short backoff. HTTP error statuses are not
+/// retried â€” those reached the server and got an answer.
+async fn send_retry(builder: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+    let mut delay_ms = 400u64;
+    for attempt in 0..3u32 {
+        let Some(cloned) = builder.try_clone() else { break };
+        match cloned.send().await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if attempt < 2 && (e.is_connect() || e.is_timeout() || e.is_request()) => {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms *= 2;
+            }
+            Err(e) => return Err(format!("cannot reach server: {e}")),
+        }
+    }
+    builder.send().await.map_err(|e| format!("cannot reach server: {e}"))
+}
+
 fn normalize_base(base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     if base.starts_with("http://") || base.starts_with("https://") {
@@ -322,12 +339,10 @@ async fn handle<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Resu
 
 async fn auth_request(base_url: &str, path: &str, body: impl serde::Serialize) -> Result<AuthResponse, String> {
     let base = normalize_base(base_url);
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{base}/api/{path}"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&body))
+        .await?;
     handle(resp).await
 }
 
@@ -355,12 +370,10 @@ pub async fn register(base_url: &str, username: String, password: String, invite
 }
 
 async fn get<T: serde::de::DeserializeOwned>(session: &Session, path: String) -> Result<T, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .get(format!("{}/api/{path}", session.base_url))
-        .bearer_auth(&session.token)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .bearer_auth(&session.token))
+        .await?;
     handle(resp).await
 }
 
@@ -391,86 +404,70 @@ pub async fn stickers(session: &Session) -> Result<Vec<Sticker>, String> {
 }
 
 pub async fn create_sticker(session: &Session, name: String, url: String) -> Result<Sticker, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/stickers", session.base_url))
         .bearer_auth(&session.token)
-        .json(&CreateStickerRequest { name, url })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&CreateStickerRequest { name, url }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn delete_sticker(session: &Session, sticker_id: i64) -> Result<(), String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .delete(format!("{}/api/stickers/{sticker_id}", session.base_url))
-        .bearer_auth(&session.token)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .bearer_auth(&session.token))
+        .await?;
     let _: serde_json::Value = handle(resp).await?;
     Ok(())
 }
 
 pub async fn create_dm(session: &Session, user_id: i64) -> Result<Channel, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/dms", session.base_url))
         .bearer_auth(&session.token)
-        .json(&CreateDmRequest { user_id })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&CreateDmRequest { user_id }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn set_role(session: &Session, user_id: i64, role: &str) -> Result<User, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/users/{user_id}/role", session.base_url))
         .bearer_auth(&session.token)
-        .json(&SetRoleRequest { role: role.into() })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&SetRoleRequest { role: role.into() }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn set_ban(session: &Session, user_id: i64, banned: bool) -> Result<User, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/users/{user_id}/ban", session.base_url))
         .bearer_auth(&session.token)
-        .json(&SetBanRequest { banned })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&SetBanRequest { banned }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn delete_channel(session: &Session, channel_id: i64) -> Result<(), String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .delete(format!("{}/api/channels/{channel_id}", session.base_url))
-        .bearer_auth(&session.token)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .bearer_auth(&session.token))
+        .await?;
     let _: serde_json::Value = handle(resp).await?;
     Ok(())
 }
 
 pub async fn changelog(session: &Session) -> Result<Vec<shared::ChangelogEntry>, String> {
-    let resp = reqwest::Client::new()
-        .get(format!("{}/api/changelog", session.base_url))
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let resp = send_retry(http()
+        .get(format!("{}/api/changelog", session.base_url)))
+        .await?;
     handle(resp).await
 }
 
 pub async fn client_version(session: &Session) -> Result<ClientVersionInfo, String> {
-    let resp = reqwest::Client::new()
-        .get(format!("{}/api/client/version", session.base_url))
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let resp = send_retry(http()
+        .get(format!("{}/api/client/version", session.base_url)))
+        .await?;
     handle(resp).await
 }
 
@@ -479,13 +476,11 @@ pub async fn profile(session: &Session, user_id: i64) -> Result<Profile, String>
 }
 
 pub async fn update_profile(session: &Session, req: UpdateProfileRequest) -> Result<Profile, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/profile", session.base_url))
         .bearer_auth(&session.token)
-        .json(&req)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&req))
+        .await?;
     handle(resp).await
 }
 
@@ -494,48 +489,40 @@ pub async fn voice_token(session: &Session, channel_id: i64) -> Result<VoiceToke
 }
 
 pub async fn gifs(session: &Session, query: &str) -> Result<Vec<GifResult>, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .get(format!("{}/api/gifs", session.base_url))
         .query(&[("q", query)])
-        .bearer_auth(&session.token)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .bearer_auth(&session.token))
+        .await?;
     handle(resp).await
 }
 
 /// Upload an image; returns the absolute URL to embed in a message.
 pub async fn upload(session: &Session, filename: &str, bytes: Vec<u8>) -> Result<String, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/upload", session.base_url))
         .query(&[("name", filename)])
         .bearer_auth(&session.token)
-        .body(bytes)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .body(bytes))
+        .await?;
     let uploaded: UploadResponse = handle(resp).await?;
     Ok(format!("{}{}", session.base_url, uploaded.url))
 }
 
 pub async fn create_channel(session: &Session, name: String, kind: &str) -> Result<Channel, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/channels", session.base_url))
         .bearer_auth(&session.token)
-        .json(&CreateChannelRequest { name, kind: Some(kind.into()) })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&CreateChannelRequest { name, kind: Some(kind.into()) }))
+        .await?;
     handle(resp).await
 }
 
 pub async fn set_server_icon(session: &Session, url: String) -> Result<shared::ServerInfo, String> {
-    let resp = reqwest::Client::new()
+    let resp = send_retry(http()
         .post(format!("{}/api/server/icon", session.base_url))
         .bearer_auth(&session.token)
-        .json(&shared::SetServerIconRequest { url })
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach server: {e}"))?;
+        .json(&shared::SetServerIconRequest { url }))
+        .await?;
     handle(resp).await
 }
