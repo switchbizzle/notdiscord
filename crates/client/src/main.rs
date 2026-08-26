@@ -668,7 +668,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 if voice_status().channel_id.is_some() || !voice_status().error.is_empty() {
                     div { class: "voice-panel",
                         if !voice_status().error.is_empty() {
-                            div { class: "voice-error", "{voice_status().error}" }
+                            div {
+                                class: "voice-error",
+                                title: "Click to dismiss",
+                                onclick: move |_| {
+                                    let mut vs = voice_status;
+                                    vs.write().error = String::new();
+                                },
+                                "{voice_status().error}"
+                            }
                         } else {
                             div { class: "voice-head",
                                 if voice_status().connecting {

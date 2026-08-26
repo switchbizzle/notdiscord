@@ -95,7 +95,13 @@ fn build_capture_stream(
 ) -> Result<cpal::Stream, cpal::Error> {
     let cfg = config.config();
     let err_cb = move |e: cpal::Error| {
-        status.write().error = format!("mic stream error: {e}");
+        // Buffer under/overruns are transient on WASAPI and self-recover;
+        // only surface errors that actually stop the stream.
+        let text = e.to_string();
+        if text.contains("underrun") || text.contains("overrun") {
+            return;
+        }
+        status.write().error = format!("mic stream error: {text}");
     };
     macro_rules! stream_as {
         ($ty:ty, $conv:expr) => {{
@@ -390,8 +396,12 @@ fn spawn_playback(
                 }
             },
             move |e| {
+                let text = e.to_string();
+                if text.contains("underrun") || text.contains("overrun") {
+                    return;
+                }
                 let mut s = status;
-                s.write().error = format!("audio output error: {e}");
+                s.write().error = format!("audio output error: {text}");
             },
             None,
         );
