@@ -13,11 +13,47 @@ use tokio::sync::broadcast;
 
 use shared::ServerEvent;
 
+/// A broadcast event, optionally restricted to specific user ids (DM privacy).
+#[derive(Clone)]
+pub struct Envelope {
+    pub event: ServerEvent,
+    pub only: Option<Vec<i64>>,
+}
+
 pub struct AppState {
     pub db: SqlitePool,
-    pub events: broadcast::Sender<ServerEvent>,
+    pub events: broadcast::Sender<Envelope>,
     /// user id -> number of live WebSocket connections.
     pub presence: Mutex<HashMap<i64, u32>>,
+}
+
+impl AppState {
+    /// Broadcast to everyone.
+    pub fn broadcast(&self, event: ServerEvent) {
+        let _ = self.events.send(Envelope { event, only: None });
+    }
+
+    /// Broadcast only to the given user ids' connections.
+    pub fn broadcast_only(&self, only: Vec<i64>, event: ServerEvent) {
+        let _ = self.events.send(Envelope { event, only: Some(only) });
+    }
+}
+
+/// For dm channels, the participant ids (the event audience); None otherwise.
+pub async fn dm_recipients(db: &SqlitePool, channel_id: i64) -> Result<Option<Vec<i64>>, sqlx::Error> {
+    use sqlx::Row;
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_optional(db)
+        .await?;
+    if kind.as_deref() != Some("dm") {
+        return Ok(None);
+    }
+    let rows = sqlx::query("SELECT user_id FROM dm_members WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_all(db)
+        .await?;
+    Ok(Some(rows.into_iter().map(|r| r.get(0)).collect()))
 }
 
 pub type SharedState = Arc<AppState>;
@@ -68,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/profile", post(routes::update_profile))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
+        .route("/api/dms", post(routes::create_dm))
         .route(
             "/api/upload",
             post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),

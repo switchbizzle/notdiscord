@@ -1,4 +1,4 @@
-use axum::body::Bytes;
+﻿use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -7,9 +7,9 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use shared::{
-    AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest,
-    GifResult, LoginRequest, Message, Profile, RegisterRequest, ServerEvent, SetBanRequest,
-    SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus,
+    AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest,
+    CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, ServerEvent,
+    SetBanRequest, SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus,
     VoiceTokenResponse,
 };
 
@@ -176,7 +176,7 @@ pub async fn set_role(
         .await
         .map_err(internal)?;
     let updated = load_user(&state, target_id).await?;
-    let _ = state.events.send(ServerEvent::UserUpdated { user: updated.clone() });
+    state.broadcast(ServerEvent::UserUpdated { user: updated.clone() });
     Ok(Json(updated))
 }
 
@@ -210,7 +210,7 @@ pub async fn set_ban(
             .map_err(internal)?;
     }
     let updated = load_user(&state, target_id).await?;
-    let _ = state.events.send(ServerEvent::UserUpdated { user: updated.clone() });
+    state.broadcast(ServerEvent::UserUpdated { user: updated.clone() });
     Ok(Json(updated))
 }
 
@@ -222,13 +222,15 @@ pub async fn delete_channel(
     if user.role != "admin" {
         return Err(err(StatusCode::FORBIDDEN, "admins only"));
     }
-    let exists = sqlx::query("SELECT id FROM channels WHERE id = ?")
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
         .bind(channel_id)
         .fetch_optional(&state.db)
         .await
         .map_err(internal)?;
-    if exists.is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "no such channel"));
+    match kind.as_deref() {
+        None => return Err(err(StatusCode::NOT_FOUND, "no such channel")),
+        Some("dm") => return Err(err(StatusCode::BAD_REQUEST, "DMs cannot be deleted")),
+        Some(_) => {}
     }
     // Reactions cascade from message deletion.
     sqlx::query("DELETE FROM messages WHERE channel_id = ?")
@@ -241,7 +243,7 @@ pub async fn delete_channel(
         .execute(&state.db)
         .await
         .map_err(internal)?;
-    let _ = state.events.send(ServerEvent::ChannelDeleted { channel_id });
+    state.broadcast(ServerEvent::ChannelDeleted { channel_id });
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -298,23 +300,107 @@ pub async fn update_profile(
     }
 
     let updated = get_profile(State(state.clone()), AuthUser(user.clone()), Path(user.id)).await?;
-    let _ = state.events.send(ServerEvent::UserUpdated { user: updated.0.user.clone() });
+    state.broadcast(ServerEvent::UserUpdated { user: updated.0.user.clone() });
     Ok(updated)
 }
 
 pub async fn list_channels(
     State(state): State<SharedState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
 ) -> ApiResult<Json<Vec<Channel>>> {
-    let rows = sqlx::query("SELECT id, name, kind FROM channels ORDER BY id")
-        .fetch_all(&state.db)
-        .await
-        .map_err(internal)?;
-    let channels = rows
+    let rows = sqlx::query(
+        "SELECT id, name, kind FROM channels WHERE kind != 'dm' \
+         UNION ALL \
+         SELECT c.id, c.name, c.kind FROM channels c \
+         JOIN dm_members m ON m.channel_id = c.id \
+         WHERE c.kind = 'dm' AND m.user_id = ? \
+         ORDER BY id",
+    )
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+
+    let mut channels: Vec<Channel> = rows
         .into_iter()
-        .map(|r| Channel { id: r.get(0), name: r.get(1), kind: r.get(2) })
+        .map(|r| Channel { id: r.get(0), name: r.get(1), kind: r.get(2), dm_members: Vec::new() })
         .collect();
+
+    for channel in channels.iter_mut().filter(|c| c.kind == "dm") {
+        channel.dm_members = dm_member_users(&state, channel.id).await?;
+    }
     Ok(Json(channels))
+}
+
+async fn dm_member_users(state: &SharedState, channel_id: i64) -> ApiResult<Vec<User>> {
+    let rows = sqlx::query(
+        "SELECT u.id, u.username, u.avatar, u.role FROM dm_members m \
+         JOIN users u ON u.id = m.user_id WHERE m.channel_id = ?",
+    )
+    .bind(channel_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) })
+        .collect())
+}
+
+/// Open (or return the existing) DM channel with another user.
+pub async fn create_dm(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<CreateDmRequest>,
+) -> ApiResult<Json<Channel>> {
+    if req.user_id == user.id {
+        return Err(err(StatusCode::BAD_REQUEST, "that's you"));
+    }
+    load_user(&state, req.user_id).await?;
+
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT c.id FROM channels c \
+         JOIN dm_members a ON a.channel_id = c.id AND a.user_id = ? \
+         JOIN dm_members b ON b.channel_id = c.id AND b.user_id = ? \
+         WHERE c.kind = 'dm' LIMIT 1",
+    )
+    .bind(user.id)
+    .bind(req.user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(internal)?;
+
+    let channel_id = match existing {
+        Some(id) => id,
+        None => {
+            let id = sqlx::query("INSERT INTO channels (name, kind, created_at) VALUES ('dm', 'dm', ?)")
+                .bind(now_ms())
+                .execute(&state.db)
+                .await
+                .map_err(internal)?
+                .last_insert_rowid();
+            for member in [user.id, req.user_id] {
+                sqlx::query("INSERT INTO dm_members (channel_id, user_id) VALUES (?, ?)")
+                    .bind(id)
+                    .bind(member)
+                    .execute(&state.db)
+                    .await
+                    .map_err(internal)?;
+            }
+            id
+        }
+    };
+
+    let channel = Channel {
+        id: channel_id,
+        name: "dm".into(),
+        kind: "dm".into(),
+        dm_members: dm_member_users(&state, channel_id).await?,
+    };
+    if existing.is_none() {
+        state.broadcast_only(vec![user.id, req.user_id], ServerEvent::ChannelCreated { channel: channel.clone() });
+    }
+    Ok(Json(channel))
 }
 
 #[derive(Deserialize)]
@@ -417,8 +503,8 @@ pub async fn create_channel(
         Err(e) => return Err(internal(e)),
     };
 
-    let channel = Channel { id, name, kind: "text".into() };
-    let _ = state.events.send(ServerEvent::ChannelCreated { channel: channel.clone() });
+    let channel = Channel { id, name, kind: "text".into(), dm_members: Vec::new() };
+    state.broadcast(ServerEvent::ChannelCreated { channel: channel.clone() });
     Ok(Json(channel))
 }
 
@@ -592,7 +678,7 @@ pub async fn create_sticker(
         .map_err(internal)?;
 
     let sticker = Sticker { id: result.last_insert_rowid(), name, url: req.url, creator_id: user.id };
-    let _ = state.events.send(ServerEvent::StickerCreated { sticker: sticker.clone() });
+    state.broadcast(ServerEvent::StickerCreated { sticker: sticker.clone() });
     Ok(Json(sticker))
 }
 
@@ -611,7 +697,7 @@ pub async fn delete_sticker(
     if affected == 0 {
         return Err(err(StatusCode::FORBIDDEN, "you can only delete your own stickers"));
     }
-    let _ = state.events.send(ServerEvent::StickerDeleted { sticker_id });
+    state.broadcast(ServerEvent::StickerDeleted { sticker_id });
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -708,10 +794,15 @@ pub struct MessagesQuery {
 
 pub async fn channel_messages(
     State(state): State<SharedState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
     Query(q): Query<MessagesQuery>,
 ) -> ApiResult<Json<Vec<Message>>> {
+    // DM history is participants-only.
+    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    if recipients.is_some_and(|ids| !ids.contains(&user.id)) {
+        return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+    }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let before = q.before.unwrap_or(i64::MAX);
 

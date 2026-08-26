@@ -53,9 +53,18 @@ pub struct UpdateProfileRequest {
 pub struct Channel {
     pub id: i64,
     pub name: String,
-    /// "text" or "voice".
+    /// "text", "voice", or "dm".
     #[serde(default = "default_channel_kind")]
     pub kind: String,
+    /// For dm channels: both participants. Empty otherwise.
+    #[serde(default)]
+    pub dm_members: Vec<User>,
+}
+
+/// Body for POST /api/dms — open (or find) a DM with another user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDmRequest {
+    pub user_id: i64,
 }
 
 fn default_channel_kind() -> String {

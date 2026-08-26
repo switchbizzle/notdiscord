@@ -352,11 +352,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 // A real message replaces the author's typing indicator.
                                 typing.write().remove(&message.author.id);
                                 let me = session().user;
+                                let is_dm = channels()
+                                    .iter()
+                                    .any(|c| c.id == message.channel_id && c.kind == "dm");
                                 let mentioned = message.author.id != me.id
-                                    && message
-                                        .content
-                                        .to_lowercase()
-                                        .contains(&format!("@{}", me.username.to_lowercase()));
+                                    && (is_dm
+                                        || message
+                                            .content
+                                            .to_lowercase()
+                                            .contains(&format!("@{}", me.username.to_lowercase())));
                                 if mentioned && !window.window.is_focused() {
                                     window.window.request_user_attention(Some(UserAttentionType::Informational));
                                     play_notification_sound();
@@ -616,7 +620,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     };
 
     let selected_id = selected().map(|c| c.id);
-    let selected_name = selected().map(|c| c.name.clone()).unwrap_or_default();
+    let me_id = session().user.id;
+    let (selected_label, selected_name) = match selected() {
+        Some(c) if c.kind == "dm" => {
+            let peer = dm_peer_name(&c, me_id);
+            (format!("@ {peer}"), format!("@{peer}"))
+        }
+        Some(c) => (format!("# {}", c.name), format!("#{}", c.name)),
+        None => (String::new(), String::new()),
+    };
     let typing_line = {
         let names: Vec<String> = typing()
             .values()
@@ -645,7 +657,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 upload_files(e.files());
             },
             if drag_over() {
-                div { class: "drop-overlay", "Drop to upload to #{selected_name}" }
+                div { class: "drop-overlay", "Drop to upload to {selected_name}" }
             }
             if updating() {
                 div { class: "update-overlay",
@@ -716,6 +728,39 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         } else {
                             if !profile.bio.is_empty() {
                                 div { class: "profile-bio", "{profile.bio}" }
+                            }
+                            if profile.user.id != session().user.id {
+                                button {
+                                    class: "profile-btn primary",
+                                    onclick: {
+                                        let target = profile.user.id;
+                                        move |_| {
+                                            spawn(async move {
+                                                match api::create_dm(&session(), target).await {
+                                                    Ok(channel) => {
+                                                        if !channels().iter().any(|c| c.id == channel.id) {
+                                                            channels.write().push(channel.clone());
+                                                        }
+                                                        profile_card.set(None);
+                                                        unread.write().remove(&channel.id);
+                                                        selected.set(Some(channel.clone()));
+                                                        messages.set(Vec::new());
+                                                        has_more.set(false);
+                                                        match api::messages(&session(), channel.id, None).await {
+                                                            Ok(msgs) => {
+                                                                has_more.set(msgs.len() == api::HISTORY_PAGE);
+                                                                messages.set(msgs);
+                                                            }
+                                                            Err(e) => status.set(e),
+                                                        }
+                                                    }
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        }
+                                    },
+                                    "Message"
+                                }
                             }
                             if session().user.role == "admin" && profile.user.id != session().user.id {
                                 div { class: "profile-actions",
@@ -896,6 +941,41 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     "✕"
                                 }
                             }
+                        }
+                    }
+                    if channels().iter().any(|c| c.kind == "dm") {
+                        div { class: "section-label", "Direct Messages" }
+                    }
+                    for channel in channels().into_iter().filter(|c| c.kind == "dm") {
+                        button {
+                            key: "dm{channel.id}",
+                            class: if selected_id == Some(channel.id) {
+                                "channel dm active"
+                            } else if unread().contains(&channel.id) {
+                                "channel dm unread"
+                            } else {
+                                "channel dm"
+                            },
+                            onclick: move |_| {
+                                let channel = channel.clone();
+                                unread.write().remove(&channel.id);
+                                selected.set(Some(channel.clone()));
+                                messages.set(Vec::new());
+                                has_more.set(false);
+                                spawn(async move {
+                                    match api::messages(&session(), channel.id, None).await {
+                                        Ok(msgs) => {
+                                            has_more.set(msgs.len() == api::HISTORY_PAGE);
+                                            messages.set(msgs);
+                                        }
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            },
+                            if let Some(peer) = dm_peer(&channel, session().user.id) {
+                                UserAvatar { user: peer, class: "dm-avatar" }
+                            }
+                            span { class: "chan-name", "{dm_peer_name(&channel, session().user.id)}" }
                         }
                     }
                     div { class: "section-row",
@@ -1171,7 +1251,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 }
             }
             div { class: "main",
-                div { class: "channel-header", "# {selected_name}" }
+                div { class: "channel-header", "{selected_label}" }
                 div { class: "messages",
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
@@ -1396,7 +1476,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         if uploading() { "…" } else { Icon { name: "plus" } }
                     }
                     input {
-                        placeholder: "Message #{selected_name}",
+                        placeholder: "Message {selected_name}",
                         value: "{draft}",
                         oninput: move |e| {
                             draft.set(e.value());
@@ -1670,6 +1750,21 @@ fn MicMeter(level: voice::MicLevelSignal) -> Element {
             div { class: "mic-meter-fill", style: "width: {pct}%" }
         }
     }
+}
+
+/// The other participant's name in a DM channel.
+fn dm_peer_name(channel: &Channel, me_id: i64) -> String {
+    channel
+        .dm_members
+        .iter()
+        .find(|u| u.id != me_id)
+        .map(|u| u.username.clone())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// The other participant in a DM channel, for avatar rendering.
+fn dm_peer(channel: &Channel, me_id: i64) -> Option<User> {
+    channel.dm_members.iter().find(|u| u.id != me_id).cloned()
 }
 
 /// Avatar image if the user has one, else a colored initial circle.

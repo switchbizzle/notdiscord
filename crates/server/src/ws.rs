@@ -1,4 +1,4 @@
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+﻿use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
@@ -7,7 +7,15 @@ use sqlx::Row;
 use shared::{ClientEvent, Message, ServerEvent, User};
 
 use crate::auth::AuthUser;
-use crate::{now_ms, SharedState};
+use crate::{dm_recipients, now_ms, SharedState};
+
+/// Broadcast to a DM's participants when `recipients` is Some, else to all.
+fn send_scoped(state: &SharedState, recipients: &Option<Vec<i64>>, event: ServerEvent) {
+    match recipients {
+        Some(ids) => state.broadcast_only(ids.clone(), event),
+        None => state.broadcast(event),
+    }
+}
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -29,7 +37,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         *count == 1
     };
     if came_online {
-        let _ = state.events.send(ServerEvent::PresenceChanged { user: user.clone(), online: true });
+        state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: true });
     }
 
     loop {
@@ -37,17 +45,21 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
             // Broadcast events fan out to every connected client.
             event = events.recv() => {
                 match event {
-                    Ok(event) => {
-                        // Keep this connection's snapshot of its own user fresh,
-                        // so messages sent after a profile change carry the new avatar.
-                        if let ServerEvent::UserUpdated { user: updated } = &event {
-                            if updated.id == user.id {
-                                user = updated.clone();
+                    Ok(envelope) => {
+                        // DM events are addressed to their participants only.
+                        let for_me = envelope.only.as_ref().is_none_or(|ids| ids.contains(&user.id));
+                        if for_me {
+                            // Keep this connection's snapshot of its own user fresh,
+                            // so messages sent after a profile change carry the new avatar.
+                            if let ServerEvent::UserUpdated { user: updated } = &envelope.event {
+                                if updated.id == user.id {
+                                    user = updated.clone();
+                                }
                             }
-                        }
-                        let text = serde_json::to_string(&event).expect("serialize event");
-                        if sink.send(WsMessage::text(text)).await.is_err() {
-                            break;
+                            let text = serde_json::to_string(&envelope.event).expect("serialize event");
+                            if sink.send(WsMessage::text(text)).await.is_err() {
+                                break;
+                            }
                         }
                     }
                     // Lagged: client fell behind the broadcast buffer; drop and
@@ -85,7 +97,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         }
     };
     if went_offline {
-        let _ = state.events.send(ServerEvent::PresenceChanged { user: user.clone(), online: false });
+        state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: false });
     }
     tracing::info!("ws disconnected: {}", user.username);
 }
@@ -95,6 +107,10 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
         ClientEvent::SendMessage { channel_id, content } => {
             let content = content.trim().to_owned();
             if content.is_empty() || content.len() > 4000 {
+                return Ok(());
+            }
+            let recipients = dm_recipients(&state.db, channel_id).await?;
+            if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
                 return Ok(());
             }
             let created_at = now_ms();
@@ -117,10 +133,14 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 edited_at: None,
                 reactions: Vec::new(),
             };
-            let _ = state.events.send(ServerEvent::MessageCreated { message });
+            send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
         }
         ClientEvent::Typing { channel_id } => {
-            let _ = state.events.send(ServerEvent::Typing { channel_id, user: user.clone() });
+            let recipients = dm_recipients(&state.db, channel_id).await?;
+            if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
+                return Ok(());
+            }
+            send_scoped(state, &recipients, ServerEvent::Typing { channel_id, user: user.clone() });
         }
         ClientEvent::ToggleReaction { message_id, emoji } => {
             if emoji.is_empty() || emoji.chars().count() > 8 || emoji.chars().any(char::is_whitespace) {
@@ -134,6 +154,10 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 return Ok(());
             };
             let channel_id: i64 = row.get(0);
+            let recipients = dm_recipients(&state.db, channel_id).await?;
+            if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
+                return Ok(());
+            }
 
             let removed = sqlx::query(
                 "DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
@@ -146,7 +170,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             .rows_affected();
 
             if removed > 0 {
-                let _ = state.events.send(ServerEvent::ReactionRemoved {
+                send_scoped(state, &recipients, ServerEvent::ReactionRemoved {
                     channel_id,
                     message_id,
                     emoji,
@@ -162,7 +186,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 .bind(now_ms())
                 .execute(&state.db)
                 .await?;
-                let _ = state.events.send(ServerEvent::ReactionAdded {
+                send_scoped(state, &recipients, ServerEvent::ReactionAdded {
                     channel_id,
                     message_id,
                     emoji,
@@ -191,7 +215,8 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 .bind(message_id)
                 .execute(&state.db)
                 .await?;
-            let _ = state.events.send(ServerEvent::MessageEdited { channel_id, message_id, content, edited_at });
+            let recipients = dm_recipients(&state.db, channel_id).await?;
+            send_scoped(state, &recipients, ServerEvent::MessageEdited { channel_id, message_id, content, edited_at });
         }
         ClientEvent::DeleteMessage { message_id } => {
             // Authors can delete their own messages; admins can delete any.
@@ -210,7 +235,8 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 .bind(message_id)
                 .execute(&state.db)
                 .await?;
-            let _ = state.events.send(ServerEvent::MessageDeleted { channel_id, message_id });
+            let recipients = dm_recipients(&state.db, channel_id).await?;
+            send_scoped(state, &recipients, ServerEvent::MessageDeleted { channel_id, message_id });
         }
     }
     Ok(())

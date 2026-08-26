@@ -1,7 +1,7 @@
 //! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, SetBanRequest, SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
+use shared::{ApiError, AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest, CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, SetBanRequest, SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
@@ -197,6 +197,17 @@ pub async fn delete_sticker(session: &Session, sticker_id: i64) -> Result<(), St
         .map_err(|e| format!("cannot reach server: {e}"))?;
     let _: serde_json::Value = handle(resp).await?;
     Ok(())
+}
+
+pub async fn create_dm(session: &Session, user_id: i64) -> Result<Channel, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/dms", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&CreateDmRequest { user_id })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
 }
 
 pub async fn set_role(session: &Session, user_id: i64, role: &str) -> Result<User, String> {
