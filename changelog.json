@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.11.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Server rail: the app can now hold multiple servers — click + on the far left to add one, click circles to switch",
+      "Servers have names now — admins can rename theirs in Settings → Server",
+      "The sidebar shows the server's actual name instead of 'NotDiscord'"
+    ]
+  },
+  {
     "version": "0.10.0",
     "date": "2026-08-26",
     "changes": [

@@ -8,9 +8,9 @@ use sqlx::Row;
 
 use shared::{
     AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest,
-    CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, ServerEvent,
-    SetBanRequest, SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus,
-    VoiceTokenResponse,
+    CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest,
+    RenameServerRequest, ServerEvent, ServerInfo, SetBanRequest, SetRoleRequest, Sticker,
+    UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -713,6 +713,43 @@ pub async fn client_version() -> Result<Json<ClientVersionInfo>, StatusCode> {
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(ClientVersionInfo { version: version.trim().to_owned(), url: "/download".into() }))
+}
+
+async fn meta_value(state: &SharedState, key: &str) -> ApiResult<String> {
+    sqlx::query_scalar("SELECT value FROM server_meta WHERE key = ?")
+        .bind(key)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)
+}
+
+/// Public: this instance's identity.
+pub async fn server_info(State(state): State<SharedState>) -> ApiResult<Json<ServerInfo>> {
+    Ok(Json(ServerInfo {
+        id: meta_value(&state, "id").await?,
+        name: meta_value(&state, "name").await?,
+    }))
+}
+
+pub async fn rename_server(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<RenameServerRequest>,
+) -> ApiResult<Json<ServerInfo>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let name = req.name.trim().to_owned();
+    if name.is_empty() || name.len() > 40 {
+        return Err(err(StatusCode::BAD_REQUEST, "server name must be 1-40 characters"));
+    }
+    sqlx::query("UPDATE server_meta SET value = ? WHERE key = 'name'")
+        .bind(&name)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::ServerRenamed { name: name.clone() });
+    Ok(Json(ServerInfo { id: meta_value(&state, "id").await?, name }))
 }
 
 /// Public: release notes, newest first (uploaded by the release script).

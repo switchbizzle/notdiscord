@@ -82,7 +82,56 @@ input:focus { border-color: #5865f2; }
 
 /* ---------- Main layout ---------- */
 
-.app { display: flex; height: 100vh; }
+.shell { display: flex; height: 100vh; }
+.app { display: flex; flex: 1; min-width: 0; height: 100vh; }
+
+.server-rail {
+    width: 64px;
+    background: #1e1f22;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+    flex-shrink: 0;
+    border-right: 1px solid #17181a;
+}
+.rail-server {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 700;
+    font-size: 17px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-radius 0.12s;
+    user-select: none;
+}
+.rail-server:hover { border-radius: 14px; }
+.rail-server.active {
+    border-radius: 14px;
+    box-shadow: 0 0 0 2px #1e1f22, 0 0 0 4px #fff;
+}
+.rail-add {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: #2b2d31;
+    color: #23a55a;
+    font-size: 22px;
+}
+.rail-add:hover { background: #23a55a; color: #fff; border-radius: 14px; }
+
+.login-cancel {
+    background: transparent;
+    color: #949ba4;
+    font-size: 13px;
+    margin-top: 10px;
+}
+.login-cancel:hover { color: #fff; }
+.settings-mono { font-family: Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
 
 .sidebar {
     width: 230px;

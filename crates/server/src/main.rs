@@ -89,6 +89,23 @@ async fn main() -> anyhow::Result<()> {
     let db = SqlitePoolOptions::new().connect_with(options).await?;
     sqlx::migrate!().run(&db).await?;
 
+    // Instance identity: generate a stable id on first boot, default the name.
+    let meta_defaults: &[(&str, fn() -> String)] = &[
+        ("id", || {
+            let mut bytes = [0u8; 16];
+            getrandom::fill(&mut bytes).expect("os rng");
+            hex::encode(bytes)
+        }),
+        ("name", || "NotDiscord".to_string()),
+    ];
+    for (key, default) in meta_defaults {
+        sqlx::query("INSERT OR IGNORE INTO server_meta (key, value) VALUES (?, ?)")
+            .bind(key)
+            .bind(default())
+            .execute(&db)
+            .await?;
+    }
+
     let (events, _) = broadcast::channel(256);
     let state = Arc::new(AppState { db, events, presence: Mutex::new(HashMap::new()) });
 
@@ -115,6 +132,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/stickers/{id}", axum::routing::delete(routes::delete_sticker))
         .route("/api/client/version", get(routes::client_version))
         .route("/api/changelog", get(routes::changelog))
+        .route("/api/server/info", get(routes::server_info))
+        .route("/api/server/name", post(routes::rename_server))
         .route("/download", get(routes::download_client))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))

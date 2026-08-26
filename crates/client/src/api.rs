@@ -8,6 +8,118 @@ pub struct Session {
     pub base_url: String,
     pub token: String,
     pub user: User,
+    #[serde(default = "default_server_name")]
+    pub server_name: String,
+    #[serde(default)]
+    pub server_id: String,
+}
+
+fn default_server_name() -> String {
+    "NotDiscord".into()
+}
+
+/// All saved server accounts; `active` indexes into `servers`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServersFile {
+    #[serde(default)]
+    pub active: usize,
+    #[serde(default)]
+    pub servers: Vec<Session>,
+}
+
+impl ServersFile {
+    pub fn active_session(&self) -> Option<&Session> {
+        self.servers.get(self.active)
+    }
+}
+
+fn servers_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("NotDiscord").join("servers.json"))
+}
+
+pub fn load_servers() -> ServersFile {
+    if let Some(file) = servers_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str::<ServersFile>(&text).ok())
+    {
+        return file;
+    }
+    // Migrate the old single-session file.
+    match load_session() {
+        Some(session) => {
+            let file = ServersFile { active: 0, servers: vec![session] };
+            save_servers(&file);
+            file
+        }
+        None => ServersFile::default(),
+    }
+}
+
+pub fn save_servers(file: &ServersFile) {
+    let Some(path) = servers_path() else { return };
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    if let Ok(json) = serde_json::to_string_pretty(file) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Insert or replace (by base_url) and make active.
+pub fn upsert_server(session: Session) -> ServersFile {
+    let mut file = load_servers();
+    match file.servers.iter().position(|s| s.base_url == session.base_url) {
+        Some(i) => {
+            file.servers[i] = session;
+            file.active = i;
+        }
+        None => {
+            file.servers.push(session);
+            file.active = file.servers.len() - 1;
+        }
+    }
+    save_servers(&file);
+    file
+}
+
+/// Update the saved copy of this session (matched by base_url) in place.
+pub fn update_saved_server(session: &Session) {
+    let mut file = load_servers();
+    if let Some(entry) = file.servers.iter_mut().find(|s| s.base_url == session.base_url) {
+        *entry = session.clone();
+        save_servers(&file);
+    }
+}
+
+pub fn remove_server(index: usize) -> ServersFile {
+    let mut file = load_servers();
+    if index < file.servers.len() {
+        file.servers.remove(index);
+    }
+    if file.active >= file.servers.len() {
+        file.active = file.servers.len().saturating_sub(1);
+    }
+    save_servers(&file);
+    file
+}
+
+pub async fn server_info(base_url: &str) -> Result<shared::ServerInfo, String> {
+    let base = normalize_base(base_url);
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/api/server/info"))
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
+pub async fn rename_server(session: &Session, name: String) -> Result<shared::ServerInfo, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/server/name", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::RenameServerRequest { name })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
 }
 
 // ---------- Local session persistence ----------
@@ -153,15 +265,26 @@ async fn auth_request(base_url: &str, path: &str, body: impl serde::Serialize) -
     handle(resp).await
 }
 
+async fn session_from_auth(base_url: &str, auth: AuthResponse) -> Session {
+    let info = server_info(base_url).await.ok();
+    Session {
+        base_url: normalize_base(base_url),
+        token: auth.token,
+        user: auth.user,
+        server_name: info.as_ref().map(|i| i.name.clone()).unwrap_or_else(default_server_name),
+        server_id: info.map(|i| i.id).unwrap_or_default(),
+    }
+}
+
 pub async fn login(base_url: &str, username: String, password: String) -> Result<Session, String> {
     let auth = auth_request(base_url, "login", LoginRequest { username, password }).await?;
-    Ok(Session { base_url: normalize_base(base_url), token: auth.token, user: auth.user })
+    Ok(session_from_auth(base_url, auth).await)
 }
 
 pub async fn register(base_url: &str, username: String, password: String, invite: String) -> Result<Session, String> {
     let invite = Some(invite.trim().to_owned()).filter(|s| !s.is_empty());
     let auth = auth_request(base_url, "register", RegisterRequest { username, password, invite }).await?;
-    Ok(Session { base_url: normalize_base(base_url), token: auth.token, user: auth.user })
+    Ok(session_from_auth(base_url, auth).await)
 }
 
 async fn get<T: serde::de::DeserializeOwned>(session: &Session, path: String) -> Result<T, String> {

@@ -165,6 +165,19 @@ pub struct CreateStickerRequest {
     pub url: String,
 }
 
+/// Public identity of a NotDiscord instance (GET /api/server/info).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerInfo {
+    /// Stable unique id generated at the instance's first boot.
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameServerRequest {
+    pub name: String,
+}
+
 /// One release's entry in GET /api/changelog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangelogEntry {
@@ -225,5 +238,6 @@ pub enum ServerEvent {
     StickerCreated { sticker: Sticker },
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
+    ServerRenamed { name: String },
     Error { message: String },
 }

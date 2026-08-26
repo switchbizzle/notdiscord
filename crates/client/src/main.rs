@@ -74,7 +74,8 @@ fn now_ms() -> i64 {
 
 #[component]
 fn App() -> Element {
-    let mut session = use_signal(|| None::<api::Session>);
+    let mut servers = use_context_provider(|| Signal::new(api::load_servers()));
+    let mut adding = use_signal(|| false);
     let mut restoring = use_signal(|| true);
     let window = use_window();
 
@@ -118,11 +119,22 @@ fn App() -> Element {
         });
     }
 
-    // Try to resume the saved session; the token is validated against /api/me.
+    // Resume the active saved server: validate the token and refresh the
+    // user + server identity.
     use_future(move || async move {
-        if let Some(saved) = api::load_session() {
-            if let Ok(user) = api::me(&saved).await {
-                session.set(Some(api::Session { user, ..saved }));
+        let active = servers.peek().active_session().cloned();
+        if let Some(saved) = active {
+            match api::me(&saved).await {
+                Ok(user) => {
+                    let mut refreshed = api::Session { user, ..saved };
+                    if let Ok(info) = api::server_info(&refreshed.base_url).await {
+                        refreshed.server_name = info.name;
+                        refreshed.server_id = info.id;
+                    }
+                    api::update_saved_server(&refreshed);
+                    servers.set(api::load_servers());
+                }
+                Err(_) => adding.set(true),
             }
         }
         restoring.set(false);
@@ -139,19 +151,78 @@ fn App() -> Element {
                 }
             }
         } else {
-            match session() {
-                Some(s) => rsx! { MainView { session: s, session_slot: session } },
-                None => rsx! { LoginView { session } },
+            {
+                let file = servers();
+                let active = file.active_session().cloned();
+                match active {
+                    Some(s) if !adding() => rsx! {
+                        div { class: "shell",
+                            ServerRail { adding }
+                            MainView { key: "{s.base_url}", session: s }
+                        }
+                    },
+                    _ => rsx! {
+                        div { class: "shell",
+                            if !file.servers.is_empty() {
+                                ServerRail { adding }
+                            }
+                            LoginView { adding }
+                        }
+                    },
+                }
             }
         }
     }
 }
 
+/// Discord-style far-left rail: one circle per saved server, + to add.
 #[component]
-fn LoginView(session: Signal<Option<api::Session>>) -> Element {
-    let mut base_url = use_signal(|| {
-        api::load_session()
-            .map(|s| s.base_url)
+fn ServerRail(adding: Signal<bool>) -> Element {
+    let mut servers = use_context::<Signal<api::ServersFile>>();
+    let file = servers();
+    rsx! {
+        div { class: "server-rail",
+            for (i, s) in file.servers.iter().enumerate() {
+                button {
+                    key: "{s.base_url}",
+                    class: if i == file.active && !adding() { "rail-server active" } else { "rail-server" },
+                    title: "{s.server_name} — {s.user.username}",
+                    style: "background: hsl({rail_hue(s)}, 55%, 42%)",
+                    onclick: move |_| {
+                        let mut file = api::load_servers();
+                        file.active = i;
+                        api::save_servers(&file);
+                        servers.set(file);
+                        adding.set(false);
+                    },
+                    {initial(&s.server_name)}
+                }
+            }
+            button {
+                class: "rail-add",
+                title: "Add a server",
+                onclick: move |_| adding.set(true),
+                "+"
+            }
+        }
+    }
+}
+
+fn rail_hue(session: &api::Session) -> i64 {
+    let seed: i64 = session.server_id.bytes().map(|b| b as i64).sum::<i64>()
+        + session.base_url.bytes().map(|b| b as i64).sum::<i64>();
+    (seed * 37) % 360
+}
+
+#[component]
+fn LoginView(adding: Signal<bool>) -> Element {
+    let mut servers = use_context::<Signal<api::ServersFile>>();
+    let mut base_url = use_signal(move || {
+        servers
+            .peek()
+            .active_session()
+            .filter(|_| !*adding.peek())
+            .map(|s| s.base_url.clone())
             .or_else(|| std::env::var("NOTDISCORD_SERVER").ok())
             .unwrap_or_else(|| "https://notdiscord.switchbhost.com".into())
     });
@@ -175,8 +246,8 @@ fn LoginView(session: Signal<Option<api::Session>>) -> Element {
             };
             match result {
                 Ok(s) => {
-                    api::save_session(&s);
-                    session.set(Some(s));
+                    servers.set(api::upsert_server(s));
+                    adding.set(false);
                 }
                 Err(e) => error.set(e),
             }
@@ -231,6 +302,13 @@ fn LoginView(session: Signal<Option<api::Session>>) -> Element {
                         "Register"
                     }
                 }
+                if adding() && !servers().servers.is_empty() {
+                    button {
+                        class: "login-cancel",
+                        onclick: move |_| adding.set(false),
+                        "cancel"
+                    }
+                }
             }
         }
     }
@@ -242,9 +320,10 @@ const TYPING_TTL_MS: i64 = 4000;
 const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 
 #[component]
-fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -> Element {
+fn MainView(session: api::Session) -> Element {
     let mut session = use_signal(move || session);
     use_context_provider(|| session);
+    let mut servers_file = use_context::<Signal<api::ServersFile>>();
     let mut lightbox = use_context_provider(|| Signal::new(None::<String>));
     let mut react_target = use_context_provider(|| Signal::new(None::<i64>));
     let mut channels = use_signal(Vec::<Channel>::new);
@@ -292,6 +371,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut editing_bio = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
     let mut settings_tab = use_signal(|| "voice");
+    let mut server_name_draft = use_signal(String::new);
     let mut audio_settings = use_signal(api::load_settings);
     let mut input_devices = use_signal(Vec::<String>::new);
     let mut output_devices = use_signal(Vec::<String>::new);
@@ -497,7 +577,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 if user.id == session().user.id {
                                     let mut s = session();
                                     s.user = user;
-                                    api::save_session(&s);
+                                    api::update_saved_server(&s);
                                     session.set(s);
                                 }
                             }
@@ -525,6 +605,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             }
                             ServerEvent::StickerDeleted { sticker_id } => {
                                 stickers.write().retain(|s| s.id != sticker_id);
+                            }
+                            ServerEvent::ServerRenamed { name } => {
+                                let mut s = session();
+                                s.server_name = name;
+                                api::update_saved_server(&s);
+                                session.set(s);
+                                servers_file.set(api::load_servers());
                             }
                             ServerEvent::ChannelDeleted { channel_id } => {
                                 channels.write().retain(|c| c.id != channel_id);
@@ -688,8 +775,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     };
 
     let logout = move |_| {
-        api::clear_session();
-        session_slot.set(None);
+        let active = api::load_servers().active;
+        servers_file.set(api::remove_server(active));
     };
 
     let selected_id = selected().map(|c| c.id);
@@ -820,6 +907,16 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 onclick: move |_| settings_tab.set("app"),
                                 "App"
                             }
+                            if session().user.role == "admin" {
+                                button {
+                                    class: if settings_tab() == "server" { "settings-tab active" } else { "settings-tab" },
+                                    onclick: move |_| {
+                                        server_name_draft.set(session().server_name);
+                                        settings_tab.set("server");
+                                    },
+                                    "Server"
+                                }
+                            }
                             button {
                                 class: "settings-close",
                                 onclick: move |_| settings_open.set(false),
@@ -827,7 +924,28 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             }
                         }
                         div { class: "settings-body",
-                            if settings_tab() == "voice" {
+                            if settings_tab() == "server" {
+                                label { "Server name" }
+                                input {
+                                    value: "{server_name_draft}",
+                                    oninput: move |e| server_name_draft.set(e.value()),
+                                }
+                                label { "Server ID" }
+                                div { class: "settings-value settings-mono", "{session().server_id}" }
+                                button {
+                                    class: "profile-btn primary",
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            match api::rename_server(&session(), server_name_draft()).await {
+                                                // The rename lands for everyone via broadcast.
+                                                Ok(_) => settings_open.set(false),
+                                                Err(e) => status.set(e),
+                                            }
+                                        });
+                                    },
+                                    "Save"
+                                }
+                            } else if settings_tab() == "voice" {
                                 label { "Microphone" }
                                 select {
                                     onchange: move |e| {
@@ -1217,7 +1335,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 }
             }
             div { class: "sidebar",
-                div { class: "sidebar-title", "NotDiscord" }
+                div { class: "sidebar-title", "{session().server_name}" }
                 div { class: "channel-list",
                     for channel in channels().into_iter().filter(|c| c.kind == "text") {
                         button {
