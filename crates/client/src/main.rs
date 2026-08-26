@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use shared::{Channel, ClientEvent, GifResult, Message, Profile, ServerEvent, UpdateProfileRequest, User, UserStatus};
+use shared::{Channel, ClientEvent, GifResult, Message, Profile, ServerEvent, Tag, UpdateProfileRequest, User, UserStatus};
 
 fn main() {
     // Clean up the previous binary left behind by a self-update.
@@ -334,6 +334,9 @@ fn MainView(session: api::Session) -> Element {
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
     let mut members = use_signal(Vec::<UserStatus>::new);
+    let mut tags = use_signal(Vec::<Tag>::new);
+    use_context_provider(|| members);
+    use_context_provider(|| tags);
     let mut has_more = use_signal(|| false);
     let mut loading_older = use_signal(|| false);
     let mut unread = use_signal(HashSet::<i64>::new);
@@ -373,6 +376,8 @@ fn MainView(session: api::Session) -> Element {
     let mut stickers = use_signal(Vec::<shared::Sticker>::new);
     let mut sticker_open = use_signal(|| false);
     let mut profile_card = use_signal(|| None::<Profile>);
+    let mut new_tag_name = use_signal(String::new);
+    let mut new_tag_color = use_signal(|| "#5865f2".to_string());
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
@@ -432,6 +437,13 @@ fn MainView(session: api::Session) -> Element {
     use_future(move || async move {
         if let Ok(list) = api::stickers(&session()).await {
             stickers.set(list);
+        }
+    });
+
+    // Load custom tags.
+    use_future(move || async move {
+        if let Ok(list) = api::tags(&session()).await {
+            tags.set(list);
         }
     });
 
@@ -592,7 +604,7 @@ fn MainView(session: api::Session) -> Element {
                                 match list.iter_mut().find(|m| m.user.id == user.id) {
                                     Some(entry) => entry.online = online,
                                     None => {
-                                        list.push(UserStatus { user, online, banned: false });
+                                        list.push(UserStatus { user, online, banned: false, tag_ids: Vec::new() });
                                         list.sort_by(|a, b| a.user.username.to_lowercase().cmp(&b.user.username.to_lowercase()));
                                     }
                                 }
@@ -635,6 +647,14 @@ fn MainView(session: api::Session) -> Element {
                                 api::update_saved_server(&s);
                                 session.set(s);
                                 servers_file.set(api::load_servers());
+                            }
+                            ServerEvent::TagsChanged => {
+                                if let Ok(list) = api::tags(&session()).await {
+                                    tags.set(list);
+                                }
+                                if let Ok(users) = api::users(&session()).await {
+                                    members.set(users);
+                                }
                             }
                             ServerEvent::ServerIconChanged { icon } => {
                                 let mut s = session();
@@ -1243,6 +1263,9 @@ fn MainView(session: api::Session) -> Element {
                             if profile.banned {
                                 span { class: "role-badge banned-badge", "BANNED" }
                             }
+                            for tag in profile.tags.iter() {
+                                span { class: "tag-pill", style: "background: {tag.color}", "{tag.name}" }
+                            }
                         }
                         div { class: "profile-joined", "Member since {format_date(profile.created_at)}" }
                         if editing_bio() {
@@ -1303,6 +1326,84 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     },
                                     "Message"
+                                }
+                            }
+                            if session().user.role == "admin" {
+                                div { class: "tag-manager",
+                                    div { class: "tag-manager-title", "Tags" }
+                                    for tag in tags() {
+                                        div { key: "{tag.id}", class: "tag-row",
+                                            label { class: "tag-assign",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked: profile.tags.iter().any(|t| t.id == tag.id),
+                                                    onchange: {
+                                                        let target = profile.user.id;
+                                                        let tag_id = tag.id;
+                                                        move |e: Event<FormData>| {
+                                                            let assigned = e.checked();
+                                                            spawn(async move {
+                                                                match api::assign_tag(&session(), target, tag_id, assigned).await {
+                                                                    Ok(()) => {
+                                                                        if let Ok(p) = api::profile(&session(), target).await {
+                                                                            profile_card.set(Some(p));
+                                                                        }
+                                                                    }
+                                                                    Err(e) => status.set(e),
+                                                                }
+                                                            });
+                                                        }
+                                                    },
+                                                }
+                                                span { class: "tag-pill", style: "background: {tag.color}", "{tag.name}" }
+                                            }
+                                            button {
+                                                class: "tag-delete",
+                                                title: "Delete this tag everywhere",
+                                                onclick: {
+                                                    let tag_id = tag.id;
+                                                    move |_| {
+                                                        spawn(async move {
+                                                            if let Err(e) = api::delete_tag(&session(), tag_id).await {
+                                                                status.set(e);
+                                                            }
+                                                        });
+                                                    }
+                                                },
+                                                "✕"
+                                            }
+                                        }
+                                    }
+                                    div { class: "tag-create",
+                                        input {
+                                            class: "tag-name-input",
+                                            placeholder: "new tag",
+                                            value: "{new_tag_name}",
+                                            oninput: move |e| new_tag_name.set(e.value()),
+                                        }
+                                        input {
+                                            r#type: "color",
+                                            class: "tag-color-input",
+                                            value: "{new_tag_color}",
+                                            oninput: move |e| new_tag_color.set(e.value()),
+                                        }
+                                        button {
+                                            class: "profile-btn",
+                                            onclick: move |_| {
+                                                let name = new_tag_name().trim().to_string();
+                                                if name.is_empty() {
+                                                    return;
+                                                }
+                                                spawn(async move {
+                                                    match api::create_tag(&session(), name, new_tag_color()).await {
+                                                        Ok(_) => new_tag_name.set(String::new()),
+                                                        Err(e) => status.set(e),
+                                                    }
+                                                });
+                                            },
+                                            "Add"
+                                        }
+                                    }
                                 }
                             }
                             if session().user.role == "admin" && profile.user.id != session().user.id {
@@ -2009,7 +2110,20 @@ fn MainView(session: api::Session) -> Element {
                             }
                         },
                         UserAvatar { user: member.user.clone(), class: "member-avatar" }
-                        span { class: "member-name", "{member.user.username}" }
+                        span {
+                            class: "member-name",
+                            style: "color: {name_color(member.user.id, &members(), &tags())}",
+                            "{member.user.username}"
+                        }
+                        for tag_id in member.tag_ids.iter().take(2) {
+                            if let Some(tag) = tags().iter().find(|t| t.id == *tag_id) {
+                                span {
+                                    class: "tag-pill",
+                                    style: "background: {tag.color}",
+                                    "{tag.name}"
+                                }
+                            }
+                        }
                         if member.banned {
                             span { class: "role-badge banned-badge", "BANNED" }
                         } else if member.user.role == "admin" {
@@ -2075,6 +2189,8 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut lightbox = use_context::<Signal<Option<String>>>();
     let mut react_target = use_context::<Signal<Option<i64>>>();
+    let members_ctx = use_context::<Signal<Vec<UserStatus>>>();
+    let tags_ctx = use_context::<Signal<Vec<Tag>>>();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
@@ -2135,7 +2251,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                     div { class: "msg-head",
                         span {
                             class: "msg-author",
-                            style: "color: hsl({hue}, 65%, 68%)",
+                            style: "color: {name_color(msg.author.id, &members_ctx(), &tags_ctx())}",
                             "{msg.author.username}"
                         }
                         span { class: "msg-time", {format_time(msg.created_at)} }
@@ -2234,6 +2350,17 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
 
 fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
+}
+
+/// Username display color: first assigned tag's color, else the avatar hue.
+fn name_color(user_id: i64, members: &[UserStatus], tags: &[Tag]) -> String {
+    members
+        .iter()
+        .find(|m| m.user.id == user_id)
+        .and_then(|m| m.tag_ids.first())
+        .and_then(|tid| tags.iter().find(|t| t.id == *tid))
+        .map(|t| t.color.clone())
+        .unwrap_or_else(|| format!("hsl({}, 65%, 68%)", avatar_hue(user_id)))
 }
 
 /// Live mic input level bar. Isolated so 10Hz meter ticks only re-render this.

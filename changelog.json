@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.15.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Custom tags! Admins can create colored role tags (any name, any color) and assign them from profile cards",
+      "Tags show as pills next to names, and your first tag's color becomes your username color in chat"
+    ]
+  },
+  {
     "version": "0.14.0",
     "date": "2026-08-26",
     "changes": [

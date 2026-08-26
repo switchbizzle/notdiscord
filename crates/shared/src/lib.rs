@@ -28,6 +28,8 @@ pub struct Profile {
     pub created_at: i64,
     #[serde(default)]
     pub banned: bool,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +100,31 @@ pub struct UserStatus {
     pub online: bool,
     #[serde(default)]
     pub banned: bool,
+    /// Ids of custom tags assigned to this user.
+    #[serde(default)]
+    pub tag_ids: Vec<i64>,
+}
+
+/// A custom cosmetic role: a named, colored badge admins assign to users.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    /// "#rrggbb"
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTagRequest {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignTagRequest {
+    pub user_id: i64,
+    pub tag_id: i64,
+    pub assigned: bool,
 }
 
 // ---------- REST request/response bodies ----------
@@ -264,6 +291,8 @@ pub enum ServerEvent {
     ChannelDeleted { channel_id: i64 },
     ServerRenamed { name: String },
     ServerIconChanged { icon: String },
+    /// Tags or assignments changed; clients refetch /api/tags and /api/users.
+    TagsChanged,
     /// Someone joined (Some) or left (None) a voice channel.
     VoiceStateChanged { user: User, channel_id: Option<i64> },
     /// Full voice occupancy, sent to a client right after it connects.

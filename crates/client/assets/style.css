@@ -898,6 +898,60 @@ input:focus { border-color: #5865f2; }
     letter-spacing: 0.5px;
 }
 .banned-badge { background: #f23f43; }
+.tag-pill {
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    letter-spacing: 0.3px;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+.tag-manager {
+    width: 100%;
+    background: #2b2d31;
+    border-radius: 8px;
+    padding: 10px;
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.tag-manager-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #949ba4;
+}
+.tag-row { display: flex; align-items: center; gap: 6px; }
+.tag-assign { display: flex; align-items: center; gap: 6px; cursor: pointer; flex: 1; }
+.tag-assign input { accent-color: #5865f2; }
+.tag-delete {
+    background: transparent;
+    color: #4e5058;
+    font-size: 11px;
+    padding: 2px 5px;
+    border-radius: 4px;
+}
+.tag-delete:hover { color: #f23f43; }
+.tag-create { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.tag-name-input {
+    flex: 1;
+    min-width: 0;
+    background: #1e1f22;
+    font-size: 12px;
+    padding: 5px 8px;
+}
+.tag-color-input {
+    width: 34px;
+    height: 28px;
+    padding: 2px;
+    background: #1e1f22;
+    border: 1px solid #111214;
+    border-radius: 5px;
+    cursor: pointer;
+}
 .profile-badges { display: flex; gap: 6px; }
 .profile-btn.danger { background: #6b2a2c; }
 .profile-btn.danger:hover { background: #f23f43; }

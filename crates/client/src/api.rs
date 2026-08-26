@@ -113,6 +113,44 @@ pub async fn server_info(base_url: &str) -> Result<shared::ServerInfo, String> {
     handle(resp).await
 }
 
+pub async fn tags(session: &Session) -> Result<Vec<shared::Tag>, String> {
+    get(session, "tags".into()).await
+}
+
+pub async fn create_tag(session: &Session, name: String, color: String) -> Result<shared::Tag, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/tags", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::CreateTagRequest { name, color })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
+pub async fn delete_tag(session: &Session, tag_id: i64) -> Result<(), String> {
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/tags/{tag_id}", session.base_url))
+        .bearer_auth(&session.token)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
+}
+
+pub async fn assign_tag(session: &Session, user_id: i64, tag_id: i64, assigned: bool) -> Result<(), String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/tags/assign", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::AssignTagRequest { user_id, tag_id, assigned })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
+}
+
 pub async fn get_retention(session: &Session) -> Result<shared::RetentionSetting, String> {
     get(session, "server/retention".into()).await
 }

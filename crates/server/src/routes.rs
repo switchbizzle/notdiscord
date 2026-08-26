@@ -9,9 +9,9 @@ use sqlx::Row;
 use shared::{
     AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest,
     CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest,
-    RenameServerRequest, RetentionSetting, ServerEvent, ServerInfo, SetBanRequest, SetRoleRequest,
-    SetServerIconRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus,
-    VoiceTokenResponse,
+    AssignTagRequest, CreateTagRequest, RenameServerRequest, RetentionSetting, ServerEvent,
+    ServerInfo, SetBanRequest, SetRoleRequest, SetServerIconRequest, Sticker, Tag,
+    UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -123,16 +123,116 @@ pub async fn list_users(
     .map_err(internal)?;
     let online: std::collections::HashSet<i64> =
         state.presence.lock().unwrap().keys().copied().collect();
+    let mut tag_map: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    for row in sqlx::query("SELECT user_id, tag_id FROM user_tags")
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?
+    {
+        tag_map.entry(row.get(0)).or_default().push(row.get(1));
+    }
     let users = rows
         .into_iter()
         .map(|r| {
             let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) };
             let banned: i64 = r.get(4);
             let is_online = online.contains(&user.id);
-            UserStatus { user, online: is_online, banned: banned != 0 }
+            let tag_ids = tag_map.remove(&user.id).unwrap_or_default();
+            UserStatus { user, online: is_online, banned: banned != 0, tag_ids }
         })
         .collect();
     Ok(Json(users))
+}
+
+pub async fn list_tags(State(state): State<SharedState>, _user: AuthUser) -> ApiResult<Json<Vec<Tag>>> {
+    let rows = sqlx::query("SELECT id, name, color FROM tags ORDER BY name COLLATE NOCASE")
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(rows.into_iter().map(|r| Tag { id: r.get(0), name: r.get(1), color: r.get(2) }).collect()))
+}
+
+fn valid_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+pub async fn create_tag(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<CreateTagRequest>,
+) -> ApiResult<Json<Tag>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let name = req.name.trim().to_owned();
+    if name.is_empty() || name.len() > 24 {
+        return Err(err(StatusCode::BAD_REQUEST, "tag name must be 1-24 characters"));
+    }
+    if !valid_color(&req.color) {
+        return Err(err(StatusCode::BAD_REQUEST, "color must be #rrggbb"));
+    }
+    let result = sqlx::query("INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)")
+        .bind(&name)
+        .bind(&req.color)
+        .bind(now_ms())
+        .execute(&state.db)
+        .await;
+    let id = match result {
+        Ok(r) => r.last_insert_rowid(),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(err(StatusCode::CONFLICT, "tag already exists"));
+        }
+        Err(e) => return Err(internal(e)),
+    };
+    state.broadcast(ServerEvent::TagsChanged);
+    Ok(Json(Tag { id, name, color: req.color }))
+}
+
+pub async fn delete_tag(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(tag_id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    sqlx::query("DELETE FROM tags WHERE id = ?")
+        .bind(tag_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::TagsChanged);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn assign_tag(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<AssignTagRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    load_user(&state, req.user_id).await?;
+    if req.assigned {
+        sqlx::query("INSERT OR IGNORE INTO user_tags (user_id, tag_id) VALUES (?, ?)")
+            .bind(req.user_id)
+            .bind(req.tag_id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    } else {
+        sqlx::query("DELETE FROM user_tags WHERE user_id = ? AND tag_id = ?")
+            .bind(req.user_id)
+            .bind(req.tag_id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    }
+    state.broadcast(ServerEvent::TagsChanged);
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn owner_id(state: &SharedState) -> ApiResult<i64> {
@@ -262,11 +362,23 @@ pub async fn get_profile(
         return Err(err(StatusCode::NOT_FOUND, "no such user"));
     };
     let banned: i64 = row.get(6);
+    let tags = sqlx::query(
+        "SELECT t.id, t.name, t.color FROM user_tags ut JOIN tags t ON t.id = ut.tag_id \
+         WHERE ut.user_id = ? ORDER BY t.name COLLATE NOCASE",
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?
+    .into_iter()
+    .map(|r| Tag { id: r.get(0), name: r.get(1), color: r.get(2) })
+    .collect();
     Ok(Json(Profile {
         user: User { id: row.get(0), username: row.get(1), avatar: row.get(2), role: row.get(5) },
         bio: row.get(3),
         created_at: row.get(4),
         banned: banned != 0,
+        tags,
     }))
 }
 
