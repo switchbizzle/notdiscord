@@ -47,6 +47,16 @@ pub struct Settings {
     /// Per-participant playback volume (1.0 = 100%), keyed by voice identity.
     #[serde(default)]
     pub volumes: std::collections::HashMap<String, f32>,
+    /// Own microphone gain (1.0 = 100%).
+    #[serde(default = "one")]
+    pub input_volume: f32,
+    /// Master voice output gain (1.0 = 100%).
+    #[serde(default = "one")]
+    pub output_volume: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 fn settings_path() -> Option<std::path::PathBuf> {
@@ -57,7 +67,7 @@ pub fn load_settings() -> Settings {
     settings_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+        .unwrap_or_else(|| Settings { input_volume: 1.0, output_volume: 1.0, ..Default::default() })
 }
 
 pub fn save_settings(settings: &Settings) {

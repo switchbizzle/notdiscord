@@ -185,7 +185,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut gif_status = use_signal(String::new);
     let mut status = use_signal(|| "connecting…".to_string());
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
-    let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status));
+    let mic_level = use_signal_sync(|| 0.0f32);
+    let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status, mic_level));
     let mut update_available = use_signal(|| None::<shared::ClientVersionInfo>);
     let mut updating = use_signal(|| false);
     let mut stickers = use_signal(Vec::<shared::Sticker>::new);
@@ -215,12 +216,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
         });
     };
 
-    // Check for a newer client build on the server.
+    // Check for a newer client build on the server, at launch and periodically.
     use_future(move || async move {
-        if let Ok(info) = api::client_version(&session()).await {
-            if info.version != env!("CARGO_PKG_VERSION") {
-                update_available.set(Some(info));
+        loop {
+            if let Ok(info) = api::client_version(&session()).await {
+                if info.version != env!("CARGO_PKG_VERSION") {
+                    update_available.set(Some(info));
+                }
             }
+            tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
         }
     });
 
@@ -787,6 +791,38 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                         "{name}"
                                     }
                                 }
+                            }
+                            label { "Mic volume · {(audio_settings().input_volume * 100.0) as i32}%" }
+                            input {
+                                r#type: "range",
+                                class: "settings-slider",
+                                min: "0",
+                                max: "200",
+                                value: "{(audio_settings().input_volume * 100.0) as i32}",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<f32>() {
+                                        audio_settings.write().input_volume = v / 100.0;
+                                        voice.send(voice::VoiceCmd::SetMicVolume(v / 100.0));
+                                    }
+                                },
+                            }
+                            MicMeter { level: mic_level }
+                            if voice_status().channel_id.is_none() {
+                                div { class: "settings-hint", "join a voice channel to test your mic" }
+                            }
+                            label { "Output volume · {(audio_settings().output_volume * 100.0) as i32}%" }
+                            input {
+                                r#type: "range",
+                                class: "settings-slider",
+                                min: "0",
+                                max: "200",
+                                value: "{(audio_settings().output_volume * 100.0) as i32}",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<f32>() {
+                                        audio_settings.write().output_volume = v / 100.0;
+                                        voice.send(voice::VoiceCmd::SetMasterVolume(v / 100.0));
+                                    }
+                                },
                             }
                         }
                     }
@@ -1403,6 +1439,17 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
 
 fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
+}
+
+/// Live mic input level bar. Isolated so 10Hz meter ticks only re-render this.
+#[component]
+fn MicMeter(level: voice::MicLevelSignal) -> Element {
+    let pct = (level() * 100.0).clamp(0.0, 100.0);
+    rsx! {
+        div { class: "mic-meter",
+            div { class: "mic-meter-fill", style: "width: {pct}%" }
+        }
+    }
 }
 
 /// Avatar image if the user has one, else a colored initial circle.
