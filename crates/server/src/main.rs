@@ -65,9 +65,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
         .route(
             "/api/upload",
-            post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+            post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
-        .route("/files/{name}", get(routes::serve_file))
+        .route("/files/{name}", get(routes::serve_file_legacy))
+        .route("/files/{id}/{name}", get(routes::serve_file))
         .route("/ws", any(ws::ws_handler))
         .with_state(state);
 

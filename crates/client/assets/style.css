@@ -314,3 +314,26 @@ input:focus { border-color: #5865f2; }
     border-radius: 8px;
     margin-top: 4px;
 }
+
+.msg-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+    padding: 10px 14px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 420px;
+}
+.msg-file:hover { border-color: #5865f2; }
+.msg-file-icon { font-size: 22px; }
+.msg-file-name {
+    color: #00a8fc;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.msg-file-dl { color: #949ba4; font-size: 12px; flex-shrink: 0; }

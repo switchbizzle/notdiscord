@@ -431,12 +431,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 div { class: "compose",
                     button {
                         class: "attach",
-                        title: "Upload an image or GIF",
+                        title: "Upload a file, image, or GIF",
                         disabled: uploading(),
                         onclick: move |_| {
                             let Some(channel) = selected() else { return };
                             spawn(async move {
                                 let Some(file) = rfd::AsyncFileDialog::new()
+                                    .add_filter("All files", &["*"])
                                     .add_filter("Images", &["gif", "png", "jpg", "jpeg", "webp"])
                                     .pick_file()
                                     .await
@@ -445,8 +446,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 };
                                 let name = file.file_name();
                                 let bytes = file.read().await;
-                                if bytes.len() > 10 * 1024 * 1024 {
-                                    status.set("image too large (max 10 MB)".into());
+                                if bytes.len() > 50 * 1024 * 1024 {
+                                    status.set("file too large (max 50 MB)".into());
                                     return;
                                 }
                                 uploading.set(true);
@@ -508,34 +509,37 @@ fn group_messages(messages: &[Message]) -> Vec<(Message, bool)> {
     out
 }
 
-/// Split a message into image URLs (rendered inline) and remaining text.
-fn extract_images(content: &str) -> (Vec<String>, String) {
-    let is_image_url = |word: &str| {
-        (word.starts_with("http://") || word.starts_with("https://"))
-            && ["gif", "png", "jpg", "jpeg", "webp"]
-                .iter()
-                .any(|ext| word.to_lowercase().ends_with(&format!(".{ext}")))
+/// Split a message into inline image URLs, file-attachment URLs, and text.
+fn extract_media(content: &str) -> (Vec<String>, Vec<String>, String) {
+    let is_url = |w: &str| w.starts_with("http://") || w.starts_with("https://");
+    let is_image = |w: &str| {
+        ["gif", "png", "jpg", "jpeg", "webp"]
+            .iter()
+            .any(|ext| w.to_lowercase().ends_with(&format!(".{ext}")))
     };
     let mut images = Vec::new();
+    let mut files = Vec::new();
     let mut rest = Vec::new();
     for word in content.split_whitespace() {
-        if is_image_url(word) {
+        if is_url(word) && is_image(word) {
             images.push(word.to_owned());
+        } else if is_url(word) && word.contains("/files/") {
+            files.push(word.to_owned());
         } else {
             rest.push(word);
         }
     }
-    if images.is_empty() {
-        (images, content.to_owned())
+    if images.is_empty() && files.is_empty() {
+        (images, files, content.to_owned())
     } else {
-        (images, rest.join(" "))
+        (images, files, rest.join(" "))
     }
 }
 
 #[component]
 fn MessageRow(msg: Message, compact: bool) -> Element {
     let hue = avatar_hue(msg.author.id);
-    let (images, text) = extract_images(&msg.content);
+    let (images, files, text) = extract_media(&msg.content);
     rsx! {
         div { class: if compact { "msg compact" } else { "msg" },
             if compact {
@@ -563,6 +567,24 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                 }
                 for (i, src) in images.into_iter().enumerate() {
                     img { key: "{i}", class: "msg-img", src: "{src}", loading: "lazy" }
+                }
+                for (i, url) in files.into_iter().enumerate() {
+                    {
+                        let filename = url.rsplit('/').next().unwrap_or("file").to_owned();
+                        rsx! {
+                            div {
+                                key: "f{i}",
+                                class: "msg-file",
+                                title: "Download {filename}",
+                                onclick: move |_| {
+                                    let _ = open::that(&url);
+                                },
+                                span { class: "msg-file-icon", "📄" }
+                                span { class: "msg-file-name", "{filename}" }
+                                span { class: "msg-file-dl", "Download" }
+                            }
+                        }
+                    }
                 }
             }
         }

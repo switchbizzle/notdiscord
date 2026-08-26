@@ -150,7 +150,28 @@ pub async fn create_channel(
     Ok(Json(channel))
 }
 
-const IMAGE_EXTENSIONS: &[&str] = &["gif", "png", "jpg", "jpeg", "webp"];
+fn sanitize_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .collect();
+    let cleaned = cleaned.trim_matches('.').to_owned();
+    let mut out: String = cleaned.chars().take(64).collect();
+    if out.is_empty() {
+        out = "file".into();
+    }
+    out
+}
+
+fn image_content_type(name: &str) -> Option<&'static str> {
+    match name.rsplit('.').next().unwrap_or_default().to_lowercase().as_str() {
+        "gif" => Some("image/gif"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
 
 #[derive(Deserialize)]
 pub struct UploadQuery {
@@ -163,57 +184,70 @@ pub async fn upload(
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> ApiResult<Json<UploadResponse>> {
-    let ext = q
-        .name
-        .rsplit('.')
-        .next()
-        .map(str::to_lowercase)
-        .unwrap_or_default();
-    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-        return Err(err(StatusCode::BAD_REQUEST, "only gif/png/jpg/webp uploads are supported"));
-    }
     if body.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "empty upload"));
     }
 
+    let name = sanitize_filename(&q.name);
     let mut id = [0u8; 16];
     getrandom::fill(&mut id).expect("os rng");
-    let filename = format!("{}.{ext}", hex::encode(id));
-    let path = crate::uploads_dir().join(&filename);
-    tokio::fs::write(&path, &body).await.map_err(internal)?;
+    let id = hex::encode(id);
 
-    Ok(Json(UploadResponse { url: format!("/files/{filename}") }))
+    let dir = crate::uploads_dir().join(&id);
+    tokio::fs::create_dir_all(&dir).await.map_err(internal)?;
+    tokio::fs::write(dir.join(&name), &body).await.map_err(internal)?;
+
+    Ok(Json(UploadResponse { url: format!("/files/{id}/{name}") }))
 }
 
-pub async fn serve_file(Path(name): Path<String>) -> Response {
-    // Only names we generate: 32 hex chars, a dot, a short lowercase extension.
+fn file_response(path: std::path::PathBuf, name: &str) -> impl std::future::Future<Output = Response> + Send + 'static {
+    let name = name.to_owned();
+    async move {
+        let Ok(bytes) = tokio::fs::read(path).await else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let mut headers = vec![
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ];
+        match image_content_type(&name) {
+            Some(ct) => headers.push((header::CONTENT_TYPE, ct.to_owned())),
+            None => {
+                headers.push((header::CONTENT_TYPE, "application/octet-stream".to_owned()));
+                headers.push((
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{name}\""),
+                ));
+            }
+        }
+        let mut resp = bytes.into_response();
+        for (key, value) in headers {
+            if let Ok(value) = value.parse() {
+                resp.headers_mut().insert(key, value);
+            }
+        }
+        resp
+    }
+}
+
+/// Current format: /files/{32-hex id}/{sanitized original filename}.
+pub async fn serve_file(Path((id, name)): Path<(String, String)>) -> Response {
+    let id_ok = id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+    if !id_ok || name != sanitize_filename(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    file_response(crate::uploads_dir().join(&id).join(&name), &name).await
+}
+
+/// Legacy format from the first uploads release: /files/{32-hex}.{ext}.
+pub async fn serve_file_legacy(Path(name): Path<String>) -> Response {
     let valid = name.len() < 40
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
         && name.matches('.').count() == 1;
     if !valid {
         return StatusCode::NOT_FOUND.into_response();
     }
-
-    let ext = name.rsplit('.').next().unwrap_or_default();
-    let content_type = match ext {
-        "gif" => "image/gif",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        _ => "application/octet-stream",
-    };
-
-    match tokio::fs::read(crate::uploads_dir().join(&name)).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, content_type),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    file_response(crate::uploads_dir().join(&name), &name).await
 }
 
 #[derive(Deserialize)]
