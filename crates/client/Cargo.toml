@@ -1,6 +1,6 @@
 ﻿[package]
 name = "client"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 
 [dependencies]
@@ -11,7 +11,7 @@ tokio = { workspace = true }
 futures-util = { workspace = true }
 anyhow = { workspace = true }
 dioxus = { version = "0.7", features = ["desktop"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 chrono = "0.4"
 dirs = "6"

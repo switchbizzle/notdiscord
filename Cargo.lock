@@ -5754,12 +5754,14 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]
@@ -6153,6 +6155,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

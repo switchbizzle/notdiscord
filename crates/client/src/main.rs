@@ -230,6 +230,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status, mic_level));
     let mut update_available = use_signal(|| None::<shared::ClientVersionInfo>);
     let mut updating = use_signal(|| false);
+    let mut update_progress = use_signal(|| 0.0f32);
     let mut stickers = use_signal(Vec::<shared::Sticker>::new);
     let mut sticker_open = use_signal(|| false);
     let mut profile_card = use_signal(|| None::<Profile>);
@@ -650,7 +651,19 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 div { class: "update-overlay",
                     div { class: "spinner" }
                     div { class: "update-overlay-title", "Updating NotDiscord…" }
-                    div { class: "update-overlay-sub", "downloading and restarting, hang tight" }
+                    div { class: "update-overlay-sub",
+                        if update_progress() > 0.0 {
+                            "downloading — {(update_progress() * 100.0) as i32}%"
+                        } else {
+                            "connecting…"
+                        }
+                    }
+                    div { class: "update-bar",
+                        div {
+                            class: "update-bar-fill",
+                            style: "width: {(update_progress() * 100.0).clamp(0.0, 100.0)}%",
+                        }
+                    }
                 }
             }
             if let Some(profile) = profile_card() {
@@ -1106,24 +1119,18 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     voice.send(voice::VoiceCmd::Leave);
                                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 }
+                                update_progress.set(0.0);
                                 let url = format!("{}{}", session().base_url, info.url);
-                                let result = async {
-                                    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-                                    if !resp.status().is_success() {
-                                        return Err(format!("download failed ({})", resp.status()));
-                                    }
-                                    resp.bytes().await.map_err(|e| e.to_string())
-                                }
-                                .await;
+                                let result = download_with_progress(&url, update_progress).await;
                                 match result {
                                     Ok(bytes) => {
-                                        if let Err(e) = apply_self_update(bytes.to_vec()) {
+                                        if let Err(e) = apply_self_update(bytes) {
                                             status.set(e);
                                             updating.set(false);
                                         }
                                     }
                                     Err(e) => {
-                                        status.set(format!("update failed: {e}"));
+                                        status.set(format!("update failed: {e} — click the banner to retry"));
                                         updating.set(false);
                                     }
                                 }
@@ -1696,6 +1703,44 @@ fn play_notification_sound() {}
 
 fn initial(username: &str) -> String {
     username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+}
+
+/// Download with per-chunk stall detection: 30s without a byte fails the
+/// download instead of hanging forever.
+async fn download_with_progress(url: &str, mut progress: Signal<f32>) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed ({})", resp.status()));
+    }
+    let total = resp.content_length();
+    let mut stream = resp.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(30), stream.next())
+            .await
+            .map_err(|_| "download stalled (no data for 30s)".to_string())?;
+        match chunk {
+            Some(Ok(data)) => {
+                bytes.extend_from_slice(&data);
+                if let Some(total) = total.filter(|t| *t > 0) {
+                    progress.set(bytes.len() as f32 / total as f32);
+                }
+            }
+            Some(Err(e)) => return Err(e.to_string()),
+            None => break,
+        }
+    }
+    if let Some(total) = total {
+        if (bytes.len() as u64) < total {
+            return Err("download ended early".into());
+        }
+    }
+    Ok(bytes)
 }
 
 /// Replace the running executable with `new_exe_bytes` and restart.

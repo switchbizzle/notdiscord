@@ -482,6 +482,27 @@ pub struct FileQuery {
     pub dl: Option<String>,
 }
 
+/// Stream a file from disk with backpressure (no whole-file buffering).
+async fn stream_file(path: std::path::PathBuf, headers: Vec<(header::HeaderName, String)>) -> Response {
+    let Ok(file) = tokio::fs::File::open(&path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let len = file.metadata().await.ok().map(|m| m.len());
+    let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+    let mut resp = Response::new(axum::body::Body::from_stream(stream));
+    if let Some(len) = len {
+        if let Ok(value) = len.to_string().parse() {
+            resp.headers_mut().insert(header::CONTENT_LENGTH, value);
+        }
+    }
+    for (key, value) in headers {
+        if let Ok(value) = value.parse() {
+            resp.headers_mut().insert(key, value);
+        }
+    }
+    resp
+}
+
 fn file_response(
     path: std::path::PathBuf,
     name: &str,
@@ -489,9 +510,6 @@ fn file_response(
 ) -> impl std::future::Future<Output = Response> + Send + 'static {
     let name = name.to_owned();
     async move {
-        let Ok(bytes) = tokio::fs::read(path).await else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
         let mut headers = vec![
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
@@ -507,13 +525,7 @@ fn file_response(
                 ));
             }
         }
-        let mut resp = bytes.into_response();
-        for (key, value) in headers {
-            if let Ok(value) = value.parse() {
-                resp.headers_mut().insert(key, value);
-            }
-        }
-        resp
+        stream_file(path, headers).await
     }
 }
 
@@ -617,19 +629,16 @@ pub async fn client_version() -> Result<Json<ClientVersionInfo>, StatusCode> {
     Ok(Json(ClientVersionInfo { version: version.trim().to_owned(), url: "/download".into() }))
 }
 
-/// Public: download the current client build.
+/// Public: download the current client build (streamed).
 pub async fn download_client() -> Response {
-    match tokio::fs::read(client_dir().join("NotDiscord.exe")).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
-                (header::CONTENT_DISPOSITION, "attachment; filename=\"NotDiscord.exe\"".to_owned()),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    stream_file(
+        client_dir().join("NotDiscord.exe"),
+        vec![
+            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"NotDiscord.exe\"".to_owned()),
+        ],
+    )
+    .await
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,4 @@
+# The prebuilt libwebrtc (webrtc-sys) is compiled with the static MSVC CRT;
+# every Windows build must match or linking fails with LNK2038.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

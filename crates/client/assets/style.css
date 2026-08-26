@@ -475,6 +475,18 @@ input:focus { border-color: #5865f2; }
 }
 .update-overlay-title { color: #fff; font-size: 20px; font-weight: 700; }
 .update-overlay-sub { color: #949ba4; font-size: 13px; }
+.update-bar {
+    width: 260px;
+    height: 8px;
+    border-radius: 4px;
+    background: #232428;
+    overflow: hidden;
+}
+.update-bar-fill {
+    height: 100%;
+    background: #23a55a;
+    transition: width 0.15s linear;
+}
 
 .main {
     flex: 1;
