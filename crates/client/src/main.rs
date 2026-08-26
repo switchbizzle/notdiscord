@@ -1316,30 +1316,31 @@ fn group_messages(messages: &[Message]) -> Vec<(Message, bool)> {
     out
 }
 
-/// Split a message into inline image URLs, file-attachment URLs, and text.
-fn extract_media(content: &str) -> (Vec<String>, Vec<String>, String) {
+/// Split a message into inline images, inline videos, file attachments, and text.
+fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<String>, String) {
     let is_url = |w: &str| w.starts_with("http://") || w.starts_with("https://");
-    let is_image = |w: &str| {
-        ["gif", "png", "jpg", "jpeg", "webp"]
-            .iter()
-            .any(|ext| w.to_lowercase().ends_with(&format!(".{ext}")))
+    let has_ext = |w: &str, exts: &[&str]| {
+        exts.iter().any(|ext| w.to_lowercase().ends_with(&format!(".{ext}")))
     };
     let mut images = Vec::new();
+    let mut videos = Vec::new();
     let mut files = Vec::new();
     let mut rest = Vec::new();
     for word in content.split_whitespace() {
-        if is_url(word) && is_image(word) {
+        if is_url(word) && has_ext(word, &["gif", "png", "jpg", "jpeg", "webp"]) {
             images.push(word.to_owned());
+        } else if is_url(word) && has_ext(word, &["webm", "mp4", "mov"]) {
+            videos.push(word.to_owned());
         } else if is_url(word) && word.contains("/files/") {
             files.push(word.to_owned());
         } else {
             rest.push(word);
         }
     }
-    if images.is_empty() && files.is_empty() {
-        (images, files, content.to_owned())
+    if images.is_empty() && videos.is_empty() && files.is_empty() {
+        (images, videos, files, content.to_owned())
     } else {
-        (images, files, rest.join(" "))
+        (images, videos, files, rest.join(" "))
     }
 }
 
@@ -1357,7 +1358,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let mut edit_draft = use_signal(String::new);
 
     let hue = avatar_hue(msg.author.id);
-    let (images, files, text) = extract_media(&msg.content);
+    let (images, videos, files, text) = extract_media(&msg.content);
     let me_id = session().user.id;
     let own = msg.author.id == me_id;
     let msg_id = msg.id;
@@ -1453,6 +1454,18 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                             let src = src.clone();
                             move |_| lightbox.set(Some(src.clone()))
                         },
+                    }
+                }
+                for (i, src) in videos.into_iter().enumerate() {
+                    video {
+                        key: "v{i}",
+                        class: "msg-video",
+                        src: "{src}",
+                        autoplay: true,
+                        muted: true,
+                        r#loop: true,
+                        controls: true,
+                        preload: "metadata",
                     }
                 }
                 for (i, url) in files.into_iter().enumerate() {

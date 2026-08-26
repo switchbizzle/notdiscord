@@ -303,12 +303,16 @@ fn sanitize_filename(name: &str) -> String {
     out
 }
 
-fn image_content_type(name: &str) -> Option<&'static str> {
+/// Media types safe to serve inline (rendered by the client / a browser).
+fn inline_content_type(name: &str) -> Option<&'static str> {
     match name.rsplit('.').next().unwrap_or_default().to_lowercase().as_str() {
         "gif" => Some("image/gif"),
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "webp" => Some("image/webp"),
+        "webm" => Some("video/webm"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
         _ => None,
     }
 }
@@ -360,8 +364,8 @@ fn file_response(
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
         ];
-        let inline_image = image_content_type(&name).filter(|_| !force_download);
-        match inline_image {
+        let inline_media = inline_content_type(&name).filter(|_| !force_download);
+        match inline_media {
             Some(ct) => headers.push((header::CONTENT_TYPE, ct.to_owned())),
             None => {
                 headers.push((header::CONTENT_TYPE, "application/octet-stream".to_owned()));

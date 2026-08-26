@@ -811,6 +811,15 @@ input:focus { border-color: #5865f2; }
 .gif-cell:hover { outline: 2px solid #5865f2; }
 .gif-btn { font-size: 13px; letter-spacing: 0.5px; }
 
+.msg-video {
+    display: block;
+    max-width: min(480px, 100%);
+    max-height: 340px;
+    border-radius: 8px;
+    margin-top: 4px;
+    background: #000;
+}
+
 .msg-file {
     display: inline-flex;
     align-items: center;
