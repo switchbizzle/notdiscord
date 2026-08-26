@@ -8,7 +8,7 @@ use sqlx::Row;
 
 use shared::{
     AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message,
-    RegisterRequest, ServerEvent, UploadResponse, User, UserStatus,
+    RegisterRequest, ServerEvent, UploadResponse, User, UserStatus, VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -117,15 +117,91 @@ pub async fn list_channels(
     State(state): State<SharedState>,
     _user: AuthUser,
 ) -> ApiResult<Json<Vec<Channel>>> {
-    let rows = sqlx::query("SELECT id, name FROM channels ORDER BY id")
+    let rows = sqlx::query("SELECT id, name, kind FROM channels ORDER BY id")
         .fetch_all(&state.db)
         .await
         .map_err(internal)?;
     let channels = rows
         .into_iter()
-        .map(|r| Channel { id: r.get(0), name: r.get(1) })
+        .map(|r| Channel { id: r.get(0), name: r.get(1), kind: r.get(2) })
         .collect();
     Ok(Json(channels))
+}
+
+#[derive(Deserialize)]
+pub struct VoiceTokenQuery {
+    pub channel_id: i64,
+}
+
+#[derive(serde::Serialize)]
+struct LiveKitVideoGrant {
+    room: String,
+    #[serde(rename = "roomJoin")]
+    room_join: bool,
+    #[serde(rename = "canPublish")]
+    can_publish: bool,
+    #[serde(rename = "canSubscribe")]
+    can_subscribe: bool,
+}
+
+#[derive(serde::Serialize)]
+struct LiveKitClaims {
+    iss: String,
+    sub: String,
+    name: String,
+    nbf: i64,
+    exp: i64,
+    video: LiveKitVideoGrant,
+}
+
+/// Mint a LiveKit access token for a voice channel.
+pub async fn voice_token(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<VoiceTokenQuery>,
+) -> ApiResult<Json<VoiceTokenResponse>> {
+    let (Ok(api_key), Ok(api_secret), Ok(url)) = (
+        std::env::var("LIVEKIT_API_KEY"),
+        std::env::var("LIVEKIT_API_SECRET"),
+        std::env::var("LIVEKIT_URL"),
+    ) else {
+        return Err(err(StatusCode::SERVICE_UNAVAILABLE, "voice is not configured on the server"));
+    };
+
+    let row = sqlx::query("SELECT kind FROM channels WHERE id = ?")
+        .bind(q.channel_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    match row {
+        Some(r) if r.get::<String, _>(0) == "voice" => {}
+        Some(_) => return Err(err(StatusCode::BAD_REQUEST, "not a voice channel")),
+        None => return Err(err(StatusCode::NOT_FOUND, "no such channel")),
+    }
+
+    let room = format!("channel-{}", q.channel_id);
+    let now = now_ms() / 1000;
+    let claims = LiveKitClaims {
+        iss: api_key,
+        sub: format!("user-{}", user.id),
+        name: user.username.clone(),
+        nbf: now - 10,
+        exp: now + 6 * 3600,
+        video: LiveKitVideoGrant {
+            room: room.clone(),
+            room_join: true,
+            can_publish: true,
+            can_subscribe: true,
+        },
+    };
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(api_secret.as_bytes()),
+    )
+    .map_err(internal)?;
+
+    Ok(Json(VoiceTokenResponse { url, token, room }))
 }
 
 pub async fn create_channel(
@@ -152,7 +228,7 @@ pub async fn create_channel(
         Err(e) => return Err(internal(e)),
     };
 
-    let channel = Channel { id, name };
+    let channel = Channel { id, name, kind: "text".into() };
     let _ = state.events.send(ServerEvent::ChannelCreated { channel: channel.clone() });
     Ok(Json(channel))
 }

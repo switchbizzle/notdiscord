@@ -15,6 +15,13 @@ pub struct User {
 pub struct Channel {
     pub id: i64,
     pub name: String,
+    /// "text" or "voice".
+    #[serde(default = "default_channel_kind")]
+    pub kind: String,
+}
+
+fn default_channel_kind() -> String {
+    "text".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +88,17 @@ pub struct ApiError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadResponse {
     pub url: String,
+}
+
+/// Response from GET /api/voice/token: credentials to join a LiveKit voice room.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceTokenResponse {
+    /// LiveKit server URL (wss://…).
+    pub url: String,
+    /// Access JWT scoped to the room.
+    pub token: String,
+    /// Room name (derived from the channel).
+    pub room: String,
 }
 
 /// One GIF search result from GET /api/gifs.
