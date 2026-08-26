@@ -1,4 +1,4 @@
-﻿[
+[
   {
     "version": "0.20.1",
     "date": "2026-08-26",
@@ -11,7 +11,7 @@
     "version": "0.20.0",
     "date": "2026-08-26",
     "changes": [
-      "Private calls! Open a DM and hit the phone button â€” your friend gets a ring and a Join/Ignore card",
+      "Private calls! Open a DM and hit the phone button — your friend gets a ring and a Join/Ignore card",
       "Calls are fully private: the rest of the server can't even see one is happening",
       "DMs with a live call show a green phone in the sidebar"
     ]
@@ -20,7 +20,7 @@
     "version": "0.19.0",
     "date": "2026-08-26",
     "changes": [
-      "Mic sensitivity slider â€” voice activity now only transmits when you speak above the threshold (marker shown on the mic meter; 0 = classic open mic)",
+      "Mic sensitivity slider — voice activity now only transmits when you speak above the threshold (marker shown on the mic meter; 0 = classic open mic)",
       "Join/leave blips when people enter or exit your voice channel (toggle in settings)"
     ]
   },
@@ -28,8 +28,8 @@
     "version": "0.18.0",
     "date": "2026-08-26",
     "changes": [
-      "Replies! Hover a message â†’ â†© to reply; click the reference line on any reply to jump to the original",
-      "@ mention autocomplete â€” type @ and pick with arrows + Enter/Tab"
+      "Replies! Hover a message → reply; click the reference line on any reply to jump to the original",
+      "@ mention autocomplete — type @ and pick with arrows + Enter/Tab"
     ]
   },
   {
@@ -41,25 +41,12 @@
     ]
   },
   {
-    "version": "0.16.2",
+    "version": "0.16.x",
     "date": "2026-08-26",
     "changes": [
-      "Better on flaky connections: requests now retry automatically instead of instantly failing with 'cannot reach server'"
-    ]
-  },
-  {
-    "version": "0.16.1",
-    "date": "2026-08-26",
-    "changes": [
-      "Fixed: the tray menu's Quit (and Open) actually work now"
-    ]
-  },
-  {
-    "version": "0.16.0",
-    "date": "2026-08-26",
-    "changes": [
-      "Message search! The box in the top-right searches all history â€” Enter to search, click a result to jump to it",
-      "Your DMs are only searchable by you"
+      "Message search! The box in the top-right searches all history — click a result to jump to it",
+      "Your DMs are only searchable by you",
+      "Fixed the tray menu; requests retry automatically on flaky connections"
     ]
   },
   {
@@ -74,17 +61,17 @@
     "version": "0.14.0",
     "date": "2026-08-26",
     "changes": [
-      "Create voice channels! Click the # next to the new-channel box to switch it to ðŸ”Š",
+      "Create voice channels! Click the # next to the new-channel box to switch it to voice",
       "New notification sound: a proper ba-bloop instead of the Windows ding (for Jon)",
-      "Server icons: admins can set one in Settings â†’ Server â€” shows in the server rail"
+      "Server icons: admins can set one in Settings → Server — shows in the server rail"
     ]
   },
   {
     "version": "0.13.0",
     "date": "2026-08-26",
     "changes": [
-      "Uploads now expire to keep the server's disk in check â€” 3 weeks by default",
-      "Admins can pick the retention window in Settings â†’ Server (3 weeks / 1 / 2 / 3 months)",
+      "Uploads now expire to keep the server's disk in check — 3 weeks by default",
+      "Admins can pick the retention window in Settings → Server (3 weeks / 1 / 2 / 3 months)",
       "Avatars and stickers never expire"
     ]
   },
@@ -93,16 +80,15 @@
     "date": "2026-08-26",
     "changes": [
       "See who's in a voice channel right in the sidebar, without joining (thanks space_goat)",
-      "@everyone pings the whole server â€” use responsibly or get banned by the admin"
+      "@everyone pings the whole server — use responsibly or get banned by the admin"
     ]
   },
   {
     "version": "0.11.0",
     "date": "2026-08-26",
     "changes": [
-      "Server rail: the app can now hold multiple servers â€” click + on the far left to add one, click circles to switch",
-      "Servers have names now â€” admins can rename theirs in Settings â†’ Server",
-      "The sidebar shows the server's actual name instead of 'NotDiscord'"
+      "Server rail: the app can now hold multiple servers — click + on the far left to add one, click circles to switch",
+      "Servers have names now — admins can rename theirs in Settings → Server"
     ]
   },
   {
@@ -110,8 +96,7 @@
     "date": "2026-08-26",
     "changes": [
       "System tray: closing the window keeps NotDiscord running in the tray",
-      "The tray icon gets a red badge when you have unread messages",
-      "Left-click the tray to bring the window back; right-click â†’ Quit to actually exit"
+      "The tray icon gets a red badge when you have unread messages"
     ]
   },
   {
@@ -119,33 +104,31 @@
     "date": "2026-08-26",
     "changes": [
       "This screen! After every update you'll see what changed",
-      "Browse recent version history any time from Settings â†’ App â†’ What's new"
+      "Browse recent version history any time from Settings → App → What's new"
     ]
   },
   {
     "version": "0.8.0",
     "date": "2026-08-26",
     "changes": [
-      "Push-to-talk: pick a key in Settings â†’ Voice â€” works even while you're in a game",
+      "Push-to-talk: pick a key in Settings → Voice — works even while you're in a game",
       "Deafen button in the voice panel (silences everyone + mutes you)",
-      "Real settings menu: gear button in the bottom-left, tabs for Voice and App",
-      "Notification sounds can be turned off in Settings â†’ App"
+      "Real settings menu: gear button in the bottom-left"
     ]
   },
   {
     "version": "0.7.0",
     "date": "2026-08-26",
     "changes": [
-      "Direct messages! Click someone in the members list â†’ Message",
-      "DMs are private end to end â€” server enforced, admins can't peek",
-      "Every DM pings you like an @mention"
+      "Direct messages! Click someone in the members list → Message",
+      "DMs are private end to end — server enforced, admins can't peek"
     ]
   },
   {
     "version": "0.6.x",
     "date": "2026-08-26",
     "changes": [
-      "Roles: admin & member, with ADMIN badges â€” admins can delete messages/channels, promote, and ban",
+      "Roles: admin & member, with ADMIN badges — admins can delete messages/channels, promote, and ban",
       "Update downloads stream with a progress bar and no longer stall"
     ]
   },
@@ -153,9 +136,8 @@
     "version": "0.5.x",
     "date": "2026-08-25",
     "changes": [
-      "RNNoise ML noise suppression (keyboard clatter begone) â€” toggle in voice settings",
-      "Mic volume, output volume, and a live mic meter",
-      "Update splash screen; updating mid-call now leaves voice cleanly"
+      "RNNoise ML noise suppression (keyboard clatter begone) — toggle in voice settings",
+      "Mic volume, output volume, and a live mic meter"
     ]
   },
   {
@@ -164,8 +146,7 @@
     "changes": [
       "Proper SVG icons everywhere instead of emoji buttons",
       "Bare URLs are clickable; right-click copy/paste works",
-      "webm/mp4 links play inline like GIFs",
-      "Dark scrollbars"
+      "webm/mp4 links play inline like GIFs"
     ]
   },
   {
@@ -180,7 +161,7 @@
     "version": "0.2.0",
     "date": "2026-08-25",
     "changes": [
-      "The auto-updater itself â€” this is why you never reinstall manually anymore",
+      "The auto-updater itself — this is why you never reinstall manually anymore",
       "Custom stickers: upload once, spam forever",
       "Nightly server backups"
     ]
