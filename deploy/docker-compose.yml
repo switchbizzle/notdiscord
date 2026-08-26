@@ -11,12 +11,21 @@ services:
       NOTDISCORD_GIPHY_KEY: ${NOTDISCORD_GIPHY_KEY:-}
       NOTDISCORD_OPENROUTER_KEY: ${NOTDISCORD_OPENROUTER_KEY:-}
       NOTDISCORD_BOT_MODEL: ${NOTDISCORD_BOT_MODEL:-}
+      NOTDISCORD_PUBLIC_URL: https://${DOMAIN}
+      NOTDISCORD_MUSIC_URL: http://music:3001
       LIVEKIT_URL: wss://${LIVEKIT_DOMAIN}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
     volumes:
       - ./data:/data
       - ./client:/data/client
+
+  # The DJ: joins voice channels and streams SoundCloud audio on request.
+  music:
+    build:
+      context: ..
+      dockerfile: Dockerfile.music
+    restart: unless-stopped
 
   livekit:
     image: livekit/livekit-server:v1.8

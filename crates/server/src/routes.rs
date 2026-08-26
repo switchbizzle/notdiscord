@@ -569,24 +569,24 @@ pub struct VoiceTokenQuery {
 }
 
 #[derive(serde::Serialize)]
-struct LiveKitVideoGrant {
-    room: String,
+pub(crate) struct LiveKitVideoGrant {
+    pub(crate) room: String,
     #[serde(rename = "roomJoin")]
-    room_join: bool,
+    pub(crate) room_join: bool,
     #[serde(rename = "canPublish")]
-    can_publish: bool,
+    pub(crate) can_publish: bool,
     #[serde(rename = "canSubscribe")]
-    can_subscribe: bool,
+    pub(crate) can_subscribe: bool,
 }
 
 #[derive(serde::Serialize)]
-struct LiveKitClaims {
-    iss: String,
-    sub: String,
-    name: String,
-    nbf: i64,
-    exp: i64,
-    video: LiveKitVideoGrant,
+pub(crate) struct LiveKitClaims {
+    pub(crate) iss: String,
+    pub(crate) sub: String,
+    pub(crate) name: String,
+    pub(crate) nbf: i64,
+    pub(crate) exp: i64,
+    pub(crate) video: LiveKitVideoGrant,
 }
 
 /// Mint a LiveKit access token for a voice channel.

@@ -1,0 +1,18 @@
+[package]
+name = "music-bot"
+version = "0.1.0"
+edition = "2021"
+
+# The music sidecar: joins LiveKit voice rooms and streams SoundCloud audio.
+# Runs in a container on the VPS (the host's glibc is too old for libwebrtc);
+# the main server drives it over localhost HTTP.
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+axum = "0.8"
+livekit = { version = "0.8", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

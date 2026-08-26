@@ -1,5 +1,6 @@
 mod auth;
 mod bot;
+mod music;
 mod preview;
 mod routes;
 mod ws;
@@ -31,6 +32,8 @@ pub struct AppState {
     pub voice: Mutex<HashMap<i64, (i64, shared::User, bool, bool)>>,
     /// The resident bot's user account (admins can rename it / set an avatar).
     pub bot: Mutex<shared::User>,
+    /// Whether a music status watcher task is currently running.
+    pub music_watch: Mutex<bool>,
 }
 
 impl AppState {
@@ -191,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
         presence: Mutex::new(HashMap::new()),
         voice: Mutex::new(HashMap::new()),
         bot: Mutex::new(bot_user),
+        music_watch: Mutex::new(false),
     });
 
     // NotBot announces new client releases in chat.

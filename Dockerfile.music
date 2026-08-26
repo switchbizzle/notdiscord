@@ -1,0 +1,20 @@
+# The NotDiscord music sidecar: LiveKit audio publisher + yt-dlp + ffmpeg.
+# Runs as a container because libwebrtc and yt-dlp need a modern glibc that
+# older host systems don't have.
+
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p music-bot
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl python3 \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/music-bot /usr/local/bin/music-bot
+ENV MUSIC_ADDR=0.0.0.0:3001
+EXPOSE 3001
+CMD ["music-bot"]

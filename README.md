@@ -64,5 +64,7 @@ server becomes the admin. Open a second client to see real-time delivery.
 | `NOTDISCORD_GIPHY_KEY` | *(unset)* | GIPHY API key for GIF search (optional) |
 | `NOTDISCORD_OPENROUTER_KEY` | *(unset)* | OpenRouter API key — lets @NotBot answer questions (optional; release announcements work without it) |
 | `NOTDISCORD_BOT_MODEL` | `google/gemini-2.5-flash-lite` | OpenRouter model id NotBot thinks with |
+| `NOTDISCORD_PUBLIC_URL` | *(unset)* | Public base URL of this instance — required for the bot to post generated images |
+| `NOTDISCORD_MUSIC_URL` | `http://127.0.0.1:3001` | The music sidecar's address (see `Dockerfile.music`); unset it to nowhere = music commands politely fail |
 | `LIVEKIT_URL` | *(unset)* | LiveKit websocket URL, e.g. `wss://livekit.example.com` |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | *(unset)* | LiveKit credentials (voice/video off without them) |

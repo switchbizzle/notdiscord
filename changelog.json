@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.33.0",
+    "date": "2026-08-26",
+    "changes": [
+      "🎶 THE MUSIC BOT IS HERE. Join a voice channel and tell the bot: play <soundcloud link> — it joins your channel and DJs for everyone",
+      "Playlists queue up whole; skip / queue / stop do what they say",
+      "The bot announces each track in chat and leaves when the queue runs dry"
+    ]
+  },
+  {
     "version": "0.32.0",
     "date": "2026-08-26",
     "changes": [
