@@ -3,6 +3,7 @@
 mod api;
 mod icons;
 mod md;
+mod tray;
 mod voice;
 
 use icons::Icon;
@@ -32,7 +33,9 @@ fn main() {
             Config::new()
                 .with_window(window)
                 .with_menu(None)
-                .with_disable_context_menu(false),
+                .with_disable_context_menu(false)
+                // X hides to the system tray; the tray menu's Quit exits.
+                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
         )
         .launch(App);
 }
@@ -73,6 +76,47 @@ fn now_ms() -> i64 {
 fn App() -> Element {
     let mut session = use_signal(|| None::<api::Session>);
     let mut restoring = use_signal(|| true);
+    let window = use_window();
+
+    // System tray: created once, lives for the app's lifetime.
+    let tray_handle: tray::TrayHandle = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(tray::create())));
+    let tray_unread = use_context_provider(|| Signal::new(false));
+
+    // Reflect unread state on the tray icon.
+    {
+        let tray_handle = tray_handle.clone();
+        use_effect(move || {
+            let unread = tray_unread();
+            if let Some(tray) = tray_handle.borrow().as_ref() {
+                tray.set_unread(unread);
+            }
+        });
+    }
+
+    // Poll tray clicks and menu events.
+    {
+        let tray_handle = tray_handle.clone();
+        let window = window.clone();
+        use_future(move || {
+            let tray_handle = tray_handle.clone();
+            let window = window.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    for action in tray::poll_events(&tray_handle) {
+                        match action {
+                            tray::TrayAction::Show => {
+                                window.window.set_visible(true);
+                                window.window.set_minimized(false);
+                                window.window.set_focus();
+                            }
+                            tray::TrayAction::Quit => std::process::exit(0),
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     // Try to resume the saved session; the token is validated against /api/me.
     use_future(move || async move {
@@ -212,6 +256,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut unread = use_signal(HashSet::<i64>::new);
     let mut armed_delete = use_signal(|| None::<i64>);
     let window = use_window();
+
+    // Mirror unread state onto the tray badge.
+    let mut tray_unread = use_context::<Signal<bool>>();
+    use_effect(move || {
+        let has_unread = !unread().is_empty();
+        if tray_unread.peek().clone() != has_unread {
+            tray_unread.set(has_unread);
+        }
+    });
     // user id -> (channel they are typing in, username, expiry timestamp)
     let mut typing = use_signal(HashMap::<i64, (i64, String, i64)>::new);
     let mut last_typing_sent = use_signal(|| 0i64);

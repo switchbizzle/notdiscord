@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.10.0",
+    "date": "2026-08-26",
+    "changes": [
+      "System tray: closing the window keeps NotDiscord running in the tray",
+      "The tray icon gets a red badge when you have unread messages",
+      "Left-click the tray to bring the window back; right-click → Quit to actually exit"
+    ]
+  },
+  {
     "version": "0.9.0",
     "date": "2026-08-26",
     "changes": [
