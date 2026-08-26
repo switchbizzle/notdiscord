@@ -493,6 +493,9 @@ fn MainView(session: api::Session) -> Element {
     let mut invite_loaded = use_signal(|| false);
     let mut invite_draft = use_signal(String::new);
     let mut invite_message = use_signal(String::new);
+    let mut persona_loaded = use_signal(|| false);
+    let mut persona_draft = use_signal(String::new);
+    let mut persona_message = use_signal(String::new);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -1249,6 +1252,11 @@ fn MainView(session: api::Session) -> Element {
                                                 invite_loaded.set(true);
                                                 invite_message.set(String::new());
                                             }
+                                            if let Ok(setting) = api::get_bot_persona(&session()).await {
+                                                persona_draft.set(setting.persona);
+                                                persona_loaded.set(true);
+                                                persona_message.set(String::new());
+                                            }
                                         });
                                     },
                                     "Server"
@@ -1441,6 +1449,55 @@ fn MainView(session: api::Session) -> Element {
                                         div { class: "settings-hint", "newcomers must type this code to sign up; people already in stay in" }
                                     } else {
                                         div { class: "settings-hint pw-good", "{invite_message}" }
+                                    }
+                                }
+                                if persona_loaded() {
+                                    label { "NotBot personality" }
+                                    textarea {
+                                        class: "persona-edit",
+                                        rows: "5",
+                                        spellcheck: "false",
+                                        value: "{persona_draft}",
+                                        oninput: move |e| persona_draft.set(e.value()),
+                                    }
+                                    div { class: "invite-row",
+                                        button {
+                                            class: "profile-btn",
+                                            title: "Restore the built-in personality",
+                                            onclick: move |_| {
+                                                spawn(async move {
+                                                    // Empty resets server-side to the default.
+                                                    match api::set_bot_persona(&session(), String::new()).await {
+                                                        Ok(setting) => {
+                                                            persona_draft.set(setting.persona);
+                                                            persona_message.set("reset to the default personality".into());
+                                                        }
+                                                        Err(e) => persona_message.set(e),
+                                                    }
+                                                });
+                                            },
+                                            "Reset"
+                                        }
+                                        button {
+                                            class: "profile-btn primary",
+                                            onclick: move |_| {
+                                                spawn(async move {
+                                                    match api::set_bot_persona(&session(), persona_draft()).await {
+                                                        Ok(setting) => {
+                                                            persona_draft.set(setting.persona);
+                                                            persona_message.set("saved — NotBot will act like this from its next reply".into());
+                                                        }
+                                                        Err(e) => persona_message.set(e),
+                                                    }
+                                                });
+                                            },
+                                            "Save personality"
+                                        }
+                                    }
+                                    if persona_message().is_empty() {
+                                        div { class: "settings-hint", "how @NotBot talks — rewrite it however the crew votes" }
+                                    } else {
+                                        div { class: "settings-hint pw-good", "{persona_message}" }
                                     }
                                 }
                                 button {
@@ -3636,6 +3693,10 @@ static INSTANCE_MUTEX: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 /// updates break — the extra process keeps the renamed exe locked forever.
 #[cfg(windows)]
 fn ensure_single_instance() {
+    // Dev escape hatch: test harnesses run a second instance on purpose.
+    if std::env::var("NOTDISCORD_ALLOW_SECOND_INSTANCE").is_ok() {
+        return;
+    }
     use winapi::shared::winerror::ERROR_ALREADY_EXISTS;
     use winapi::um::errhandlingapi::GetLastError;
     use winapi::um::handleapi::CloseHandle;

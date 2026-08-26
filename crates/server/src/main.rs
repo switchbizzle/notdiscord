@@ -235,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
         .route("/api/server/storage", get(routes::get_storage).post(routes::set_storage_cap))
         .route("/api/server/invite", get(routes::get_invite).post(routes::set_invite))
+        .route("/api/server/bot", get(routes::get_bot_persona).post(routes::set_bot_persona))
         .route("/api/server/icon", post(routes::set_server_icon))
         .route("/api/tags", get(routes::list_tags).post(routes::create_tag))
         .route("/api/tags/{id}", axum::routing::delete(routes::delete_tag))

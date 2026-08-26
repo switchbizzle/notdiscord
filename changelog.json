@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.31.0",
+    "date": "2026-08-26",
+    "changes": [
+      "NotBot's personality is now editable: Settings → Server → NotBot personality (admins). Write anything; Reset restores the default",
+      "The default personality is, by unanimous crew decision, an anime waifu (◕‿◕✿)"
+    ]
+  },
+  {
     "version": "0.30.0",
     "date": "2026-08-26",
     "changes": [

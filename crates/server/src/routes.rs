@@ -1095,6 +1095,40 @@ pub async fn set_invite(
     Ok(Json(shared::InviteSetting { code }))
 }
 
+pub async fn get_bot_persona(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<shared::BotPersonaSetting>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    Ok(Json(shared::BotPersonaSetting { persona: crate::bot::persona(&state.db).await }))
+}
+
+pub async fn set_bot_persona(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::BotPersonaSetting>,
+) -> ApiResult<Json<shared::BotPersonaSetting>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let persona = req.persona.trim().to_owned();
+    if persona.len() > 4000 {
+        return Err(err(StatusCode::BAD_REQUEST, "personality must be at most 4000 characters"));
+    }
+    // Empty resets to the built-in default.
+    sqlx::query(
+        "INSERT INTO server_meta (key, value) VALUES ('bot_persona', ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(&persona)
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+    Ok(Json(shared::BotPersonaSetting { persona: crate::bot::persona(&state.db).await }))
+}
+
 /// Public: release notes, newest first (uploaded by the release script).
 pub async fn changelog() -> Response {
     match tokio::fs::read(client_dir().join("changelog.json")).await {

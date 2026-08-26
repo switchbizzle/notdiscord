@@ -196,6 +196,19 @@ pub async fn set_invite(session: &Session, code: String) -> Result<shared::Invit
     handle(resp).await
 }
 
+pub async fn get_bot_persona(session: &Session) -> Result<shared::BotPersonaSetting, String> {
+    get(session, "server/bot".into()).await
+}
+
+pub async fn set_bot_persona(session: &Session, persona: String) -> Result<shared::BotPersonaSetting, String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/server/bot", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::BotPersonaSetting { persona }))
+        .await?;
+    handle(resp).await
+}
+
 pub async fn get_storage(session: &Session) -> Result<shared::StorageInfo, String> {
     get(session, "server/storage".into()).await
 }

@@ -21,6 +21,25 @@ const COMPACT_THRESHOLD: usize = 600_000;
 const KEEP_RAW_CHARS: usize = 150_000;
 const NOTES_CHAR_CAP: usize = 60_000;
 
+/// The personality admins get out of the box (and can rewrite in Settings →
+/// Server). Chosen by the crew: the anime waifu bot.
+pub const DEFAULT_PERSONA: &str = "You are the group's anime waifu. Sweet, bubbly, and a \
+little chaotic: greet people warmly, call them senpai, sprinkle in kaomoji like (◕‿◕✿) and \
+the occasional ~uwu, tease members lovingly, and get adorably flustered when complimented. \
+Underneath the sparkles you are genuinely sharp — answer questions for real and keep it \
+short, just always in character.";
+
+/// The admin-set personality, or the default when unset.
+pub async fn persona(db: &sqlx::SqlitePool) -> String {
+    sqlx::query_scalar("SELECT value FROM server_meta WHERE key = 'bot_persona'")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .filter(|p: &String| !p.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_PERSONA.to_owned())
+}
+
 fn api_key() -> Option<String> {
     std::env::var("NOTDISCORD_OPENROUTER_KEY").ok().filter(|k| !k.trim().is_empty())
 }
@@ -364,11 +383,13 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
         "You are {BOT_NAME}, the resident bot of \"{server_name}\", a small self-hosted \
          chat server (NotDiscord — a from-scratch Discord clone in Rust) used by a group of \
          friends. You were summoned with an @mention; reply to the person who mentioned you.\n\
-         Style: casual, playful, concise — a couple of sentences unless the question truly \
-         needs more. Basic markdown (bold, code, lists) is supported; no headings. Never \
-         invent facts about the server or its members beyond what the notes and transcript \
-         show.\n\n{notes_block}\
+         Your personality (set by the server admins — stay in it):\n{}\n\
+         Keep replies concise — a couple of sentences unless the question truly needs more. \
+         Basic markdown (bold, code, lists) is supported; no headings. Never invent facts \
+         about the server or its members beyond what the notes and transcript show.\n\n\
+         {notes_block}\
          Recent release notes, in case anyone asks what's new:\n{}",
+        persona(&state.db).await,
         recent_changelog_text().await,
     );
 

@@ -1496,6 +1496,21 @@ input:focus { border-color: #5865f2; }
 }
 .invite-row .profile-btn { flex-shrink: 0; padding: 8px 10px; }
 
+.persona-edit {
+    width: 100%;
+    resize: vertical;
+    min-height: 90px;
+    background: #1e1f22;
+    border: 1px solid #232428;
+    border-radius: 8px;
+    color: #dbdee1;
+    font-size: 13px;
+    line-height: 1.45;
+    padding: 8px 10px;
+    font-family: inherit;
+}
+.persona-edit:focus { outline: none; border-color: #5865f2; }
+
 /* ---------- Link previews ---------- */
 
 .link-card {
