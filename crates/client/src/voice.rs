@@ -48,6 +48,7 @@ pub enum VoiceCmd {
     SetVolume { identity: String, volume: f32 },
     SetMicVolume(f32),
     SetMasterVolume(f32),
+    SetNoiseSuppression(bool),
 }
 
 /// Mic input level (0..1), updated ~10x/sec while in a call. Kept separate
@@ -56,6 +57,11 @@ pub type MicLevelSignal = Signal<f32, SyncStorage>;
 
 /// Thread-safe signal: voice status is updated from tokio worker tasks.
 pub type VoiceStatusSignal = Signal<VoiceStatus, SyncStorage>;
+
+/// The published mic track format: 48kHz mono, 10ms (480-sample) frames —
+/// also what RNNoise requires.
+const NS_RATE: u32 = 48000;
+const NS_FRAME: usize = nnnoiseless::DenoiseState::FRAME_SIZE;
 
 fn device_name(device: &cpal::Device) -> Option<String> {
     device.description().ok().map(|d| d.name().to_string())
@@ -148,6 +154,7 @@ struct ActiveCall {
     gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>>,
     mic_gain: Arc<AtomicU32>,
     master_gain: Arc<AtomicU32>,
+    ns_enabled: Arc<std::sync::atomic::AtomicBool>,
     event_task: tokio::task::JoinHandle<()>,
 }
 
@@ -222,6 +229,14 @@ pub async fn voice_task(
                     status.write().muted = muted;
                 }
             }
+            VoiceCmd::SetNoiseSuppression(enabled) => {
+                if let Some(active) = &call {
+                    active.ns_enabled.store(enabled, Ordering::Relaxed);
+                }
+                let mut settings = crate::api::load_settings();
+                settings.noise_suppression = enabled;
+                crate::api::save_settings(&settings);
+            }
             VoiceCmd::SetMicVolume(volume) => {
                 let volume = volume.clamp(0.0, 2.0);
                 if let Some(active) = &call {
@@ -275,14 +290,16 @@ async fn connect(
     let sample_rate: u32 = mic_config.sample_rate();
     let channels = mic_config.channels() as u32;
 
+    // The published track is always 48kHz mono: the capture pump downmixes,
+    // resamples, and (optionally) denoises to match.
     let source = NativeAudioSource::new(
         AudioSourceOptions {
             echo_cancellation: true,
             noise_suppression: true,
             auto_gain_control: true,
         },
-        sample_rate,
-        channels,
+        NS_RATE,
+        1,
         1000,
     );
 
@@ -319,44 +336,75 @@ async fn connect(
         }
     });
 
-    // Pump captured samples into the LiveKit source in 10ms frames, and drive
-    // the local speaking indicator straight from the mic level (instant,
-    // unlike the server's active-speaker events).
+    // Pump: device chunks -> mono 48k -> gain -> RNNoise -> LiveKit frames.
+    // Also drives the local speaking indicator and mic meter (both computed
+    // after denoise, so background noise doesn't light the ring).
     let mic_gain = Arc::new(AtomicU32::new(settings.input_volume.clamp(0.0, 2.0).to_bits()));
     let master_gain = Arc::new(AtomicU32::new(settings.output_volume.clamp(0.0, 2.0).to_bits()));
-    let samples_per_frame = (sample_rate / 100 * channels) as usize;
+    let ns_enabled = Arc::new(std::sync::atomic::AtomicBool::new(settings.noise_suppression));
     let mut pump_status = status;
     let pump_gain = mic_gain.clone();
+    let pump_ns = ns_enabled.clone();
     tokio::spawn(async move {
         const SPEAK_THRESHOLD_RMS: f64 = 500.0; // of i16 full scale ≈ -36 dB
         const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
         const METER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-        let mut buffer: Vec<i16> = Vec::with_capacity(samples_per_frame * 4);
+        let mut denoise = nnnoiseless::DenoiseState::new();
+        let mut denoised = [0.0f32; NS_FRAME];
+        let mut mono48: Vec<f32> = Vec::with_capacity(NS_FRAME * 8);
+        let mut resample_pos: f64 = 0.0;
+        let mut last_sample: f32 = 0.0;
+        let step = sample_rate as f64 / NS_RATE as f64;
         let mut speaking = false;
         let mut last_voice = std::time::Instant::now() - SPEAK_HOLD;
         let mut last_meter = std::time::Instant::now() - METER_INTERVAL;
 
         while let Some(chunk) = frame_rx.recv().await {
-            buffer.extend_from_slice(&chunk);
-            while buffer.len() >= samples_per_frame {
-                let mut data: Vec<i16> = buffer.drain(..samples_per_frame).collect();
+            // Downmix interleaved device channels to mono f32 (i16 scale).
+            let mono: Vec<f32> = chunk
+                .chunks(channels.max(1) as usize)
+                .map(|frame| frame.iter().map(|s| *s as f32).sum::<f32>() / frame.len() as f32)
+                .collect();
+
+            // Resample device rate -> 48kHz (linear; identity when already 48k).
+            if sample_rate == NS_RATE {
+                mono48.extend(mono);
+            } else {
+                let src: Vec<f32> = std::iter::once(last_sample).chain(mono.iter().copied()).collect();
+                let mut idx = resample_pos;
+                while idx + 1.0 < src.len() as f64 {
+                    let i = idx as usize;
+                    let frac = (idx - i as f64) as f32;
+                    mono48.push(src[i] * (1.0 - frac) + src[i + 1] * frac);
+                    idx += step;
+                }
+                resample_pos = idx - (src.len() as f64 - 1.0);
+                last_sample = *src.last().unwrap_or(&0.0);
+            }
+
+            while mono48.len() >= NS_FRAME {
+                let mut frame: Vec<f32> = mono48.drain(..NS_FRAME).collect();
 
                 let gain = f32::from_bits(pump_gain.load(Ordering::Relaxed));
                 if (gain - 1.0).abs() > f32::EPSILON {
-                    for s in data.iter_mut() {
-                        *s = ((*s as f32) * gain).clamp(-32768.0, 32767.0) as i16;
+                    for s in frame.iter_mut() {
+                        *s = (*s * gain).clamp(-32768.0, 32767.0);
                     }
                 }
 
-                let rms = (data.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
-                    / data.len() as f64)
+                if pump_ns.load(Ordering::Relaxed) {
+                    denoise.process_frame(&mut denoised, &frame);
+                    frame.copy_from_slice(&denoised);
+                }
+
+                let rms = (frame.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
+                    / frame.len() as f64)
                     .sqrt();
-                let now_meter = std::time::Instant::now();
-                if now_meter.duration_since(last_meter) >= METER_INTERVAL {
-                    last_meter = now_meter;
+                let now = std::time::Instant::now();
+                if now.duration_since(last_meter) >= METER_INTERVAL {
+                    last_meter = now;
                     mic_level.set(((rms / 10000.0) as f32).min(1.0));
                 }
-                let now = std::time::Instant::now();
                 if rms > SPEAK_THRESHOLD_RMS {
                     last_voice = now;
                 }
@@ -370,13 +418,14 @@ async fn connect(
                     }
                 }
 
-                let frame = AudioFrame {
+                let data: Vec<i16> = frame.iter().map(|s| s.clamp(-32768.0, 32767.0) as i16).collect();
+                let audio_frame = AudioFrame {
                     data: data.into(),
-                    sample_rate,
-                    num_channels: channels,
-                    samples_per_channel: (samples_per_frame as u32) / channels,
+                    sample_rate: NS_RATE,
+                    num_channels: 1,
+                    samples_per_channel: NS_FRAME as u32,
                 };
-                if source.capture_frame(&frame).await.is_err() {
+                if source.capture_frame(&audio_frame).await.is_err() {
                     return;
                 }
             }
@@ -442,7 +491,7 @@ async fn connect(
         }
     });
 
-    Ok(ActiveCall { room, mic_publication, _mic_stop: mic_stop_tx, playback_stops, gains, mic_gain, master_gain, event_task })
+    Ok(ActiveCall { room, mic_publication, _mic_stop: mic_stop_tx, playback_stops, gains, mic_gain, master_gain, ns_enabled, event_task })
 }
 
 fn refresh_participants(room: &Room, status: VoiceStatusSignal) {

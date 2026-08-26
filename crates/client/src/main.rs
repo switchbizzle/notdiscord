@@ -848,6 +848,18 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             if voice_status().channel_id.is_none() {
                                 div { class: "settings-hint", "join a voice channel to test your mic" }
                             }
+                            label { class: "ns-toggle-row",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: audio_settings().noise_suppression,
+                                    onchange: move |e| {
+                                        let enabled = e.checked();
+                                        audio_settings.write().noise_suppression = enabled;
+                                        voice.send(voice::VoiceCmd::SetNoiseSuppression(enabled));
+                                    },
+                                }
+                                " Noise suppression"
+                            }
                             label { "Output volume · {(audio_settings().output_volume * 100.0) as i32}%" }
                             input {
                                 r#type: "range",

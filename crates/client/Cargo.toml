@@ -1,6 +1,6 @@
 ﻿[package]
 name = "client"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2021"
 
 [dependencies]
@@ -20,6 +20,7 @@ open = "5"
 rfd = "0.15"
 livekit = { version = "0.8", features = ["native-tls"] }
 cpal = "0.18"
+nnnoiseless = { version = "0.5", default-features = false }
 arboard = "3"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }

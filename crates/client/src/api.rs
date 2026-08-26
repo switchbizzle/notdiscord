@@ -53,6 +53,13 @@ pub struct Settings {
     /// Master voice output gain (1.0 = 100%).
     #[serde(default = "one")]
     pub output_volume: f32,
+    /// RNNoise ML noise suppression on the microphone.
+    #[serde(default = "yes")]
+    pub noise_suppression: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn one() -> f32 {
@@ -67,7 +74,12 @@ pub fn load_settings() -> Settings {
     settings_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_else(|| Settings { input_volume: 1.0, output_volume: 1.0, ..Default::default() })
+        .unwrap_or_else(|| Settings {
+            input_volume: 1.0,
+            output_volume: 1.0,
+            noise_suppression: true,
+            ..Default::default()
+        })
 }
 
 pub fn save_settings(settings: &Settings) {
