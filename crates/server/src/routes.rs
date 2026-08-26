@@ -708,14 +708,53 @@ pub struct UploadQuery {
     pub name: String,
 }
 
+/// Total bytes in the uploads directory (both storage layouts).
+pub async fn uploads_size() -> i64 {
+    let mut total: i64 = 0;
+    let Ok(mut dir) = tokio::fs::read_dir(crate::uploads_dir()).await else {
+        return 0;
+    };
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        let Ok(meta) = entry.metadata().await else { continue };
+        if meta.is_dir() {
+            if let Ok(mut sub) = tokio::fs::read_dir(entry.path()).await {
+                while let Ok(Some(file)) = sub.next_entry().await {
+                    if let Ok(m) = file.metadata().await {
+                        total += m.len() as i64;
+                    }
+                }
+            }
+        } else {
+            total += meta.len() as i64;
+        }
+    }
+    total
+}
+
+async fn storage_cap_bytes(state: &SharedState) -> i64 {
+    let gb: i64 = meta_value_opt(state, "storage_cap_gb")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    gb.saturating_mul(1024 * 1024 * 1024)
+}
+
 pub async fn upload(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     _user: AuthUser,
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> ApiResult<Json<UploadResponse>> {
     if body.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "empty upload"));
+    }
+    if uploads_size().await + body.len() as i64 > storage_cap_bytes(&state).await {
+        return Err(err(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "server storage is full — an admin can raise the cap in Settings → Server, or old files will expire with retention",
+        ));
     }
 
     let name = sanitize_filename(&q.name);
@@ -983,6 +1022,36 @@ pub async fn set_retention(
         .await
         .map_err(internal)?;
     Ok(Json(req))
+}
+
+pub async fn get_storage(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<shared::StorageInfo>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let cap_gb = meta_value(&state, "storage_cap_gb").await?.parse().unwrap_or(30);
+    Ok(Json(shared::StorageInfo { used_bytes: uploads_size().await, cap_gb }))
+}
+
+pub async fn set_storage_cap(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::StorageCapSetting>,
+) -> ApiResult<Json<shared::StorageInfo>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    if !(1..=500).contains(&req.cap_gb) {
+        return Err(err(StatusCode::BAD_REQUEST, "storage cap must be between 1 and 500 GB"));
+    }
+    sqlx::query("UPDATE server_meta SET value = ? WHERE key = 'storage_cap_gb'")
+        .bind(req.cap_gb.to_string())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(shared::StorageInfo { used_bytes: uploads_size().await, cap_gb: req.cap_gb }))
 }
 
 /// Public: release notes, newest first (uploaded by the release script).

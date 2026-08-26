@@ -160,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         }),
         ("name", || "NotDiscord".to_string()),
         ("upload_retention_days", || "21".to_string()),
+        ("storage_cap_gb", || "30".to_string()),
     ];
     for (key, default) in meta_defaults {
         sqlx::query("INSERT OR IGNORE INTO server_meta (key, value) VALUES (?, ?)")
@@ -219,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/server/info", get(routes::server_info))
         .route("/api/server/name", post(routes::rename_server))
         .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
+        .route("/api/server/storage", get(routes::get_storage).post(routes::set_storage_cap))
         .route("/api/server/icon", post(routes::set_server_icon))
         .route("/api/tags", get(routes::list_tags).post(routes::create_tag))
         .route("/api/tags/{id}", axum::routing::delete(routes::delete_tag))

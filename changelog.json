@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.25.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Server storage cap (default 30 GB) — admins see usage with a meter in Settings → Server and can raise or lower the cap",
+      "Uploads are politely refused when the server is full instead of eating the disk",
+      "NotDiscord is now self-hostable: a Docker kit in the repo spins up a full server (chat + voice + HTTPS) in minutes"
+    ]
+  },
+  {
     "version": "0.24.0",
     "date": "2026-08-26",
     "changes": [

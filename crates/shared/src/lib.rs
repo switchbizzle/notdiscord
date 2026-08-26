@@ -269,6 +269,19 @@ pub struct RetentionSetting {
     pub days: i64,
 }
 
+/// Upload storage usage and cap (GET /api/server/storage).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StorageInfo {
+    pub used_bytes: i64,
+    pub cap_gb: i64,
+}
+
+/// Body for POST /api/server/storage (admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageCapSetting {
+    pub cap_gb: i64,
+}
+
 /// One release's entry in GET /api/changelog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangelogEntry {

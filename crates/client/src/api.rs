@@ -174,6 +174,19 @@ pub async fn rename_server(session: &Session, name: String) -> Result<shared::Se
     handle(resp).await
 }
 
+pub async fn get_storage(session: &Session) -> Result<shared::StorageInfo, String> {
+    get(session, "server/storage".into()).await
+}
+
+pub async fn set_storage_cap(session: &Session, cap_gb: i64) -> Result<shared::StorageInfo, String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/server/storage", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::StorageCapSetting { cap_gb }))
+        .await?;
+    handle(resp).await
+}
+
 pub async fn change_password(session: &Session, current: String, new: String) -> Result<(), String> {
     let resp = send_retry(http()
         .post(format!("{}/api/password", session.base_url))

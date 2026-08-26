@@ -463,6 +463,7 @@ fn MainView(session: api::Session) -> Element {
     let mut pw_message = use_signal(|| (String::new(), false));
     // Populated when the user must choose which monitor to share.
     let mut share_picker = use_signal(|| None::<Vec<share::MonitorChoice>>);
+    let mut storage_info = use_signal(|| None::<shared::StorageInfo>);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -1211,6 +1212,9 @@ fn MainView(session: api::Session) -> Element {
                                             if let Ok(setting) = api::get_retention(&session()).await {
                                                 retention_days.set(setting.days);
                                             }
+                                            if let Ok(info) = api::get_storage(&session()).await {
+                                                storage_info.set(Some(info));
+                                            }
                                         });
                                     },
                                     "Server"
@@ -1311,6 +1315,45 @@ fn MainView(session: api::Session) -> Element {
                                     option { value: "90", selected: retention_days() == 90, "3 months" }
                                 }
                                 div { class: "settings-hint", "expired files disappear from chat; avatars and stickers never expire" }
+                                if let Some(info) = storage_info() {
+                                    label { "Storage" }
+                                    {
+                                        let used_gb = info.used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                                        let pct = ((used_gb / info.cap_gb as f64) * 100.0).min(100.0);
+                                        rsx! {
+                                            div { class: "storage-row",
+                                                div { class: "storage-bar",
+                                                    div {
+                                                        class: if pct >= 90.0 { "storage-fill full" } else { "storage-fill" },
+                                                        style: "width: {pct:.1}%",
+                                                    }
+                                                }
+                                                span { class: "storage-text", "{used_gb:.2} GB of {info.cap_gb} GB used" }
+                                            }
+                                        }
+                                    }
+                                    select {
+                                        onchange: move |e| {
+                                            if let Ok(cap) = e.value().parse::<i64>() {
+                                                spawn(async move {
+                                                    match api::set_storage_cap(&session(), cap).await {
+                                                        Ok(info) => {
+                                                            status.set(format!("storage cap is now {} GB", info.cap_gb));
+                                                            storage_info.set(Some(info));
+                                                        }
+                                                        Err(e) => status.set(e),
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        option { value: "10", selected: info.cap_gb == 10, "10 GB" }
+                                        option { value: "30", selected: info.cap_gb == 30, "30 GB (default)" }
+                                        option { value: "50", selected: info.cap_gb == 50, "50 GB" }
+                                        option { value: "100", selected: info.cap_gb == 100, "100 GB" }
+                                        option { value: "200", selected: info.cap_gb == 200, "200 GB" }
+                                    }
+                                    div { class: "settings-hint", "uploads are refused once the cap is reached" }
+                                }
                                 button {
                                     class: "profile-btn",
                                     onclick: move |_| {

@@ -1,0 +1,48 @@
+# NotDiscord self-hosting stack: server + LiveKit (voice/video) + Caddy (auto-HTTPS).
+# Copy .env.example to .env, fill it in, then: docker compose up -d
+services:
+  notdiscord:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NOTDISCORD_INVITE: ${NOTDISCORD_INVITE}
+      NOTDISCORD_GIPHY_KEY: ${NOTDISCORD_GIPHY_KEY:-}
+      LIVEKIT_URL: wss://${LIVEKIT_DOMAIN}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    volumes:
+      - ./data:/data
+      - ./client:/data/client
+
+  livekit:
+    image: livekit/livekit-server:v1.8
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7881:7881"                     # WebRTC over TCP (fallback)
+      - "50000-50100:50000-50100/udp"   # WebRTC media
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      LIVEKIT_DOMAIN: ${LIVEKIT_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+
+volumes:
+  caddy_data:
+  caddy_config:

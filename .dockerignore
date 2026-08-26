@@ -1,0 +1,8 @@
+target
+dist
+deploy/data
+deploy/client
+deploy/.env
+.git
+*.db
+uploads

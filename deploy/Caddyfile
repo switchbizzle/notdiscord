@@ -1,0 +1,7 @@
+{$DOMAIN} {
+	reverse_proxy notdiscord:3000
+}
+
+{$LIVEKIT_DOMAIN} {
+	reverse_proxy livekit:7880
+}
