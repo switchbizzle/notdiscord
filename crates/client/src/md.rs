@@ -124,34 +124,68 @@ pub fn Md(nodes: Vec<MdNode>) -> Element {
     }
 }
 
-/// Split text into plain runs and `@mention` tokens for highlighting.
-fn mention_segments(text: &str) -> Vec<(bool, String)> {
-    let mut segments: Vec<(bool, String)> = Vec::new();
+#[derive(Clone, PartialEq)]
+enum Seg {
+    Plain(String),
+    Mention(String),
+    Url(String),
+}
+
+/// Split text into plain runs, `@mention` tokens, and bare `http(s)://` URLs.
+fn rich_segments(text: &str) -> Vec<Seg> {
+    let mut segments: Vec<Seg> = Vec::new();
     let mut plain = String::new();
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
+
+    let flush_plain = |plain: &mut String, segments: &mut Vec<Seg>| {
+        if !plain.is_empty() {
+            segments.push(Seg::Plain(std::mem::take(plain)));
+        }
+    };
+
     while i < chars.len() {
         let at_boundary = i == 0 || !chars[i - 1].is_alphanumeric();
+
+        // Bare URL detection.
+        if at_boundary && chars[i] == 'h' {
+            let rest: String = chars[i..].iter().take(8).collect();
+            if rest.starts_with("http://") || rest.starts_with("https://") {
+                let mut j = i;
+                while j < chars.len() && !chars[j].is_whitespace() && !matches!(chars[j], '<' | '>' | '"') {
+                    j += 1;
+                }
+                // Trailing punctuation belongs to the sentence, not the URL.
+                while j > i && matches!(chars[j - 1], '.' | ',' | ')' | '!' | '?' | ';' | ':' | '\'') {
+                    j -= 1;
+                }
+                if j > i + 8 {
+                    flush_plain(&mut plain, &mut segments);
+                    segments.push(Seg::Url(chars[i..j].iter().collect()));
+                    i = j;
+                    continue;
+                }
+            }
+        }
+
+        // @mention detection.
         if chars[i] == '@' && at_boundary {
             let mut j = i + 1;
             while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
                 j += 1;
             }
             if j > i + 1 {
-                if !plain.is_empty() {
-                    segments.push((false, std::mem::take(&mut plain)));
-                }
-                segments.push((true, chars[i..j].iter().collect()));
+                flush_plain(&mut plain, &mut segments);
+                segments.push(Seg::Mention(chars[i..j].iter().collect()));
                 i = j;
                 continue;
             }
         }
+
         plain.push(chars[i]);
         i += 1;
     }
-    if !plain.is_empty() {
-        segments.push((false, plain));
-    }
+    flush_plain(&mut plain, &mut segments);
     segments
 }
 
@@ -159,11 +193,24 @@ fn mention_segments(text: &str) -> Vec<(bool, String)> {
 fn MdOne(node: MdNode) -> Element {
     match node {
         MdNode::Text(t) => rsx! {
-            for (i, (is_mention, seg)) in mention_segments(&t).into_iter().enumerate() {
-                if is_mention {
-                    span { key: "{i}", class: "mention", "{seg}" }
-                } else {
-                    span { key: "{i}", "{seg}" }
+            for (i, seg) in rich_segments(&t).into_iter().enumerate() {
+                match seg {
+                    Seg::Plain(s) => rsx! { span { key: "{i}", "{s}" } },
+                    Seg::Mention(s) => rsx! { span { key: "{i}", class: "mention", "{s}" } },
+                    Seg::Url(url) => {
+                        let title = url.clone();
+                        rsx! {
+                            span {
+                                key: "{i}",
+                                class: "md-link",
+                                title: "{title}",
+                                onclick: move |_| {
+                                    let _ = open::that(&url);
+                                },
+                                "{title}"
+                            }
+                        }
+                    }
                 }
             }
         },

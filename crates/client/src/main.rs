@@ -28,7 +28,12 @@ fn main() {
         .with_title("NotDiscord")
         .with_inner_size(LogicalSize::new(1100.0, 720.0));
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(Config::new().with_window(window).with_menu(None))
+        .with_cfg(
+            Config::new()
+                .with_window(window)
+                .with_menu(None)
+                .with_disable_context_menu(false),
+        )
         .launch(App);
 }
 
