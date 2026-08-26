@@ -30,3 +30,6 @@ Thumbs.db
 # Misc
 *.tmp
 *.swp
+
+# Distribution binaries
+/dist/
