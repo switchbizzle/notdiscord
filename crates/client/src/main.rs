@@ -1291,6 +1291,30 @@ fn MainView(session: api::Session) -> Element {
                                         "Push to talk"
                                     }
                                 }
+                                if audio_settings().voice_mode != "ptt" {
+                                    label { "Mic sensitivity — talk and set the line just below your voice" }
+                                    input {
+                                        r#type: "range",
+                                        class: "settings-slider",
+                                        min: "0",
+                                        max: "100",
+                                        value: "{(audio_settings().vad_threshold / 20.0) as i32}",
+                                        oninput: move |e| {
+                                            if let Ok(v) = e.value().parse::<f32>() {
+                                                let threshold = v * 20.0; // 0..=2000 RMS
+                                                audio_settings.write().vad_threshold = threshold;
+                                                voice.send(voice::VoiceCmd::SetVadThreshold(threshold));
+                                            }
+                                        },
+                                    }
+                                    div { class: "settings-hint",
+                                        if audio_settings().vad_threshold <= 0.0 {
+                                            "always transmitting (open mic)"
+                                        } else {
+                                            "transmits only when you speak above the marker"
+                                        }
+                                    }
+                                }
                                 if audio_settings().voice_mode == "ptt" {
                                     label { "Push-to-talk key (works while in game)" }
                                     select {
@@ -1322,7 +1346,15 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     },
                                 }
-                                MicMeter { level: mic_level }
+                                div { class: "meter-wrap",
+                                    MicMeter { level: mic_level }
+                                    if audio_settings().voice_mode != "ptt" && audio_settings().vad_threshold > 0.0 {
+                                        div {
+                                            class: "meter-threshold",
+                                            style: "left: {(audio_settings().vad_threshold / 10000.0 * 100.0).clamp(0.0, 100.0)}%",
+                                        }
+                                    }
+                                }
                                 if voice_status().channel_id.is_none() {
                                     div { class: "settings-hint", "join a voice channel to test your mic" }
                                 }
@@ -1357,6 +1389,18 @@ fn MainView(session: api::Session) -> Element {
                                 div { class: "settings-value", "v{env!(\"CARGO_PKG_VERSION\")}" }
                                 label { "Server" }
                                 div { class: "settings-value", "{session().base_url}" }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().voice_join_sounds,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.voice_join_sounds = e.checked();
+                                            api::save_settings(&s);
+                                        },
+                                    }
+                                    " Voice join/leave sounds"
+                                }
                                 label { class: "ns-toggle-row",
                                     input {
                                         r#type: "checkbox",

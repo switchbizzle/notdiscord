@@ -314,6 +314,16 @@ input:focus { border-color: #5865f2; }
     cursor: pointer;
 }
 .ns-toggle-row input { accent-color: #5865f2; }
+.meter-wrap { position: relative; }
+.meter-threshold {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: #fff;
+    border-radius: 1px;
+    pointer-events: none;
+}
 .mic-meter {
     height: 6px;
     border-radius: 3px;

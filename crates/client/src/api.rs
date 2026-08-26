@@ -223,6 +223,12 @@ pub struct Settings {
     /// "vad" (voice activity) or "ptt" (push to talk).
     #[serde(default = "vad")]
     pub voice_mode: String,
+    /// Voice-activity gate threshold, RMS of i16 samples (0 = always transmit).
+    #[serde(default = "default_vad_threshold")]
+    pub vad_threshold: f32,
+    /// Blip when someone joins/leaves your voice channel.
+    #[serde(default = "yes")]
+    pub voice_join_sounds: bool,
     /// Push-to-talk key name (device_query Keycode).
     #[serde(default = "default_ptt_key")]
     pub ptt_key: String,
@@ -240,6 +246,10 @@ fn vad() -> String {
 
 fn default_ptt_key() -> String {
     "F9".into()
+}
+
+fn default_vad_threshold() -> f32 {
+    350.0
 }
 
 fn yes() -> bool {
@@ -264,7 +274,9 @@ pub fn load_settings() -> Settings {
             noise_suppression: true,
             voice_mode: vad(),
             ptt_key: default_ptt_key(),
+            vad_threshold: default_vad_threshold(),
             notification_sounds: true,
+            voice_join_sounds: true,
             ..Default::default()
         })
 }

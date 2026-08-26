@@ -55,6 +55,8 @@ pub enum VoiceCmd {
     ToggleDeafen,
     /// mode: "vad" | "ptt"; key: device_query Keycode name.
     SetVoiceMode { mode: String, key: String },
+    /// Voice-activity gate threshold (RMS, 0 = always transmit).
+    SetVadThreshold(f32),
 }
 
 pub fn parse_ptt_key(name: &str) -> device_query::Keycode {
@@ -183,6 +185,8 @@ struct ActiveCall {
     deafened: Arc<AtomicBool>,
     /// True when voice mode is push-to-talk.
     ptt_mode: Arc<AtomicBool>,
+    /// VAD gate threshold as f32 bits.
+    vad_threshold: Arc<AtomicU32>,
     /// The configured PTT key, read by the polling thread each tick.
     ptt_key: Arc<Mutex<device_query::Keycode>>,
     /// Dropping ends the PTT polling thread.
@@ -284,6 +288,15 @@ pub async fn voice_task(
                 let mut settings = crate::api::load_settings();
                 settings.voice_mode = mode;
                 settings.ptt_key = key;
+                crate::api::save_settings(&settings);
+            }
+            VoiceCmd::SetVadThreshold(threshold) => {
+                let threshold = threshold.clamp(0.0, 3000.0);
+                if let Some(active) = &call {
+                    active.vad_threshold.store(threshold.to_bits(), Ordering::Relaxed);
+                }
+                let mut settings = crate::api::load_settings();
+                settings.vad_threshold = threshold;
                 crate::api::save_settings(&settings);
             }
             VoiceCmd::SetNoiseSuppression(enabled) => {
@@ -403,6 +416,7 @@ async fn connect(
     let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
     let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
     let ptt_active = Arc::new(AtomicBool::new(false));
+    let vad_threshold = Arc::new(AtomicU32::new(settings.vad_threshold.clamp(0.0, 3000.0).to_bits()));
 
     // PTT key poller: 30ms ticks, no global hotkey registration, so the key
     // keeps working in other apps and is never swallowed system-wide.
@@ -439,9 +453,9 @@ async fn connect(
     let pump_ns = ns_enabled.clone();
     let pump_ptt_mode = ptt_mode.clone();
     let pump_ptt_active = ptt_active.clone();
+    let pump_vad = vad_threshold.clone();
     tokio::spawn(async move {
-        const SPEAK_THRESHOLD_RMS: f64 = 500.0; // of i16 full scale ≈ -36 dB
-        const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
+        const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(600);
         const METER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
         let mut denoise = nnnoiseless::DenoiseState::new();
         let mut denoised = [0.0f32; NS_FRAME];
@@ -499,13 +513,23 @@ async fn connect(
                     last_meter = now;
                     mic_level.set(((rms / 10000.0) as f32).min(1.0));
                 }
-                if rms > SPEAK_THRESHOLD_RMS {
+                let gate_threshold = f32::from_bits(pump_vad.load(Ordering::Relaxed)) as f64;
+                // The speaking ring needs a floor so "always transmit" doesn't
+                // glow constantly on room hum.
+                if rms >= gate_threshold.max(300.0) {
                     last_voice = now;
                 }
+                let voice_recent = now.duration_since(last_voice) < SPEAK_HOLD;
                 let muted = pump_status.peek().muted;
-                let transmitting = !muted
-                    && (!pump_ptt_mode.load(Ordering::Relaxed) || pump_ptt_active.load(Ordering::Relaxed));
-                let now_speaking = transmitting && now.duration_since(last_voice) < SPEAK_HOLD;
+                let gate_open = if pump_ptt_mode.load(Ordering::Relaxed) {
+                    pump_ptt_active.load(Ordering::Relaxed)
+                } else {
+                    // Voice activity: transmit only while above the threshold
+                    // (with hold); 0 = classic open mic.
+                    gate_threshold <= 0.0 || voice_recent
+                };
+                let transmitting = !muted && gate_open;
+                let now_speaking = transmitting && voice_recent;
                 if now_speaking != speaking {
                     speaking = now_speaking;
                     let mut s = pump_status.write();
@@ -569,9 +593,15 @@ async fn connect(
                     }
                     refresh_participants(&room_handle, status);
                 }
-                RoomEvent::ParticipantConnected(_)
-                | RoomEvent::ParticipantDisconnected(_)
-                | RoomEvent::Connected { .. } => refresh_participants(&room_handle, status),
+                RoomEvent::ParticipantConnected(_) => {
+                    play_voice_blip(true);
+                    refresh_participants(&room_handle, status);
+                }
+                RoomEvent::ParticipantDisconnected(_) => {
+                    play_voice_blip(false);
+                    refresh_participants(&room_handle, status);
+                }
+                RoomEvent::Connected { .. } => refresh_participants(&room_handle, status),
                 RoomEvent::ActiveSpeakersChanged { speakers } => {
                     let speaking: Vec<String> =
                         speakers.iter().map(|p| p.identity().to_string()).collect();
@@ -603,11 +633,65 @@ async fn connect(
         ns_enabled,
         deafened,
         ptt_mode,
+        vad_threshold,
         ptt_key,
         _ptt_stop: ptt_stop_tx,
         event_task,
     })
 }
+
+/// Short two-tone blip: rising for a join, falling for a leave.
+#[cfg(windows)]
+fn play_voice_blip(join: bool) {
+    if !crate::api::load_settings().voice_join_sounds {
+        return;
+    }
+    use std::sync::OnceLock;
+    static JOIN: OnceLock<Vec<u8>> = OnceLock::new();
+    static LEAVE: OnceLock<Vec<u8>> = OnceLock::new();
+    fn synth(f1: f32, f2: f32) -> Vec<u8> {
+        const RATE: u32 = 44100;
+        let mut samples: Vec<i16> = Vec::new();
+        for (freq, ms) in [(f1, 70u32), (f2, 90u32)] {
+            let n = RATE * ms / 1000;
+            for i in 0..n {
+                let t = i as f32 / RATE as f32;
+                let env = (1.0 - i as f32 / n as f32).powf(1.4);
+                samples.push(((t * freq * std::f32::consts::TAU).sin() * env * 0.22 * 32767.0) as i16);
+            }
+        }
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend(b"RIFF");
+        wav.extend((36 + data_len).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(RATE.to_le_bytes());
+        wav.extend((RATE * 2).to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data_len.to_le_bytes());
+        for s in samples {
+            wav.extend(s.to_le_bytes());
+        }
+        wav
+    }
+    let wav = if join {
+        JOIN.get_or_init(|| synth(440.0, 587.33))
+    } else {
+        LEAVE.get_or_init(|| synth(587.33, 392.0))
+    };
+    use winapi::um::playsoundapi::{PlaySoundW, SND_ASYNC, SND_MEMORY};
+    unsafe {
+        PlaySoundW(wav.as_ptr() as *const u16, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC);
+    }
+}
+
+#[cfg(not(windows))]
+fn play_voice_blip(_join: bool) {}
 
 fn refresh_participants(room: &Room, status: VoiceStatusSignal) {
     let mut s = status;

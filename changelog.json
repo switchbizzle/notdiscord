@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.19.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Mic sensitivity slider — voice activity now only transmits when you speak above the threshold (marker shown on the mic meter; 0 = classic open mic)",
+      "Join/leave blips when people enter or exit your voice channel (toggle in settings)"
+    ]
+  },
+  {
     "version": "0.18.0",
     "date": "2026-08-26",
     "changes": [
