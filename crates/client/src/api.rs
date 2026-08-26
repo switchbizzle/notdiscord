@@ -1,7 +1,7 @@
 //! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
+use shared::{ApiError, AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
@@ -149,6 +149,41 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
         path.push_str(&format!("&before={before}"));
     }
     get(session, path).await
+}
+
+pub async fn stickers(session: &Session) -> Result<Vec<Sticker>, String> {
+    get(session, "stickers".into()).await
+}
+
+pub async fn create_sticker(session: &Session, name: String, url: String) -> Result<Sticker, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/stickers", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&CreateStickerRequest { name, url })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
+pub async fn delete_sticker(session: &Session, sticker_id: i64) -> Result<(), String> {
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/stickers/{sticker_id}", session.base_url))
+        .bearer_auth(&session.token)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
+}
+
+pub async fn client_version(session: &Session) -> Result<ClientVersionInfo, String> {
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/client/version", session.base_url))
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
 }
 
 pub async fn profile(session: &Session, user_id: i64) -> Result<Profile, String> {

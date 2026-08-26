@@ -303,6 +303,68 @@ input:focus { border-color: #5865f2; }
 .profile-btn:hover { background: #404249; }
 .profile-btn.primary { background: #5865f2; }
 
+/* ---------- Stickers ---------- */
+
+.sticker-panel {
+    margin: 0 16px 8px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 10px;
+    padding: 10px;
+}
+.sticker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 8px;
+    max-height: 260px;
+    overflow-y: auto;
+}
+.sticker-cell { position: relative; }
+.sticker-img {
+    width: 100%;
+    height: 84px;
+    object-fit: contain;
+    border-radius: 8px;
+    cursor: pointer;
+    background: #232428;
+}
+.sticker-img:hover { outline: 2px solid #5865f2; }
+.sticker-delete {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fa777c;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+    display: none;
+}
+.sticker-cell:hover .sticker-delete { display: block; }
+.sticker-add {
+    height: 84px;
+    border-radius: 8px;
+    background: #232428;
+    color: #949ba4;
+    font-size: 28px;
+    border: 1px dashed #4e5058;
+}
+.sticker-add:hover { color: #fff; border-color: #5865f2; }
+.sticker-btn { font-size: 17px; }
+
+.update-banner {
+    margin: 8px;
+    padding: 10px;
+    border-radius: 8px;
+    background: #23a55a;
+    color: #fff;
+    font-weight: 600;
+    font-size: 13px;
+}
+.update-banner:hover { filter: brightness(1.1); }
+.update-banner:disabled { opacity: 0.7; cursor: default; }
+
 /* ---------- Reaction palette (above compose) ---------- */
 
 .react-palette {

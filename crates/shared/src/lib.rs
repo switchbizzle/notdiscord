@@ -120,6 +120,29 @@ pub struct VoiceTokenResponse {
     pub room: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sticker {
+    pub id: i64,
+    pub name: String,
+    pub url: String,
+    pub creator_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateStickerRequest {
+    pub name: String,
+    /// URL previously returned by /api/upload.
+    pub url: String,
+}
+
+/// Response from GET /api/client/version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientVersionInfo {
+    pub version: String,
+    /// Server-relative download path for the current client build.
+    pub url: String,
+}
+
 /// One GIF search result from GET /api/gifs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GifResult {
@@ -160,5 +183,7 @@ pub enum ServerEvent {
     ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     MessageEdited { channel_id: i64, message_id: i64, content: String, edited_at: i64 },
     MessageDeleted { channel_id: i64, message_id: i64 },
+    StickerCreated { sticker: Sticker },
+    StickerDeleted { sticker_id: i64 },
     Error { message: String },
 }

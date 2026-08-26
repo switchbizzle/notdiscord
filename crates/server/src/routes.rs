@@ -7,9 +7,9 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use shared::{
-    AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, Profile,
-    RegisterRequest, ServerEvent, UpdateProfileRequest, UploadResponse, User, UserStatus,
-    VoiceTokenResponse,
+    AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest,
+    GifResult, LoginRequest, Message, Profile, RegisterRequest, ServerEvent, Sticker,
+    UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -402,6 +402,98 @@ pub async fn serve_file_legacy(Path(name): Path<String>, Query(q): Query<FileQue
         return StatusCode::NOT_FOUND.into_response();
     }
     file_response(crate::uploads_dir().join(&name), &name, q.dl.is_some()).await
+}
+
+pub async fn list_stickers(
+    State(state): State<SharedState>,
+    _user: AuthUser,
+) -> ApiResult<Json<Vec<Sticker>>> {
+    let rows = sqlx::query("SELECT id, name, url, creator_id FROM stickers ORDER BY name COLLATE NOCASE")
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?;
+    let stickers = rows
+        .into_iter()
+        .map(|r| Sticker { id: r.get(0), name: r.get(1), url: r.get(2), creator_id: r.get(3) })
+        .collect();
+    Ok(Json(stickers))
+}
+
+pub async fn create_sticker(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<CreateStickerRequest>,
+) -> ApiResult<Json<Sticker>> {
+    let name = req.name.trim().to_owned();
+    if name.is_empty() || name.len() > 32 {
+        return Err(err(StatusCode::BAD_REQUEST, "sticker name must be 1-32 characters"));
+    }
+    let ok = req.url.len() < 500
+        && (req.url.starts_with("http://") || req.url.starts_with("https://") || req.url.starts_with("/files/"));
+    if !ok {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid sticker url"));
+    }
+
+    let result = sqlx::query("INSERT INTO stickers (name, url, creator_id, created_at) VALUES (?, ?, ?, ?)")
+        .bind(&name)
+        .bind(&req.url)
+        .bind(user.id)
+        .bind(now_ms())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+
+    let sticker = Sticker { id: result.last_insert_rowid(), name, url: req.url, creator_id: user.id };
+    let _ = state.events.send(ServerEvent::StickerCreated { sticker: sticker.clone() });
+    Ok(Json(sticker))
+}
+
+pub async fn delete_sticker(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(sticker_id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let affected = sqlx::query("DELETE FROM stickers WHERE id = ? AND creator_id = ?")
+        .bind(sticker_id)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?
+        .rows_affected();
+    if affected == 0 {
+        return Err(err(StatusCode::FORBIDDEN, "you can only delete your own stickers"));
+    }
+    let _ = state.events.send(ServerEvent::StickerDeleted { sticker_id });
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+fn client_dir() -> std::path::PathBuf {
+    std::env::var("NOTDISCORD_CLIENT_DIR")
+        .unwrap_or_else(|_| "client".into())
+        .into()
+}
+
+/// Public: current client version (used by the auto-updater).
+pub async fn client_version() -> Result<Json<ClientVersionInfo>, StatusCode> {
+    let version = tokio::fs::read_to_string(client_dir().join("version.txt"))
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(ClientVersionInfo { version: version.trim().to_owned(), url: "/download".into() }))
+}
+
+/// Public: download the current client build.
+pub async fn download_client() -> Response {
+    match tokio::fs::read(client_dir().join("NotDiscord.exe")).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+                (header::CONTENT_DISPOSITION, "attachment; filename=\"NotDiscord.exe\"".to_owned()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[derive(Deserialize)]

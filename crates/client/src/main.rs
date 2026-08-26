@@ -17,6 +17,10 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use shared::{Channel, ClientEvent, GifResult, Message, Profile, ServerEvent, UpdateProfileRequest, User, UserStatus};
 
 fn main() {
+    // Clean up the previous binary left behind by a self-update.
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::fs::remove_file(exe.with_file_name("NotDiscord.old.exe"));
+    }
     let window = WindowBuilder::new()
         .with_title("NotDiscord")
         .with_inner_size(LogicalSize::new(1100.0, 720.0));
@@ -182,6 +186,10 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut status = use_signal(|| "connecting…".to_string());
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status));
+    let mut update_available = use_signal(|| None::<shared::ClientVersionInfo>);
+    let mut updating = use_signal(|| false);
+    let mut stickers = use_signal(Vec::<shared::Sticker>::new);
+    let mut sticker_open = use_signal(|| false);
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
@@ -206,6 +214,22 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             }
         });
     };
+
+    // Check for a newer client build on the server.
+    use_future(move || async move {
+        if let Ok(info) = api::client_version(&session()).await {
+            if info.version != env!("CARGO_PKG_VERSION") {
+                update_available.set(Some(info));
+            }
+        }
+    });
+
+    // Load the sticker collection.
+    use_future(move || async move {
+        if let Ok(list) = api::stickers(&session()).await {
+            stickers.set(list);
+        }
+    });
 
     // Initial data load: channel list, then history for the first channel.
     use_future(move || async move {
@@ -368,6 +392,16 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 if user.id != session().user.id {
                                     typing.write().insert(user.id, (channel_id, user.username, now_ms() + TYPING_TTL_MS));
                                 }
+                            }
+                            ServerEvent::StickerCreated { sticker } => {
+                                let mut list = stickers.write();
+                                if !list.iter().any(|s| s.id == sticker.id) {
+                                    list.push(sticker);
+                                    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                                }
+                            }
+                            ServerEvent::StickerDeleted { sticker_id } => {
+                                stickers.write().retain(|s| s.id != sticker_id);
                             }
                             ServerEvent::Error { .. } => {}
                         }
@@ -854,6 +888,40 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         }
                     }
                 }
+                if let Some(info) = update_available() {
+                    button {
+                        class: "update-banner",
+                        disabled: updating(),
+                        onclick: move |_| {
+                            let info = info.clone();
+                            spawn(async move {
+                                updating.set(true);
+                                let url = format!("{}{}", session().base_url, info.url);
+                                let result = async {
+                                    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+                                    if !resp.status().is_success() {
+                                        return Err(format!("download failed ({})", resp.status()));
+                                    }
+                                    resp.bytes().await.map_err(|e| e.to_string())
+                                }
+                                .await;
+                                match result {
+                                    Ok(bytes) => {
+                                        if let Err(e) = apply_self_update(bytes.to_vec()) {
+                                            status.set(e);
+                                            updating.set(false);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        status.set(format!("update failed: {e}"));
+                                        updating.set(false);
+                                    }
+                                }
+                            });
+                        },
+                        if updating() { "⬇ downloading update…" } else { "⬆ Update v{info.version} — install & restart" }
+                    }
+                }
                 input {
                     class: "new-channel",
                     placeholder: "+ new channel",
@@ -939,6 +1007,86 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         }
                     }
                 }
+                if sticker_open() {
+                    div { class: "sticker-panel",
+                        div { class: "sticker-grid",
+                            for sticker in stickers() {
+                                div { key: "{sticker.id}", class: "sticker-cell",
+                                    img {
+                                        class: "sticker-img",
+                                        src: "{sticker.url}",
+                                        title: "{sticker.name}",
+                                        loading: "lazy",
+                                        onclick: {
+                                            let url = sticker.url.clone();
+                                            move |_| {
+                                                if let Some(channel) = selected() {
+                                                    ws.send(ClientEvent::SendMessage {
+                                                        channel_id: channel.id,
+                                                        content: url.clone(),
+                                                    });
+                                                }
+                                                sticker_open.set(false);
+                                            }
+                                        },
+                                    }
+                                    if sticker.creator_id == session().user.id {
+                                        button {
+                                            class: "sticker-delete",
+                                            title: "Delete sticker",
+                                            onclick: {
+                                                let id = sticker.id;
+                                                move |_| {
+                                                    spawn(async move {
+                                                        if let Err(e) = api::delete_sticker(&session(), id).await {
+                                                            status.set(e);
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                            "✕"
+                                        }
+                                    }
+                                }
+                            }
+                            button {
+                                class: "sticker-add",
+                                title: "Add a sticker from an image file",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let Some(file) = rfd::AsyncFileDialog::new()
+                                            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                            .pick_file()
+                                            .await
+                                        else {
+                                            return;
+                                        };
+                                        let name = file.file_name();
+                                        let bytes = file.read().await;
+                                        if bytes.len() > 8 * 1024 * 1024 {
+                                            status.set("sticker too large (max 8 MB)".into());
+                                            return;
+                                        }
+                                        let sticker_name = name
+                                            .rsplit_once('.')
+                                            .map(|(stem, _)| stem.to_owned())
+                                            .unwrap_or_else(|| name.clone());
+                                        match api::upload(&session(), &name, bytes).await {
+                                            Ok(url) => {
+                                                // Arrives back via the StickerCreated broadcast.
+                                                if let Err(e) = api::create_sticker(&session(), sticker_name, url).await {
+                                                    status.set(e);
+                                                }
+                                            }
+                                            Err(e) => status.set(e),
+                                        }
+                                    });
+                                },
+                                "+"
+                            }
+                        }
+                    }
+                }
                 if let Some(target) = react_target() {
                     div { class: "react-palette",
                         span { class: "react-palette-label", "React:" }
@@ -975,6 +1123,12 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             }
                         },
                         "GIF"
+                    }
+                    button {
+                        class: "attach sticker-btn",
+                        title: "Send a sticker",
+                        onclick: move |_| sticker_open.set(!sticker_open()),
+                        "🏷"
                     }
                     button {
                         class: "attach",
@@ -1282,6 +1436,25 @@ fn play_notification_sound() {}
 
 fn initial(username: &str) -> String {
     username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+}
+
+/// Replace the running executable with `new_exe_bytes` and restart.
+/// Windows allows renaming a running exe, so: rename self aside, write the
+/// new binary at the original path, spawn it, exit.
+fn apply_self_update(new_exe_bytes: Vec<u8>) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let old = exe.with_file_name("NotDiscord.old.exe");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(&exe, &old).map_err(|e| format!("could not stage update: {e}"))?;
+    if let Err(e) = std::fs::write(&exe, &new_exe_bytes) {
+        // Roll back so the app still launches next time.
+        let _ = std::fs::rename(&old, &exe);
+        return Err(format!("could not write update: {e}"));
+    }
+    std::process::Command::new(&exe)
+        .spawn()
+        .map_err(|e| format!("update installed but relaunch failed: {e}"))?;
+    std::process::exit(0);
 }
 
 fn format_date(unix_ms: i64) -> String {
