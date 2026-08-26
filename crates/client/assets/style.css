@@ -104,6 +104,50 @@ input:focus { border-color: #5865f2; }
 .channel.unread { color: #fff; font-weight: 600; }
 .channel.unread::after { content: " ●"; color: #f23f43; font-size: 9px; }
 
+.section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #949ba4;
+    padding: 12px 10px 4px;
+}
+.channel.voice { font-size: 14px; }
+.channel.voice.active { color: #23a55a; }
+
+.voice-panel {
+    margin: 8px;
+    background: #232428;
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.voice-head { font-weight: 600; color: #23a55a; font-size: 13px; margin-bottom: 2px; }
+.voice-error { color: #fa777c; font-size: 12px; }
+.voice-user {
+    font-size: 13px;
+    color: #b5bac1;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.voice-user.speaking {
+    color: #fff;
+    background: rgba(35, 165, 90, 0.15);
+    box-shadow: inset 2px 0 0 #23a55a;
+}
+.voice-controls { display: flex; gap: 6px; margin-top: 6px; }
+.voice-btn {
+    flex: 1;
+    background: #313338;
+    border-radius: 6px;
+    padding: 6px;
+    font-size: 15px;
+}
+.voice-btn:hover { background: #404249; }
+.voice-btn.muted { background: #5c2e30; }
+.voice-btn.leave:hover { background: #f23f43; }
+
 .new-channel {
     margin: 8px;
     font-size: 13px;
@@ -192,6 +236,8 @@ input:focus { border-color: #5865f2; }
     top: 18px;
     right: 16px;
     display: flex;
+    flex-wrap: wrap;
+    max-width: 240px;
     gap: 2px;
     background: #232428;
     border: 1px solid #1a1b1e;

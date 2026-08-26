@@ -1,7 +1,7 @@
 //! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, RegisterRequest, UploadResponse, User, UserStatus};
+use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, RegisterRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
@@ -116,6 +116,10 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
         path.push_str(&format!("&before={before}"));
     }
     get(session, path).await
+}
+
+pub async fn voice_token(session: &Session, channel_id: i64) -> Result<VoiceTokenResponse, String> {
+    get(session, format!("voice/token?channel_id={channel_id}")).await
 }
 
 pub async fn gifs(session: &Session, query: &str) -> Result<Vec<GifResult>, String> {

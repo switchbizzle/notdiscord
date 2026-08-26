@@ -2,6 +2,7 @@
 
 mod api;
 mod md;
+mod voice;
 
 use std::collections::{HashMap, HashSet};
 
@@ -177,6 +178,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut gif_query = use_signal(String::new);
     let mut gif_results = use_signal(Vec::<GifResult>::new);
     let mut gif_status = use_signal(String::new);
+    let voice_status = use_signal_sync(voice::VoiceStatus::default);
+    let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status));
     let mut status = use_signal(|| "connecting…".to_string());
 
     // Initial data load: channel list, then history for the first channel.
@@ -406,6 +409,42 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
         });
     };
 
+    // Ctrl+V with an image on the clipboard uploads it as a PNG.
+    let paste_image = move || {
+        let Some(channel) = selected() else { return };
+        spawn(async move {
+            let clip = tokio::task::spawn_blocking(|| {
+                let mut clipboard = arboard::Clipboard::new().ok()?;
+                let img = clipboard.get_image().ok()?;
+                Some((img.width as u32, img.height as u32, img.bytes.into_owned()))
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some((width, height, rgba)) = clip else { return };
+
+            let png = tokio::task::spawn_blocking(move || {
+                let img = image::RgbaImage::from_raw(width, height, rgba)?;
+                let mut buf = Vec::new();
+                image::DynamicImage::ImageRgba8(img)
+                    .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+                    .ok()?;
+                Some(buf)
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some(png) = png else { return };
+
+            uploading.set(true);
+            match api::upload(&session(), "pasted.png", png).await {
+                Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
+                Err(e) => status.set(e),
+            }
+            uploading.set(false);
+        });
+    };
+
     let add_channel = move || {
         let name = new_channel().trim().to_string();
         if name.is_empty() {
@@ -496,7 +535,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             div { class: "sidebar",
                 div { class: "sidebar-title", "NotDiscord" }
                 div { class: "channel-list",
-                    for channel in channels() {
+                    for channel in channels().into_iter().filter(|c| c.kind == "text") {
                         button {
                             key: "{channel.id}",
                             class: if selected_id == Some(channel.id) {
@@ -523,6 +562,64 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 });
                             },
                             "# {channel.name}"
+                        }
+                    }
+                    div { class: "section-label", "Voice" }
+                    for channel in channels().into_iter().filter(|c| c.kind == "voice") {
+                        button {
+                            key: "v{channel.id}",
+                            class: if voice_status().channel_id == Some(channel.id) { "channel voice active" } else { "channel voice" },
+                            onclick: move |_| {
+                                let channel = channel.clone();
+                                spawn(async move {
+                                    match api::voice_token(&session(), channel.id).await {
+                                        Ok(grant) => voice.send(voice::VoiceCmd::Join {
+                                            channel_id: channel.id,
+                                            channel_name: channel.name.clone(),
+                                            url: grant.url,
+                                            token: grant.token,
+                                        }),
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            },
+                            "🔊 {channel.name}"
+                        }
+                    }
+                }
+                if voice_status().channel_id.is_some() || !voice_status().error.is_empty() {
+                    div { class: "voice-panel",
+                        if !voice_status().error.is_empty() {
+                            div { class: "voice-error", "{voice_status().error}" }
+                        } else {
+                            div { class: "voice-head",
+                                if voice_status().connecting {
+                                    "🔊 joining {voice_status().channel_name}…"
+                                } else {
+                                    "🔊 {voice_status().channel_name}"
+                                }
+                            }
+                            for p in voice_status().participants {
+                                div {
+                                    key: "{p.identity}",
+                                    class: if p.speaking { "voice-user speaking" } else { "voice-user" },
+                                    "{p.name}"
+                                }
+                            }
+                            div { class: "voice-controls",
+                                button {
+                                    class: if voice_status().muted { "voice-btn muted" } else { "voice-btn" },
+                                    title: if voice_status().muted { "Unmute" } else { "Mute" },
+                                    onclick: move |_| voice.send(voice::VoiceCmd::ToggleMute),
+                                    if voice_status().muted { "🔇" } else { "🎤" }
+                                }
+                                button {
+                                    class: "voice-btn leave",
+                                    title: "Disconnect",
+                                    onclick: move |_| voice.send(voice::VoiceCmd::Leave),
+                                    "📞"
+                                }
+                            }
                         }
                     }
                 }
@@ -654,6 +751,10 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         onkeydown: move |e| {
                             if e.key() == Key::Enter {
                                 send();
+                            } else if e.key() == Key::Character("v".into())
+                                && e.modifiers().contains(Modifiers::CONTROL)
+                            {
+                                paste_image();
                             }
                         },
                     }
@@ -720,7 +821,9 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, String) {
     }
 }
 
-const REACTION_EMOJIS: &[&str] = &["👍", "😂", "❤️", "🔥", "😮", "😭"];
+const REACTION_EMOJIS: &[&str] = &[
+    "👍", "👎", "😂", "❤️", "🔥", "😮", "😭", "🎉", "💀", "👀", "🤡", "🫡",
+];
 
 #[component]
 fn MessageRow(msg: Message, compact: bool) -> Element {

@@ -18,6 +18,10 @@ dirs = "6"
 pulldown-cmark = { version = "0.13", default-features = false }
 open = "5"
 rfd = "0.15"
+livekit = { version = "0.8", features = ["native-tls"] }
+cpal = "0.18"
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["playsoundapi"] }
