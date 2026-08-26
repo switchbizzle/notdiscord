@@ -1,7 +1,7 @@
 //! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
+use shared::{ApiError, AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, SetBanRequest, SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
@@ -191,6 +191,39 @@ pub async fn create_sticker(session: &Session, name: String, url: String) -> Res
 pub async fn delete_sticker(session: &Session, sticker_id: i64) -> Result<(), String> {
     let resp = reqwest::Client::new()
         .delete(format!("{}/api/stickers/{sticker_id}", session.base_url))
+        .bearer_auth(&session.token)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
+}
+
+pub async fn set_role(session: &Session, user_id: i64, role: &str) -> Result<User, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/users/{user_id}/role", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&SetRoleRequest { role: role.into() })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
+pub async fn set_ban(session: &Session, user_id: i64, banned: bool) -> Result<User, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/users/{user_id}/ban", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&SetBanRequest { banned })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
+pub async fn delete_channel(session: &Session, channel_id: i64) -> Result<(), String> {
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/channels/{channel_id}", session.base_url))
         .bearer_auth(&session.token)
         .send()
         .await

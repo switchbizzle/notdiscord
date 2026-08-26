@@ -210,6 +210,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut has_more = use_signal(|| false);
     let mut loading_older = use_signal(|| false);
     let mut unread = use_signal(HashSet::<i64>::new);
+    let mut armed_delete = use_signal(|| None::<i64>);
     let window = use_window();
     // user id -> (channel they are typing in, username, expiry timestamp)
     let mut typing = use_signal(HashMap::<i64, (i64, String, i64)>::new);
@@ -447,6 +448,27 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             ServerEvent::StickerDeleted { sticker_id } => {
                                 stickers.write().retain(|s| s.id != sticker_id);
                             }
+                            ServerEvent::ChannelDeleted { channel_id } => {
+                                channels.write().retain(|c| c.id != channel_id);
+                                unread.write().remove(&channel_id);
+                                if voice_status().channel_id == Some(channel_id) {
+                                    voice.send(voice::VoiceCmd::Leave);
+                                }
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    let next = channels().into_iter().find(|c| c.kind == "text");
+                                    selected.set(next.clone());
+                                    messages.set(Vec::new());
+                                    has_more.set(false);
+                                    if let Some(ch) = next {
+                                        spawn(async move {
+                                            if let Ok(msgs) = api::messages(&session(), ch.id, None).await {
+                                                has_more.set(msgs.len() == api::HISTORY_PAGE);
+                                                messages.set(msgs);
+                                            }
+                                        });
+                                    }
+                                }
+                            }
                             ServerEvent::Error { .. } => {}
                         }
                     }
@@ -646,6 +668,14 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             style: "color: hsl({avatar_hue(profile.user.id)}, 65%, 68%)",
                             "{profile.user.username}"
                         }
+                        div { class: "profile-badges",
+                            if profile.user.role == "admin" {
+                                span { class: "role-badge", "ADMIN" }
+                            }
+                            if profile.banned {
+                                span { class: "role-badge banned-badge", "BANNED" }
+                            }
+                        }
                         div { class: "profile-joined", "Member since {format_date(profile.created_at)}" }
                         if editing_bio() {
                             textarea {
@@ -673,6 +703,51 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         } else {
                             if !profile.bio.is_empty() {
                                 div { class: "profile-bio", "{profile.bio}" }
+                            }
+                            if session().user.role == "admin" && profile.user.id != session().user.id {
+                                div { class: "profile-actions",
+                                    button {
+                                        class: "profile-btn",
+                                        onclick: {
+                                            let target = profile.user.id;
+                                            let make_admin = profile.user.role != "admin";
+                                            move |_| {
+                                                spawn(async move {
+                                                    let role = if make_admin { "admin" } else { "member" };
+                                                    match api::set_role(&session(), target, role).await {
+                                                        Ok(_) => {
+                                                            if let Ok(p) = api::profile(&session(), target).await {
+                                                                profile_card.set(Some(p));
+                                                            }
+                                                        }
+                                                        Err(e) => status.set(e),
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        if profile.user.role == "admin" { "Remove admin" } else { "Make admin" }
+                                    }
+                                    button {
+                                        class: "profile-btn danger",
+                                        onclick: {
+                                            let target = profile.user.id;
+                                            let ban = !profile.banned;
+                                            move |_| {
+                                                spawn(async move {
+                                                    match api::set_ban(&session(), target, ban).await {
+                                                        Ok(_) => {
+                                                            if let Ok(p) = api::profile(&session(), target).await {
+                                                                profile_card.set(Some(p));
+                                                            }
+                                                        }
+                                                        Err(e) => status.set(e),
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        if profile.banned { "Unban" } else { "Ban" }
+                                    }
+                                }
                             }
                             if profile.user.id == session().user.id {
                                 div { class: "profile-actions",
@@ -784,7 +859,30 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     }
                                 });
                             },
-                            "# {channel.name}"
+                            span { class: "chan-name", "# {channel.name}" }
+                            if session().user.role == "admin" {
+                                span {
+                                    class: if armed_delete() == Some(channel.id) { "chan-del armed" } else { "chan-del" },
+                                    title: if armed_delete() == Some(channel.id) { "Click again to permanently delete" } else { "Delete channel" },
+                                    onclick: {
+                                        let id = channel.id;
+                                        move |e: MouseEvent| {
+                                            e.stop_propagation();
+                                            if armed_delete() == Some(id) {
+                                                armed_delete.set(None);
+                                                spawn(async move {
+                                                    if let Err(e) = api::delete_channel(&session(), id).await {
+                                                        status.set(e);
+                                                    }
+                                                });
+                                            } else {
+                                                armed_delete.set(Some(id));
+                                            }
+                                        }
+                                    },
+                                    "✕"
+                                }
+                            }
                         }
                     }
                     div { class: "section-row",
@@ -1325,6 +1423,11 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         },
                         UserAvatar { user: member.user.clone(), class: "member-avatar" }
                         span { class: "member-name", "{member.user.username}" }
+                        if member.banned {
+                            span { class: "role-badge banned-badge", "BANNED" }
+                        } else if member.user.role == "admin" {
+                            span { class: "role-badge", "ADMIN" }
+                        }
                         span { class: "member-dot" }
                     }
                 }
@@ -1426,6 +1529,8 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                         },
                         Icon { name: "edit", size: 16 }
                     }
+                }
+                if own || session().user.role == "admin" {
                     button {
                         title: "Delete",
                         onclick: move |_| ws.send(ClientEvent::DeleteMessage { message_id: msg_id }),

@@ -12,6 +12,13 @@ pub struct User {
     /// URL of the user's avatar image, if set.
     #[serde(default)]
     pub avatar: Option<String>,
+    /// "admin" or "member".
+    #[serde(default = "default_role")]
+    pub role: String,
+}
+
+fn default_role() -> String {
+    "member".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +26,18 @@ pub struct Profile {
     pub user: User,
     pub bio: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub banned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetRoleRequest {
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetBanRequest {
+    pub banned: bool,
 }
 
 /// Fields are applied only when Some; None leaves the current value.
@@ -68,6 +87,8 @@ pub struct ReactionEntry {
 pub struct UserStatus {
     pub user: User,
     pub online: bool,
+    #[serde(default)]
+    pub banned: bool,
 }
 
 // ---------- REST request/response bodies ----------
@@ -185,5 +206,6 @@ pub enum ServerEvent {
     MessageDeleted { channel_id: i64, message_id: i64 },
     StickerCreated { sticker: Sticker },
     StickerDeleted { sticker_id: i64 },
+    ChannelDeleted { channel_id: i64 },
     Error { message: String },
 }

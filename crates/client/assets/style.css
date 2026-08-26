@@ -695,6 +695,36 @@ input:focus { border-color: #5865f2; }
 }
 .member:not(.online) .member-avatar { filter: grayscale(0.9) brightness(0.7); }
 .member-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.role-badge {
+    background: #5865f2;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    letter-spacing: 0.5px;
+}
+.banned-badge { background: #f23f43; }
+.profile-badges { display: flex; gap: 6px; }
+.profile-btn.danger { background: #6b2a2c; }
+.profile-btn.danger:hover { background: #f23f43; }
+
+.channel { display: flex; align-items: center; }
+.chan-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chan-del {
+    display: none;
+    color: #949ba4;
+    font-size: 12px;
+    padding: 0 4px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+.channel:hover .chan-del { display: inline; }
+.chan-del:hover { color: #f23f43; }
+.chan-del.armed { display: inline; color: #fff; background: #f23f43; }
+
 .member-dot {
     width: 8px;
     height: 8px;

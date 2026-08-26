@@ -194,12 +194,15 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             let _ = state.events.send(ServerEvent::MessageEdited { channel_id, message_id, content, edited_at });
         }
         ClientEvent::DeleteMessage { message_id } => {
-            let Some(row) = sqlx::query("SELECT channel_id FROM messages WHERE id = ? AND author_id = ?")
-                .bind(message_id)
-                .bind(user.id)
-                .fetch_optional(&state.db)
-                .await?
-            else {
+            // Authors can delete their own messages; admins can delete any.
+            let query = if user.role == "admin" {
+                sqlx::query("SELECT channel_id FROM messages WHERE id = ?").bind(message_id)
+            } else {
+                sqlx::query("SELECT channel_id FROM messages WHERE id = ? AND author_id = ?")
+                    .bind(message_id)
+                    .bind(user.id)
+            };
+            let Some(row) = query.fetch_optional(&state.db).await? else {
                 return Ok(());
             };
             let channel_id: i64 = row.get(0);

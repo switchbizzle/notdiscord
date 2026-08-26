@@ -8,8 +8,9 @@ use sqlx::Row;
 
 use shared::{
     AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateStickerRequest,
-    GifResult, LoginRequest, Message, Profile, RegisterRequest, ServerEvent, Sticker,
-    UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
+    GifResult, LoginRequest, Message, Profile, RegisterRequest, ServerEvent, SetBanRequest,
+    SetRoleRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus,
+    VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -35,9 +36,16 @@ pub async fn register(
     }
 
     let hash = auth::hash_password(req.password).await.map_err(internal)?;
-    let result = sqlx::query("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)")
+    // The first account on a fresh server becomes admin/owner.
+    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let role = if existing == 0 { "admin" } else { "member" };
+    let result = sqlx::query("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)")
         .bind(&username)
         .bind(&hash)
+        .bind(role)
         .bind(now_ms())
         .execute(&state.db)
         .await;
@@ -51,14 +59,17 @@ pub async fn register(
     };
 
     let token = create_session(&state, user_id).await?;
-    Ok(Json(AuthResponse { token, user: User { id: user_id, username, avatar: None } }))
+    Ok(Json(AuthResponse {
+        token,
+        user: User { id: user_id, username, avatar: None, role: role.into() },
+    }))
 }
 
 pub async fn login(
     State(state): State<SharedState>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
-    let row = sqlx::query("SELECT id, username, password_hash, avatar FROM users WHERE username = ?")
+    let row = sqlx::query("SELECT id, username, password_hash, avatar, role, banned FROM users WHERE username = ?")
         .bind(req.username.trim())
         .fetch_optional(&state.db)
         .await
@@ -69,13 +80,18 @@ pub async fn login(
     };
     let (id, username, hash): (i64, String, String) = (row.get(0), row.get(1), row.get(2));
     let avatar: Option<String> = row.get(3);
+    let role: String = row.get(4);
+    let banned: i64 = row.get(5);
 
     if !auth::verify_password(req.password, hash).await {
         return Err(err(StatusCode::UNAUTHORIZED, "invalid username or password"));
     }
+    if banned != 0 {
+        return Err(err(StatusCode::FORBIDDEN, "you are banned from this server"));
+    }
 
     let token = create_session(&state, id).await?;
-    Ok(Json(AuthResponse { token, user: User { id, username, avatar } }))
+    Ok(Json(AuthResponse { token, user: User { id, username, avatar, role } }))
 }
 
 async fn create_session(state: &SharedState, user_id: i64) -> ApiResult<String> {
@@ -98,21 +114,135 @@ pub async fn list_users(
     State(state): State<SharedState>,
     _user: AuthUser,
 ) -> ApiResult<Json<Vec<UserStatus>>> {
-    let rows = sqlx::query("SELECT id, username, avatar FROM users ORDER BY username COLLATE NOCASE")
-        .fetch_all(&state.db)
-        .await
-        .map_err(internal)?;
+    let rows = sqlx::query(
+        "SELECT id, username, avatar, role, banned FROM users ORDER BY username COLLATE NOCASE",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
     let online: std::collections::HashSet<i64> =
         state.presence.lock().unwrap().keys().copied().collect();
     let users = rows
         .into_iter()
         .map(|r| {
-            let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2) };
+            let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) };
+            let banned: i64 = r.get(4);
             let is_online = online.contains(&user.id);
-            UserStatus { user, online: is_online }
+            UserStatus { user, online: is_online, banned: banned != 0 }
         })
         .collect();
     Ok(Json(users))
+}
+
+async fn owner_id(state: &SharedState) -> ApiResult<i64> {
+    sqlx::query_scalar("SELECT MIN(id) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)
+}
+
+async fn load_user(state: &SharedState, user_id: i64) -> ApiResult<User> {
+    let row = sqlx::query("SELECT id, username, avatar, role FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    match row {
+        Some(r) => Ok(User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) }),
+        None => Err(err(StatusCode::NOT_FOUND, "no such user")),
+    }
+}
+
+pub async fn set_role(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(target_id): Path<i64>,
+    Json(req): Json<SetRoleRequest>,
+) -> ApiResult<Json<User>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    if !matches!(req.role.as_str(), "admin" | "member") {
+        return Err(err(StatusCode::BAD_REQUEST, "role must be admin or member"));
+    }
+    if target_id == owner_id(&state).await? {
+        return Err(err(StatusCode::FORBIDDEN, "the server owner's role cannot be changed"));
+    }
+    load_user(&state, target_id).await?;
+    sqlx::query("UPDATE users SET role = ? WHERE id = ?")
+        .bind(&req.role)
+        .bind(target_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    let updated = load_user(&state, target_id).await?;
+    let _ = state.events.send(ServerEvent::UserUpdated { user: updated.clone() });
+    Ok(Json(updated))
+}
+
+pub async fn set_ban(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(target_id): Path<i64>,
+    Json(req): Json<SetBanRequest>,
+) -> ApiResult<Json<User>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    if target_id == owner_id(&state).await? {
+        return Err(err(StatusCode::FORBIDDEN, "the server owner cannot be banned"));
+    }
+    if target_id == user.id {
+        return Err(err(StatusCode::BAD_REQUEST, "you cannot ban yourself"));
+    }
+    load_user(&state, target_id).await?;
+    sqlx::query("UPDATE users SET banned = ? WHERE id = ?")
+        .bind(req.banned as i64)
+        .bind(target_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    if req.banned {
+        sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+            .bind(target_id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    }
+    let updated = load_user(&state, target_id).await?;
+    let _ = state.events.send(ServerEvent::UserUpdated { user: updated.clone() });
+    Ok(Json(updated))
+}
+
+pub async fn delete_channel(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let exists = sqlx::query("SELECT id FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    if exists.is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "no such channel"));
+    }
+    // Reactions cascade from message deletion.
+    sqlx::query("DELETE FROM messages WHERE channel_id = ?")
+        .bind(channel_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    sqlx::query("DELETE FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    let _ = state.events.send(ServerEvent::ChannelDeleted { channel_id });
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn get_profile(
@@ -120,7 +250,7 @@ pub async fn get_profile(
     _user: AuthUser,
     Path(user_id): Path<i64>,
 ) -> ApiResult<Json<Profile>> {
-    let row = sqlx::query("SELECT id, username, avatar, bio, created_at FROM users WHERE id = ?")
+    let row = sqlx::query("SELECT id, username, avatar, bio, created_at, role, banned FROM users WHERE id = ?")
         .bind(user_id)
         .fetch_optional(&state.db)
         .await
@@ -128,10 +258,12 @@ pub async fn get_profile(
     let Some(row) = row else {
         return Err(err(StatusCode::NOT_FOUND, "no such user"));
     };
+    let banned: i64 = row.get(6);
     Ok(Json(Profile {
-        user: User { id: row.get(0), username: row.get(1), avatar: row.get(2) },
+        user: User { id: row.get(0), username: row.get(1), avatar: row.get(2), role: row.get(5) },
         bio: row.get(3),
         created_at: row.get(4),
+        banned: banned != 0,
     }))
 }
 
@@ -575,7 +707,7 @@ pub async fn channel_messages(
     let before = q.before.unwrap_or(i64::MAX);
 
     let rows = sqlx::query(
-        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username, u.avatar \
+        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username, u.avatar, u.role \
          FROM messages m JOIN users u ON u.id = m.author_id \
          WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?",
     )
@@ -595,7 +727,7 @@ pub async fn channel_messages(
             content: r.get(2),
             created_at: r.get(3),
             edited_at: r.get(4),
-            author: User { id: r.get(5), username: r.get(6), avatar: r.get(7) },
+            author: User { id: r.get(5), username: r.get(6), avatar: r.get(7), role: r.get(8) },
             reactions: Vec::new(),
         })
         .collect();
