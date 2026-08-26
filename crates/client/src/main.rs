@@ -157,6 +157,7 @@ const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -> Element {
     let session = use_signal(move || session);
     use_context_provider(|| session);
+    let mut lightbox = use_context_provider(|| Signal::new(None::<String>));
     let mut channels = use_signal(Vec::<Channel>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
@@ -457,6 +458,41 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             if drag_over() {
                 div { class: "drop-overlay", "Drop to upload to #{selected_name}" }
             }
+            if let Some(url) = lightbox() {
+                div {
+                    class: "lightbox",
+                    onclick: move |_| lightbox.set(None),
+                    img { class: "lightbox-img", src: "{url}" }
+                    div { class: "lightbox-actions",
+                        button {
+                            onclick: {
+                                let url = url.clone();
+                                move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    let _ = open::that(&url);
+                                }
+                            },
+                            "Open in browser"
+                        }
+                        button {
+                            onclick: {
+                                let url = url.clone();
+                                move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    let save_url = if url.contains("/files/") {
+                                        format!("{url}?dl=1")
+                                    } else {
+                                        url.clone()
+                                    };
+                                    let _ = open::that(&save_url);
+                                }
+                            },
+                            "Save"
+                        }
+                        span { class: "lightbox-hint", "click anywhere to close" }
+                    }
+                }
+            }
             div { class: "sidebar",
                 div { class: "sidebar-title", "NotDiscord" }
                 div { class: "channel-list",
@@ -690,6 +726,7 @@ const REACTION_EMOJIS: &[&str] = &["👍", "😂", "❤️", "🔥", "😮", "�
 fn MessageRow(msg: Message, compact: bool) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let ws = use_coroutine_handle::<ClientEvent>();
+    let mut lightbox = use_context::<Signal<Option<String>>>();
     let mut palette_open = use_signal(|| false);
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
@@ -801,7 +838,16 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                     }
                 }
                 for (i, src) in images.into_iter().enumerate() {
-                    img { key: "{i}", class: "msg-img", src: "{src}", loading: "lazy" }
+                    img {
+                        key: "{i}",
+                        class: "msg-img",
+                        src: "{src}",
+                        loading: "lazy",
+                        onclick: {
+                            let src = src.clone();
+                            move |_| lightbox.set(Some(src.clone()))
+                        },
+                    }
                 }
                 for (i, url) in files.into_iter().enumerate() {
                     {

@@ -386,7 +386,38 @@ input:focus { border-color: #5865f2; }
     max-height: 320px;
     border-radius: 8px;
     margin-top: 4px;
+    cursor: pointer;
 }
+.msg-img:hover { filter: brightness(1.08); }
+
+.lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    cursor: zoom-out;
+}
+.lightbox-img {
+    max-width: 90vw;
+    max-height: 82vh;
+    border-radius: 8px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+.lightbox-actions { display: flex; align-items: center; gap: 10px; }
+.lightbox-actions button {
+    background: #313338;
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+}
+.lightbox-actions button:hover { background: #404249; }
+.lightbox-hint { color: #949ba4; font-size: 12px; }
 
 .drop-overlay {
     position: fixed;

@@ -207,7 +207,17 @@ pub async fn upload(
     Ok(Json(UploadResponse { url: format!("/files/{id}/{name}") }))
 }
 
-fn file_response(path: std::path::PathBuf, name: &str) -> impl std::future::Future<Output = Response> + Send + 'static {
+#[derive(Deserialize)]
+pub struct FileQuery {
+    /// When present, force a download even for inline-renderable images.
+    pub dl: Option<String>,
+}
+
+fn file_response(
+    path: std::path::PathBuf,
+    name: &str,
+    force_download: bool,
+) -> impl std::future::Future<Output = Response> + Send + 'static {
     let name = name.to_owned();
     async move {
         let Ok(bytes) = tokio::fs::read(path).await else {
@@ -217,7 +227,8 @@ fn file_response(path: std::path::PathBuf, name: &str) -> impl std::future::Futu
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
         ];
-        match image_content_type(&name) {
+        let inline_image = image_content_type(&name).filter(|_| !force_download);
+        match inline_image {
             Some(ct) => headers.push((header::CONTENT_TYPE, ct.to_owned())),
             None => {
                 headers.push((header::CONTENT_TYPE, "application/octet-stream".to_owned()));
@@ -238,23 +249,26 @@ fn file_response(path: std::path::PathBuf, name: &str) -> impl std::future::Futu
 }
 
 /// Current format: /files/{32-hex id}/{sanitized original filename}.
-pub async fn serve_file(Path((id, name)): Path<(String, String)>) -> Response {
+pub async fn serve_file(
+    Path((id, name)): Path<(String, String)>,
+    Query(q): Query<FileQuery>,
+) -> Response {
     let id_ok = id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
     if !id_ok || name != sanitize_filename(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    file_response(crate::uploads_dir().join(&id).join(&name), &name).await
+    file_response(crate::uploads_dir().join(&id).join(&name), &name, q.dl.is_some()).await
 }
 
 /// Legacy format from the first uploads release: /files/{32-hex}.{ext}.
-pub async fn serve_file_legacy(Path(name): Path<String>) -> Response {
+pub async fn serve_file_legacy(Path(name): Path<String>, Query(q): Query<FileQuery>) -> Response {
     let valid = name.len() < 40
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
         && name.matches('.').count() == 1;
     if !valid {
         return StatusCode::NOT_FOUND.into_response();
     }
-    file_response(crate::uploads_dir().join(&name), &name).await
+    file_response(crate::uploads_dir().join(&name), &name, q.dl.is_some()).await
 }
 
 #[derive(Deserialize)]
