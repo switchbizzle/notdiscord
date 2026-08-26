@@ -945,10 +945,16 @@ input:focus { border-color: #5865f2; }
     font-weight: 700;
     padding: 1px 6px;
     border-radius: 4px;
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 84px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     letter-spacing: 0.3px;
     text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
 }
+.member .role-badge { flex-shrink: 0; }
 .tag-manager {
     width: 100%;
     background: #2b2d31;

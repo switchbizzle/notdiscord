@@ -27,7 +27,8 @@ fn main() {
     }
     let window = WindowBuilder::new()
         .with_title("NotDiscord")
-        .with_inner_size(LogicalSize::new(1100.0, 720.0));
+        .with_inner_size(LogicalSize::new(1100.0, 720.0))
+        .with_min_inner_size(LogicalSize::new(900.0, 560.0));
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::new()
@@ -2529,7 +2530,7 @@ fn MainView(session: api::Session) -> Element {
                             style: "color: {name_color(member.user.id, &members(), &tags())}",
                             "{member.user.username}"
                         }
-                        for tag_id in member.tag_ids.iter().take(2) {
+                        for tag_id in member.tag_ids.iter().take(1) {
                             if let Some(tag) = tags().iter().find(|t| t.id == *tag_id) {
                                 span {
                                     class: "tag-pill",
