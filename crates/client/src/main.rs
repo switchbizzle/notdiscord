@@ -11,7 +11,7 @@ mod voice;
 
 use icons::Icon;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use dioxus::desktop::tao::window::UserAttentionType;
 use dioxus::html::HasFileData;
@@ -426,7 +426,12 @@ fn MainView(session: api::Session) -> Element {
     use_context_provider(|| tags);
     let mut has_more = use_signal(|| false);
     let mut loading_older = use_signal(|| false);
-    let mut unread = use_signal(HashSet::<i64>::new);
+    // channel id -> (unread messages, how many ping you, last id you'd read).
+    // Server-backed, so it survives restarts and matches on every device.
+    let mut unread = use_signal(HashMap::<i64, (i64, i64, i64)>::new);
+    // Newest message you'd already seen in the open channel; the NEW divider
+    // is drawn right after it.
+    let mut divider_at = use_signal(|| None::<i64>);
     let mut confirm = use_signal(|| None::<ConfirmAction>);
     let mut voice_rosters = use_signal(HashMap::<i64, Vec<(User, bool, bool)>>::new);
     let window = use_window();
@@ -439,6 +444,7 @@ fn MainView(session: api::Session) -> Element {
             tray_unread.set(has_unread);
         }
     });
+
     // user id -> (channel they are typing in, username, expiry timestamp)
     let mut typing = use_signal(HashMap::<i64, (i64, String, i64)>::new);
     let mut last_typing_sent = use_signal(|| 0i64);
@@ -453,6 +459,32 @@ fn MainView(session: api::Session) -> Element {
     let mut gif_results = use_signal(Vec::<GifResult>::new);
     let mut gif_status = use_signal(String::new);
     let mut status = use_signal(|| "connecting…".to_string());
+
+    // Open a channel: remember where the reader left off (for the NEW line),
+    // clear its badge, load history, and report the new read position.
+    let mut open_channel = move |channel: Channel| {
+        let previous = unread.write().remove(&channel.id);
+        divider_at.set(
+            previous
+                .filter(|(count, _, _)| *count > 0)
+                .map(|(_, _, last_read)| last_read),
+        );
+        selected.set(Some(channel.clone()));
+        messages.set(Vec::new());
+        has_more.set(false);
+        spawn(async move {
+            match api::messages(&session(), channel.id, None).await {
+                Ok(msgs) => {
+                    has_more.set(msgs.len() == api::HISTORY_PAGE);
+                    if let Some(newest) = msgs.last().map(|m| m.id) {
+                        api::mark_read(&session(), channel.id, newest).await;
+                    }
+                    messages.set(msgs);
+                }
+                Err(e) => status.set(e),
+            }
+        });
+    };
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
     let mic_level = use_signal_sync(|| 0.0f32);
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status, mic_level));
@@ -609,19 +641,23 @@ fn MainView(session: api::Session) -> Element {
         }
     });
 
-    // Initial data load: channel list, then history for the first channel.
+    // Initial data load: channel list, unread badges, then history for the
+    // first channel.
     use_future(move || async move {
         match api::channels(&session()).await {
             Ok(chs) => {
+                if let Ok(counts) = api::unread(&session()).await {
+                    unread.set(
+                        counts
+                            .into_iter()
+                            .filter(|u| u.count > 0)
+                            .map(|u| (u.channel_id, (u.count, u.mentions, u.last_read_id)))
+                            .collect(),
+                    );
+                }
                 if let Some(first) = chs.first().cloned() {
-                    selected.set(Some(first.clone()));
-                    match api::messages(&session(), first.id, None).await {
-                        Ok(msgs) => {
-                            has_more.set(msgs.len() == api::HISTORY_PAGE);
-                            messages.set(msgs);
-                        }
-                        Err(e) => status.set(e),
-                    }
+                    // Opening it marks it read and draws the NEW line.
+                    open_channel(first);
                 }
                 channels.set(chs);
             }
@@ -699,9 +735,23 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                                 if selected().map(|c| c.id) == Some(message.channel_id) {
+                                    // Visible channel: reading it counts as read.
+                                    let (channel_id, message_id) = (message.channel_id, message.id);
                                     messages.write().push(message);
-                                } else {
-                                    unread.write().insert(message.channel_id);
+                                    spawn(async move {
+                                        api::mark_read(&session(), channel_id, message_id).await;
+                                    });
+                                } else if message.author.id != me.id {
+                                    let mut counts = unread.write();
+                                    // A fresh entry remembers the id just before this
+                                    // message, which is exactly where NEW belongs.
+                                    let entry = counts
+                                        .entry(message.channel_id)
+                                        .or_insert((0, 0, message.id - 1));
+                                    entry.0 += 1;
+                                    if mentioned {
+                                        entry.1 += 1;
+                                    }
                                 }
                             }
                             ServerEvent::ReactionAdded { channel_id, message_id, emoji, user_id } => {
@@ -1176,6 +1226,7 @@ fn MainView(session: api::Session) -> Element {
                                                 return;
                                             };
                                             unread.write().remove(&channel.id);
+                                            divider_at.set(None);
                                             selected.set(Some(channel));
                                             messages.set(Vec::new());
                                             has_more.set(false);
@@ -1184,6 +1235,11 @@ fn MainView(session: api::Session) -> Element {
                                                 match api::messages(&session(), channel_id, Some(msg_id + 1)).await {
                                                     Ok(msgs) => {
                                                         has_more.set(msgs.len() == api::HISTORY_PAGE);
+                                                        // MAX() on the server keeps this from
+                                                        // rewinding a further-along read position.
+                                                        if let Some(newest) = msgs.last().map(|m| m.id) {
+                                                            api::mark_read(&session(), channel_id, newest).await;
+                                                        }
                                                         messages.set(msgs);
                                                     }
                                                     Err(e) => status.set(e),
@@ -1976,17 +2032,7 @@ fn MainView(session: api::Session) -> Element {
                                                             channels.write().push(channel.clone());
                                                         }
                                                         profile_card.set(None);
-                                                        unread.write().remove(&channel.id);
-                                                        selected.set(Some(channel.clone()));
-                                                        messages.set(Vec::new());
-                                                        has_more.set(false);
-                                                        match api::messages(&session(), channel.id, None).await {
-                                                            Ok(msgs) => {
-                                                                has_more.set(msgs.len() == api::HISTORY_PAGE);
-                                                                messages.set(msgs);
-                                                            }
-                                                            Err(e) => status.set(e),
-                                                        }
+                                                        open_channel(channel.clone());
                                                     }
                                                     Err(e) => status.set(e),
                                                 }
@@ -2199,28 +2245,24 @@ fn MainView(session: api::Session) -> Element {
                             key: "{channel.id}",
                             class: if selected_id == Some(channel.id) {
                                 "channel active"
-                            } else if unread().contains(&channel.id) {
+                            } else if unread().contains_key(&channel.id) {
                                 "channel unread"
                             } else {
                                 "channel"
                             },
-                            onclick: move |_| {
+                            onclick: {
                                 let channel = channel.clone();
-                                unread.write().remove(&channel.id);
-                                selected.set(Some(channel.clone()));
-                                messages.set(Vec::new());
-                                has_more.set(false);
-                                spawn(async move {
-                                    match api::messages(&session(), channel.id, None).await {
-                                        Ok(msgs) => {
-                                            has_more.set(msgs.len() == api::HISTORY_PAGE);
-                                            messages.set(msgs);
-                                        }
-                                        Err(e) => status.set(e),
-                                    }
-                                });
+                                move |_| open_channel(channel.clone())
                             },
                             span { class: "chan-name", "# {channel.name}" }
+                            if let Some((count, mentions, _)) = unread().get(&channel.id).copied() {
+                                if selected_id != Some(channel.id) {
+                                    span {
+                                        class: if mentions > 0 { "unread-badge ping" } else { "unread-badge" },
+                                        "{count}"
+                                    }
+                                }
+                            }
                             if session().user.role == "admin" {
                                 span {
                                     class: "chan-del",
@@ -2246,26 +2288,14 @@ fn MainView(session: api::Session) -> Element {
                             key: "dm{channel.id}",
                             class: if selected_id == Some(channel.id) {
                                 "channel dm active"
-                            } else if unread().contains(&channel.id) {
+                            } else if unread().contains_key(&channel.id) {
                                 "channel dm unread"
                             } else {
                                 "channel dm"
                             },
-                            onclick: move |_| {
+                            onclick: {
                                 let channel = channel.clone();
-                                unread.write().remove(&channel.id);
-                                selected.set(Some(channel.clone()));
-                                messages.set(Vec::new());
-                                has_more.set(false);
-                                spawn(async move {
-                                    match api::messages(&session(), channel.id, None).await {
-                                        Ok(msgs) => {
-                                            has_more.set(msgs.len() == api::HISTORY_PAGE);
-                                            messages.set(msgs);
-                                        }
-                                        Err(e) => status.set(e),
-                                    }
-                                });
+                                move |_| open_channel(channel.clone())
                             },
                             if let Some(peer) = dm_peer(&channel, session().user.id) {
                                 UserAvatar { user: peer, class: "dm-avatar" }
@@ -2273,6 +2303,12 @@ fn MainView(session: api::Session) -> Element {
                             span { class: "chan-name", "{dm_peer_name(&channel, session().user.id)}" }
                             if voice_rosters().get(&channel.id).is_some_and(|v| !v.is_empty()) {
                                 span { class: "dm-call-live", Icon { name: "phone", size: 11 } }
+                            }
+                            // Every DM message pings, so the badge is always hot.
+                            if let Some((count, _, _)) = unread().get(&channel.id).copied() {
+                                if selected_id != Some(channel.id) {
+                                    span { class: "unread-badge ping", "{count}" }
+                                }
                             }
                         }
                     }
@@ -2654,12 +2690,26 @@ fn MainView(session: api::Session) -> Element {
                 div { class: "messages",
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
-                    for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                        {
-                            let is_target = highlight_msg() == Some(msg.id);
-                            rsx! {
-                                div { class: if is_target { "hit-wrap" } else { "" },
-                                    MessageRow { key: "{msg.id}", msg, compact }
+                    {
+                        // Oldest message you hadn't seen: the NEW line goes
+                        // above it (rendered after it, in this flipped list).
+                        let first_unread = divider_at().and_then(|last_read| {
+                            messages().iter().map(|m| m.id).filter(|id| *id > last_read).min()
+                        });
+                        rsx! {
+                            for (msg, compact) in group_messages(&messages()).into_iter().rev() {
+                                {
+                                    let is_target = highlight_msg() == Some(msg.id);
+                                    let divider_here = Some(msg.id) == first_unread;
+                                    let msg_id = msg.id;
+                                    rsx! {
+                                        div { class: if is_target { "hit-wrap" } else { "" },
+                                            MessageRow { key: "{msg_id}", msg, compact }
+                                        }
+                                        if divider_here {
+                                            div { class: "new-divider", span { class: "new-pill", "NEW" } }
+                                        }
+                                    }
                                 }
                             }
                         }

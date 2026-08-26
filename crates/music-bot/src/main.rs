@@ -70,6 +70,17 @@ fn ffmpeg_cmd() -> String {
     std::env::var("FFMPEG_CMD").unwrap_or_else(|_| "ffmpeg".into())
 }
 
+/// Mastered music is far hotter than voice, so the DJ is attenuated before it
+/// hits the room — otherwise everyone has to ride their own slider down and
+/// nobody has headroom to turn it *up*. Override with MUSIC_GAIN.
+fn music_gain() -> f32 {
+    std::env::var("MUSIC_GAIN")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|g| *g > 0.0 && *g <= 2.0)
+        .unwrap_or(0.35)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -399,6 +410,7 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
         .spawn()?;
     let mut stdout = ffmpeg.stdout.take().unwrap();
 
+    let gain = music_gain();
     let mut buf = vec![0u8; FRAME_BYTES];
     loop {
         if controls.skip.load(Ordering::Relaxed) || controls.stop.load(Ordering::Relaxed) {
@@ -426,7 +438,10 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
 
         let samples: Vec<i16> = buf
             .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .map(|b| {
+                let scaled = i16::from_le_bytes([b[0], b[1]]) as f32 * gain;
+                scaled.clamp(i16::MIN as f32, i16::MAX as f32) as i16
+            })
             .collect();
         let frame = AudioFrame {
             data: samples.into(),

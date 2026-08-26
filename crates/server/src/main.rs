@@ -254,6 +254,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/tags/{id}", axum::routing::delete(routes::delete_tag))
         .route("/api/tags/assign", post(routes::assign_tag))
         .route("/api/search", get(routes::search))
+        .route("/api/unread", get(routes::unread))
+        .route("/api/read", post(routes::mark_read))
         .route("/download", get(routes::download_client))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))

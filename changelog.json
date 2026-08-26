@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.35.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Unread counts! Channels show how many messages you've missed — red when something pings you",
+      "A NEW line marks exactly where you left off when you open a channel",
+      "Read state lives on the server, so it survives restarts and stays in sync across your devices",
+      "The music bot is no longer deafening — it's mixed well below voice, so the volume slider finally has room in both directions"
+    ]
+  },
+  {
     "version": "0.34.0",
     "date": "2026-08-26",
     "changes": [

@@ -350,6 +350,25 @@ pub struct ClientVersionInfo {
     pub url: String,
 }
 
+/// Unread state for one channel (GET /api/unread).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnreadInfo {
+    pub channel_id: i64,
+    /// Messages from other people since you last read.
+    pub count: i64,
+    /// How many of those ping you (@you, @everyone, or any DM).
+    pub mentions: i64,
+    /// Id of the newest message you've seen — the NEW divider goes after it.
+    pub last_read_id: i64,
+}
+
+/// Body for POST /api/read — "I've seen up to this message".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkReadRequest {
+    pub channel_id: i64,
+    pub message_id: i64,
+}
+
 /// One message-search hit from GET /api/search.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchResult {

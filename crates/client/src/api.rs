@@ -508,6 +508,20 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
     get(session, path).await
 }
 
+pub async fn unread(session: &Session) -> Result<Vec<shared::UnreadInfo>, String> {
+    get(session, "unread".into()).await
+}
+
+/// Tell the server we've read `channel_id` up to `message_id`. Fire and
+/// forget — a missed mark just means the badge lingers until next time.
+pub async fn mark_read(session: &Session, channel_id: i64, message_id: i64) {
+    let _ = send_retry(http()
+        .post(format!("{}/api/read", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::MarkReadRequest { channel_id, message_id }))
+        .await;
+}
+
 pub async fn stickers(session: &Session) -> Result<Vec<Sticker>, String> {
     get(session, "stickers".into()).await
 }

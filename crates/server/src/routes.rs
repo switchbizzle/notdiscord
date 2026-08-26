@@ -62,6 +62,17 @@ pub async fn register(
         Err(e) => return Err(internal(e)),
     };
 
+    // Newcomers start caught up rather than staring at a wall of unread.
+    sqlx::query(
+        "INSERT OR IGNORE INTO read_state (user_id, channel_id, last_read_id) \
+         SELECT ?, c.id, COALESCE((SELECT MAX(m.id) FROM messages m WHERE m.channel_id = c.id), 0) \
+         FROM channels c",
+    )
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+
     let token = create_session(&state, user_id).await?;
     Ok(Json(AuthResponse {
         token,
@@ -1098,6 +1109,70 @@ pub async fn set_invite(
     .await
     .map_err(internal)?;
     Ok(Json(shared::InviteSetting { code }))
+}
+
+/// Unread counts per visible channel. DMs only count for their participants.
+pub async fn unread(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<Vec<shared::UnreadInfo>>> {
+    let mention = format!("%@{}%", user.username.to_lowercase());
+    let rows = sqlx::query(
+        "SELECT c.id, \
+                COUNT(m.id) AS unread, \
+                COALESCE(SUM(CASE WHEN c.kind = 'dm' \
+                                    OR LOWER(m.content) LIKE '%@everyone%' \
+                                    OR LOWER(m.content) LIKE ? \
+                                  THEN 1 ELSE 0 END), 0) AS mentions, \
+                COALESCE(r.last_read_id, 0) AS last_read \
+         FROM channels c \
+         LEFT JOIN read_state r ON r.channel_id = c.id AND r.user_id = ? \
+         LEFT JOIN messages m ON m.channel_id = c.id \
+              AND m.id > COALESCE(r.last_read_id, 0) \
+              AND m.author_id != ? \
+         WHERE c.kind != 'voice' \
+           AND (c.kind != 'dm' OR EXISTS ( \
+                 SELECT 1 FROM dm_members d WHERE d.channel_id = c.id AND d.user_id = ?)) \
+         GROUP BY c.id",
+    )
+    .bind(&mention)
+    .bind(user.id)
+    .bind(user.id)
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| shared::UnreadInfo {
+                channel_id: r.get(0),
+                count: r.get(1),
+                mentions: r.get(2),
+                last_read_id: r.get(3),
+            })
+            .collect(),
+    ))
+}
+
+/// Mark a channel read up to a message. Never moves backwards.
+pub async fn mark_read(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::MarkReadRequest>,
+) -> ApiResult<StatusCode> {
+    sqlx::query(
+        "INSERT INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?) \
+         ON CONFLICT(user_id, channel_id) \
+         DO UPDATE SET last_read_id = MAX(last_read_id, excluded.last_read_id)",
+    )
+    .bind(user.id)
+    .bind(req.channel_id)
+    .bind(req.message_id)
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn get_bot_settings(
