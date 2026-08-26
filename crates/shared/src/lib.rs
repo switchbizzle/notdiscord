@@ -126,6 +126,9 @@ pub struct AuthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateChannelRequest {
     pub name: String,
+    /// "text" (default) or "voice".
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +174,13 @@ pub struct ServerInfo {
     /// Stable unique id generated at the instance's first boot.
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetServerIconRequest {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +263,7 @@ pub enum ServerEvent {
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
     ServerRenamed { name: String },
+    ServerIconChanged { icon: String },
     /// Someone joined (Some) or left (None) a voice channel.
     VoiceStateChanged { user: User, channel_id: Option<i64> },
     /// Full voice occupancy, sent to a client right after it connects.

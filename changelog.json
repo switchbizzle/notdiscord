@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.14.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Create voice channels! Click the # next to the new-channel box to switch it to 🔊",
+      "New notification sound: a proper ba-bloop instead of the Windows ding (for Jon)",
+      "Server icons: admins can set one in Settings → Server — shows in the server rail"
+    ]
+  },
+  {
     "version": "0.13.0",
     "date": "2026-08-26",
     "changes": [

@@ -12,6 +12,8 @@ pub struct Session {
     pub server_name: String,
     #[serde(default)]
     pub server_id: String,
+    #[serde(default)]
+    pub server_icon: Option<String>,
 }
 
 fn default_server_name() -> String {
@@ -287,6 +289,7 @@ async fn session_from_auth(base_url: &str, auth: AuthResponse) -> Session {
         token: auth.token,
         user: auth.user,
         server_name: info.as_ref().map(|i| i.name.clone()).unwrap_or_else(default_server_name),
+        server_icon: info.as_ref().and_then(|i| i.icon.clone()),
         server_id: info.map(|i| i.id).unwrap_or_default(),
     }
 }
@@ -466,11 +469,22 @@ pub async fn upload(session: &Session, filename: &str, bytes: Vec<u8>) -> Result
     Ok(format!("{}{}", session.base_url, uploaded.url))
 }
 
-pub async fn create_channel(session: &Session, name: String) -> Result<Channel, String> {
+pub async fn create_channel(session: &Session, name: String, kind: &str) -> Result<Channel, String> {
     let resp = reqwest::Client::new()
         .post(format!("{}/api/channels", session.base_url))
         .bearer_auth(&session.token)
-        .json(&CreateChannelRequest { name })
+        .json(&CreateChannelRequest { name, kind: Some(kind.into()) })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
+pub async fn set_server_icon(session: &Session, url: String) -> Result<shared::ServerInfo, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/server/icon", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::SetServerIconRequest { url })
         .send()
         .await
         .map_err(|e| format!("cannot reach server: {e}"))?;

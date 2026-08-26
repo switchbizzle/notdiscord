@@ -10,7 +10,8 @@ use shared::{
     AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest,
     CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest,
     RenameServerRequest, RetentionSetting, ServerEvent, ServerInfo, SetBanRequest, SetRoleRequest,
-    Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
+    SetServerIconRequest, Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus,
+    VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -488,9 +489,14 @@ pub async fn create_channel(
     if name.is_empty() || name.len() > 32 {
         return Err(err(StatusCode::BAD_REQUEST, "channel name must be 1-32 characters"));
     }
+    let kind = match req.kind.as_deref() {
+        Some("voice") => "voice",
+        _ => "text",
+    };
 
-    let result = sqlx::query("INSERT INTO channels (name, created_at) VALUES (?, ?)")
+    let result = sqlx::query("INSERT INTO channels (name, kind, created_at) VALUES (?, ?, ?)")
         .bind(&name)
+        .bind(kind)
         .bind(now_ms())
         .execute(&state.db)
         .await;
@@ -503,7 +509,7 @@ pub async fn create_channel(
         Err(e) => return Err(internal(e)),
     };
 
-    let channel = Channel { id, name, kind: "text".into(), dm_members: Vec::new() };
+    let channel = Channel { id, name, kind: kind.into(), dm_members: Vec::new() };
     state.broadcast(ServerEvent::ChannelCreated { channel: channel.clone() });
     Ok(Json(channel))
 }
@@ -723,12 +729,43 @@ async fn meta_value(state: &SharedState, key: &str) -> ApiResult<String> {
         .map_err(internal)
 }
 
+async fn meta_value_opt(state: &SharedState, key: &str) -> ApiResult<Option<String>> {
+    sqlx::query_scalar("SELECT value FROM server_meta WHERE key = ?")
+        .bind(key)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)
+}
+
 /// Public: this instance's identity.
 pub async fn server_info(State(state): State<SharedState>) -> ApiResult<Json<ServerInfo>> {
     Ok(Json(ServerInfo {
         id: meta_value(&state, "id").await?,
         name: meta_value(&state, "name").await?,
+        icon: meta_value_opt(&state, "icon").await?,
     }))
+}
+
+pub async fn set_server_icon(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<SetServerIconRequest>,
+) -> ApiResult<Json<ServerInfo>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let ok = req.url.len() < 500
+        && (req.url.starts_with("http://") || req.url.starts_with("https://") || req.url.starts_with("/files/"));
+    if !ok {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid icon url"));
+    }
+    sqlx::query("INSERT OR REPLACE INTO server_meta (key, value) VALUES ('icon', ?)")
+        .bind(&req.url)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::ServerIconChanged { icon: req.url });
+    server_info(State(state)).await
 }
 
 pub async fn rename_server(
@@ -749,7 +786,11 @@ pub async fn rename_server(
         .await
         .map_err(internal)?;
     state.broadcast(ServerEvent::ServerRenamed { name: name.clone() });
-    Ok(Json(ServerInfo { id: meta_value(&state, "id").await?, name }))
+    Ok(Json(ServerInfo {
+        id: meta_value(&state, "id").await?,
+        icon: meta_value_opt(&state, "icon").await?,
+        name,
+    }))
 }
 
 pub async fn get_retention(

@@ -85,7 +85,8 @@ async fn cleanup_uploads(state: &SharedState) -> anyhow::Result<usize> {
     let mut keep = std::collections::HashSet::<String>::new();
     let referenced = sqlx::query(
         "SELECT avatar AS url FROM users WHERE avatar IS NOT NULL \
-         UNION ALL SELECT url FROM stickers",
+         UNION ALL SELECT url FROM stickers \
+         UNION ALL SELECT value FROM server_meta WHERE key = 'icon'",
     )
     .fetch_all(&state.db)
     .await?;
@@ -217,6 +218,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/server/info", get(routes::server_info))
         .route("/api/server/name", post(routes::rename_server))
         .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
+        .route("/api/server/icon", post(routes::set_server_icon))
         .route("/download", get(routes::download_client))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))

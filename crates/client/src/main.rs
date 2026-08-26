@@ -195,7 +195,11 @@ fn ServerRail(adding: Signal<bool>) -> Element {
                         servers.set(file);
                         adding.set(false);
                     },
-                    {initial(&s.server_name)}
+                    if let Some(icon) = s.server_icon.clone() {
+                        img { class: "rail-img", src: "{icon}" }
+                    } else {
+                        {initial(&s.server_name)}
+                    }
                 }
             }
             button {
@@ -350,6 +354,7 @@ fn MainView(session: api::Session) -> Element {
     let mut last_typing_sent = use_signal(|| 0i64);
     let mut draft = use_signal(String::new);
     let mut new_channel = use_signal(String::new);
+    let mut new_channel_voice = use_signal(|| false);
     let mut uploading = use_signal(|| false);
     let mut pending_files = use_signal(Vec::<PendingFile>::new);
     let mut drag_over = use_signal(|| false);
@@ -631,6 +636,13 @@ fn MainView(session: api::Session) -> Element {
                                 session.set(s);
                                 servers_file.set(api::load_servers());
                             }
+                            ServerEvent::ServerIconChanged { icon } => {
+                                let mut s = session();
+                                s.server_icon = Some(icon);
+                                api::update_saved_server(&s);
+                                session.set(s);
+                                servers_file.set(api::load_servers());
+                            }
                             ServerEvent::ChannelDeleted { channel_id } => {
                                 channels.write().retain(|c| c.id != channel_id);
                                 unread.write().remove(&channel_id);
@@ -794,11 +806,13 @@ fn MainView(session: api::Session) -> Element {
             return;
         }
         spawn(async move {
+            let kind = if new_channel_voice() { "voice" } else { "text" };
             // Success arrives back via the ChannelCreated broadcast.
-            if let Err(e) = api::create_channel(&session(), name).await {
+            if let Err(e) = api::create_channel(&session(), name, kind).await {
                 status.set(e);
             } else {
                 new_channel.set(String::new());
+                new_channel_voice.set(false);
             }
         });
     };
@@ -987,6 +1001,34 @@ fn MainView(session: api::Session) -> Element {
                                     option { value: "90", selected: retention_days() == 90, "3 months" }
                                 }
                                 div { class: "settings-hint", "expired files disappear from chat; avatars and stickers never expire" }
+                                button {
+                                    class: "profile-btn",
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            let Some(file) = rfd::AsyncFileDialog::new()
+                                                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                                .pick_file()
+                                                .await
+                                            else {
+                                                return;
+                                            };
+                                            let bytes = file.read().await;
+                                            if bytes.len() > 8 * 1024 * 1024 {
+                                                status.set("icon too large (max 8 MB)".into());
+                                                return;
+                                            }
+                                            match api::upload(&session(), &file.file_name(), bytes).await {
+                                                Ok(url) => {
+                                                    if let Err(e) = api::set_server_icon(&session(), url).await {
+                                                        status.set(e);
+                                                    }
+                                                }
+                                                Err(e) => status.set(e),
+                                            }
+                                        });
+                                    },
+                                    "Change server icon"
+                                }
                                 button {
                                     class: "profile-btn primary",
                                     onclick: move |_| {
@@ -1658,16 +1700,24 @@ fn MainView(session: api::Session) -> Element {
                         if updating() { "⬇ downloading update…" } else { "⬆ Update v{info.version} — install & restart" }
                     }
                 }
-                input {
-                    class: "new-channel",
-                    placeholder: "+ new channel",
-                    value: "{new_channel}",
-                    oninput: move |e| new_channel.set(e.value()),
-                    onkeydown: move |e| {
-                        if e.key() == Key::Enter {
-                            add_channel();
-                        }
-                    },
+                div { class: "new-channel-row",
+                    button {
+                        class: "new-channel-kind",
+                        title: if new_channel_voice() { "Creating a voice channel — click for text" } else { "Creating a text channel — click for voice" },
+                        onclick: move |_| new_channel_voice.set(!new_channel_voice()),
+                        if new_channel_voice() { Icon { name: "volume", size: 14 } } else { "#" }
+                    }
+                    input {
+                        class: "new-channel",
+                        placeholder: if new_channel_voice() { "+ new voice channel" } else { "+ new channel" },
+                        value: "{new_channel}",
+                        oninput: move |e| new_channel.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                add_channel();
+                            }
+                        },
+                    }
                 }
                 div { class: "me",
                     div {
@@ -2229,12 +2279,54 @@ fn UserAvatar(user: User, class: String) -> Element {
 }
 
 
+/// Synthesized two-tone "ba-bloop" WAV, built once in memory.
+#[cfg(windows)]
+fn notification_wav() -> &'static [u8] {
+    use std::sync::OnceLock;
+    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
+    WAV.get_or_init(|| {
+        const RATE: u32 = 44100;
+        let mut samples: Vec<i16> = Vec::new();
+        fn tone(samples: &mut Vec<i16>, freq: f32, ms: u32, gain: f32) {
+            let n = RATE * ms / 1000;
+            for i in 0..n {
+                let t = i as f32 / RATE as f32;
+                let env = (1.0 - i as f32 / n as f32).powf(1.6);
+                let s = (t * freq * std::f32::consts::TAU).sin() * env * gain;
+                samples.push((s * 32767.0) as i16);
+            }
+        }
+        tone(&mut samples, 659.25, 90, 0.32);
+        samples.extend(std::iter::repeat(0).take((RATE * 35 / 1000) as usize));
+        tone(&mut samples, 880.0, 150, 0.32);
+
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend(b"RIFF");
+        wav.extend((36 + data_len).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(RATE.to_le_bytes());
+        wav.extend((RATE * 2).to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data_len.to_le_bytes());
+        for s in samples {
+            wav.extend(s.to_le_bytes());
+        }
+        wav
+    })
+}
+
 #[cfg(windows)]
 fn play_notification_sound() {
-    use winapi::um::playsoundapi::{PlaySoundW, SND_ALIAS, SND_ASYNC};
-    let alias: Vec<u16> = "SystemAsterisk\0".encode_utf16().collect();
+    use winapi::um::playsoundapi::{PlaySoundW, SND_ASYNC, SND_MEMORY};
+    let wav = notification_wav();
     unsafe {
-        PlaySoundW(alias.as_ptr(), std::ptr::null_mut(), SND_ALIAS | SND_ASYNC);
+        PlaySoundW(wav.as_ptr() as *const u16, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC);
     }
 }
 
