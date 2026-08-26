@@ -111,6 +111,21 @@ pub async fn server_info(base_url: &str) -> Result<shared::ServerInfo, String> {
     handle(resp).await
 }
 
+pub async fn get_retention(session: &Session) -> Result<shared::RetentionSetting, String> {
+    get(session, "server/retention".into()).await
+}
+
+pub async fn set_retention(session: &Session, days: i64) -> Result<shared::RetentionSetting, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/server/retention", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::RetentionSetting { days })
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
 pub async fn rename_server(session: &Session, name: String) -> Result<shared::ServerInfo, String> {
     let resp = reqwest::Client::new()
         .post(format!("{}/api/server/name", session.base_url))

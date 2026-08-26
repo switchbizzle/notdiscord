@@ -66,6 +66,65 @@ pub fn uploads_dir() -> std::path::PathBuf {
         .into()
 }
 
+/// Delete uploads older than the retention window, except files still
+/// referenced as an avatar or sticker. Both storage layouts are handled:
+/// uploads/{32hex}/{name} directories and legacy flat uploads/{32hex}.{ext}.
+async fn cleanup_uploads(state: &SharedState) -> anyhow::Result<usize> {
+    use sqlx::Row;
+
+    let days: i64 = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM server_meta WHERE key = 'upload_retention_days'",
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(21);
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days as u64 * 86400);
+
+    // Protected: the first /files/ path segment of every avatar and sticker.
+    let mut keep = std::collections::HashSet::<String>::new();
+    let referenced = sqlx::query(
+        "SELECT avatar AS url FROM users WHERE avatar IS NOT NULL \
+         UNION ALL SELECT url FROM stickers",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    for row in referenced {
+        let url: String = row.get(0);
+        if let Some(pos) = url.find("/files/") {
+            if let Some(first) = url[pos + 7..].split('/').next() {
+                keep.insert(first.to_owned());
+            }
+        }
+    }
+
+    let mut removed = 0usize;
+    let mut dir = match tokio::fs::read_dir(uploads_dir()).await {
+        Ok(dir) => dir,
+        Err(_) => return Ok(0),
+    };
+    while let Some(entry) = dir.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if keep.contains(&name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata().await else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        if modified >= cutoff {
+            continue;
+        }
+        let ok = if meta.is_dir() {
+            tokio::fs::remove_dir_all(entry.path()).await.is_ok()
+        } else {
+            tokio::fs::remove_file(entry.path()).await.is_ok()
+        };
+        if ok {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -99,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
             hex::encode(bytes)
         }),
         ("name", || "NotDiscord".to_string()),
+        ("upload_retention_days", || "21".to_string()),
     ];
     for (key, default) in meta_defaults {
         sqlx::query("INSERT OR IGNORE INTO server_meta (key, value) VALUES (?, ?)")
@@ -115,6 +175,21 @@ async fn main() -> anyhow::Result<()> {
         presence: Mutex::new(HashMap::new()),
         voice: Mutex::new(HashMap::new()),
     });
+
+    // Hourly sweep of expired uploads (avatars and stickers are protected).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                match cleanup_uploads(&state).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!("upload cleanup removed {n} expired item(s)"),
+                    Err(e) => tracing::warn!("upload cleanup failed: {e}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/api/register", post(routes::register))
@@ -141,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/changelog", get(routes::changelog))
         .route("/api/server/info", get(routes::server_info))
         .route("/api/server/name", post(routes::rename_server))
+        .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
         .route("/download", get(routes::download_client))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))

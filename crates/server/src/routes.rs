@@ -9,8 +9,8 @@ use sqlx::Row;
 use shared::{
     AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest,
     CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest,
-    RenameServerRequest, ServerEvent, ServerInfo, SetBanRequest, SetRoleRequest, Sticker,
-    UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
+    RenameServerRequest, RetentionSetting, ServerEvent, ServerInfo, SetBanRequest, SetRoleRequest,
+    Sticker, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -750,6 +750,36 @@ pub async fn rename_server(
         .map_err(internal)?;
     state.broadcast(ServerEvent::ServerRenamed { name: name.clone() });
     Ok(Json(ServerInfo { id: meta_value(&state, "id").await?, name }))
+}
+
+pub async fn get_retention(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<RetentionSetting>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let days = meta_value(&state, "upload_retention_days").await?.parse().unwrap_or(21);
+    Ok(Json(RetentionSetting { days }))
+}
+
+pub async fn set_retention(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<RetentionSetting>,
+) -> ApiResult<Json<RetentionSetting>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    if !(7..=365).contains(&req.days) {
+        return Err(err(StatusCode::BAD_REQUEST, "retention must be between 7 and 365 days"));
+    }
+    sqlx::query("UPDATE server_meta SET value = ? WHERE key = 'upload_retention_days'")
+        .bind(req.days.to_string())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(req))
 }
 
 /// Public: release notes, newest first (uploaded by the release script).

@@ -178,6 +178,12 @@ pub struct RenameServerRequest {
     pub name: String,
 }
 
+/// How long chat uploads are kept before expiry (avatars/stickers exempt).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionSetting {
+    pub days: i64,
+}
+
 /// One release's entry in GET /api/changelog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangelogEntry {

@@ -373,6 +373,7 @@ fn MainView(session: api::Session) -> Element {
     let mut settings_open = use_signal(|| false);
     let mut settings_tab = use_signal(|| "voice");
     let mut server_name_draft = use_signal(String::new);
+    let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
     let mut input_devices = use_signal(Vec::<String>::new);
     let mut output_devices = use_signal(Vec::<String>::new);
@@ -941,6 +942,11 @@ fn MainView(session: api::Session) -> Element {
                                     onclick: move |_| {
                                         server_name_draft.set(session().server_name);
                                         settings_tab.set("server");
+                                        spawn(async move {
+                                            if let Ok(setting) = api::get_retention(&session()).await {
+                                                retention_days.set(setting.days);
+                                            }
+                                        });
                                     },
                                     "Server"
                                 }
@@ -960,6 +966,27 @@ fn MainView(session: api::Session) -> Element {
                                 }
                                 label { "Server ID" }
                                 div { class: "settings-value settings-mono", "{session().server_id}" }
+                                label { "Keep uploads for" }
+                                select {
+                                    onchange: move |e| {
+                                        if let Ok(days) = e.value().parse::<i64>() {
+                                            spawn(async move {
+                                                match api::set_retention(&session(), days).await {
+                                                    Ok(setting) => {
+                                                        retention_days.set(setting.days);
+                                                        status.set(format!("uploads now expire after {} days", setting.days));
+                                                    }
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        }
+                                    },
+                                    option { value: "21", selected: retention_days() == 21, "3 weeks (default)" }
+                                    option { value: "30", selected: retention_days() == 30, "1 month" }
+                                    option { value: "60", selected: retention_days() == 60, "2 months" }
+                                    option { value: "90", selected: retention_days() == 90, "3 months" }
+                                }
+                                div { class: "settings-hint", "expired files disappear from chat; avatars and stickers never expire" }
                                 button {
                                     class: "profile-btn primary",
                                     onclick: move |_| {
