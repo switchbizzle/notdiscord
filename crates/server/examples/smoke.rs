@@ -1,4 +1,4 @@
-//! End-to-end smoke test against a running server:
+﻿//! End-to-end smoke test against a running server:
 //! registers two users, connects both over WebSocket, sends a message as one,
 //! and asserts both receive the broadcast and that history persists.
 //!
@@ -10,11 +10,14 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 
 use shared::{AuthResponse, Channel, ClientEvent, Message, RegisterRequest, ServerEvent};
 
-const BASE: &str = "http://127.0.0.1:3000";
+fn base_url() -> String {
+    std::env::var("NOTDISCORD_BASE").unwrap_or_else(|_| "http://127.0.0.1:3000".into())
+}
 
 async fn register(http: &reqwest::Client, username: &str) -> AuthResponse {
+    let base = base_url();
     let resp = http
-        .post(format!("{BASE}/api/register"))
+        .post(format!("{base}/api/register"))
         .json(&RegisterRequest { username: username.into(), password: "hunter2hunter2".into() })
         .send()
         .await
@@ -48,6 +51,7 @@ async fn wait_for(
 #[tokio::main]
 async fn main() {
     let http = reqwest::Client::new();
+    let base = base_url();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -58,7 +62,7 @@ async fn main() {
     println!("registered {} and {}", alice.user.username, bob.user.username);
 
     let channels: Vec<Channel> = http
-        .get(format!("{BASE}/api/channels"))
+        .get(format!("{base}/api/channels"))
         .bearer_auth(&alice.token)
         .send()
         .await
@@ -69,7 +73,7 @@ async fn main() {
     let general = channels.iter().find(|c| c.name == "general").expect("seeded #general");
     println!("found #{} (id {})", general.name, general.id);
 
-    let ws_base = BASE.replacen("http://", "ws://", 1);
+    let ws_base = base.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
     let (mut ws_alice, _) = connect_async(format!("{ws_base}/ws?token={}", alice.token)).await.unwrap();
     let (mut ws_bob, _) = connect_async(format!("{ws_base}/ws?token={}", bob.token)).await.unwrap();
 
@@ -109,7 +113,7 @@ async fn main() {
     }
 
     let history: Vec<Message> = http
-        .get(format!("{BASE}/api/channels/{}/messages", general.id))
+        .get(format!("{base}/api/channels/{}/messages", general.id))
         .bearer_auth(&bob.token)
         .send()
         .await
