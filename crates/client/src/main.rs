@@ -422,6 +422,9 @@ fn MainView(session: api::Session) -> Element {
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
+    let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
+    let mut jump_to = use_context_provider(|| Signal::new(None::<i64>));
+    let mut mention_sel = use_signal(|| 0usize);
     let mut search_query = use_signal(String::new);
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
     let mut highlight_msg = use_signal(|| None::<i64>);
@@ -441,6 +444,24 @@ fn MainView(session: api::Session) -> Element {
         settings_tab.set(tab);
         settings_open.set(true);
     };
+
+    // Jump to a referenced message: highlight it, loading history if needed.
+    use_effect(move || {
+        if let Some(target) = jump_to() {
+            jump_to.set(None);
+            highlight_msg.set(Some(target));
+            if !messages.peek().iter().any(|m| m.id == target) {
+                if let Some(ch) = selected.peek().clone() {
+                    spawn(async move {
+                        if let Ok(msgs) = api::messages(&session(), ch.id, Some(target + 1)).await {
+                            has_more.set(msgs.len() == api::HISTORY_PAGE);
+                            messages.set(msgs);
+                        }
+                    });
+                }
+            }
+        }
+    });
 
     // Executes a confirmed destructive action.
     let run_confirm = move |action: ConfirmAction| {
@@ -787,6 +808,8 @@ fn MainView(session: api::Session) -> Element {
         if content.is_empty() && files.is_empty() {
             return;
         }
+        let reply_target = replying_to().map(|m| m.id);
+        replying_to.set(None);
         draft.set(String::new());
         pending_files.set(Vec::new());
         spawn(async move {
@@ -794,14 +817,18 @@ fn MainView(session: api::Session) -> Element {
                 uploading.set(true);
                 for file in files {
                     match api::upload(&session(), &file.name, file.bytes).await {
-                        Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
+                        Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url, reply_to: None }),
                         Err(e) => status.set(e),
                     }
                 }
                 uploading.set(false);
             }
             if !content.is_empty() {
-                ws.send(ClientEvent::SendMessage { channel_id: channel.id, content });
+                ws.send(ClientEvent::SendMessage {
+                    channel_id: channel.id,
+                    content,
+                    reply_to: reply_target,
+                });
             }
         });
     };
@@ -2085,6 +2112,7 @@ fn MainView(session: api::Session) -> Element {
                                             ws.send(ClientEvent::SendMessage {
                                                 channel_id: channel.id,
                                                 content: gif.url.clone(),
+                                                reply_to: None,
                                             });
                                         }
                                         gif_open.set(false);
@@ -2111,6 +2139,7 @@ fn MainView(session: api::Session) -> Element {
                                                     ws.send(ClientEvent::SendMessage {
                                                         channel_id: channel.id,
                                                         content: url.clone(),
+                                                        reply_to: None,
                                                     });
                                                 }
                                                 sticker_open.set(false);
@@ -2197,6 +2226,21 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                 }
+                if let Some(target) = replying_to() {
+                    div { class: "reply-bar",
+                        Icon { name: "reply", size: 13 }
+                        span { class: "reply-bar-label", "Replying to {target.author.username}" }
+                        span { class: "reply-bar-snippet",
+                            {target.content.chars().take(80).collect::<String>()}
+                        }
+                        button {
+                            class: "pending-remove",
+                            title: "Cancel reply",
+                            onclick: move |_| replying_to.set(None),
+                            "✕"
+                        }
+                    }
+                }
                 if !pending_files().is_empty() {
                     div { class: "pending-row",
                         for (i, file) in pending_files().into_iter().enumerate() {
@@ -2218,6 +2262,29 @@ fn MainView(session: api::Session) -> Element {
                             }
                         }
                         span { class: "pending-hint", "Enter to send · Esc to cancel" }
+                    }
+                }
+                {
+                    let suggestions = mention_suggestions(&draft(), &members());
+                    rsx! {
+                        if !suggestions.is_empty() {
+                            div { class: "mention-pop",
+                                for (i, name) in suggestions.iter().enumerate() {
+                                    div {
+                                        key: "{name}",
+                                        class: if i == mention_sel() % suggestions.len() { "mention-row selected" } else { "mention-row" },
+                                        onclick: {
+                                            let name = name.clone();
+                                            move |_| {
+                                                draft.set(complete_mention(&draft(), &name));
+                                                mention_sel.set(0);
+                                            }
+                                        },
+                                        "@{name}"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 div { class: "typing-line", "{typing_line}" }
@@ -2270,13 +2337,38 @@ fn MainView(session: api::Session) -> Element {
                         value: "{draft}",
                         oninput: move |e| {
                             draft.set(e.value());
+                            mention_sel.set(0);
                             notify_typing();
                         },
                         onkeydown: move |e| {
+                            let suggestions = mention_suggestions(&draft(), &members());
+                            if !suggestions.is_empty() {
+                                let sel = mention_sel() % suggestions.len();
+                                match e.key() {
+                                    Key::ArrowDown => {
+                                        e.prevent_default();
+                                        mention_sel.set(sel + 1);
+                                        return;
+                                    }
+                                    Key::ArrowUp => {
+                                        e.prevent_default();
+                                        mention_sel.set((sel + suggestions.len() - 1) % suggestions.len());
+                                        return;
+                                    }
+                                    Key::Enter | Key::Tab => {
+                                        e.prevent_default();
+                                        draft.set(complete_mention(&draft(), &suggestions[sel]));
+                                        mention_sel.set(0);
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
                             if e.key() == Key::Enter {
                                 send();
                             } else if e.key() == Key::Escape {
                                 pending_files.set(Vec::new());
+                                replying_to.set(None);
                             } else if e.key() == Key::Character("v".into())
                                 && e.modifiers().contains(Modifiers::CONTROL)
                             {
@@ -2385,6 +2477,8 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let mut react_target = use_context::<Signal<Option<i64>>>();
     let members_ctx = use_context::<Signal<Vec<UserStatus>>>();
     let tags_ctx = use_context::<Signal<Vec<Tag>>>();
+    let mut replying_ctx = use_context::<Signal<Option<Message>>>();
+    let mut jump_ctx = use_context::<Signal<Option<i64>>>();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
@@ -2410,6 +2504,14 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     rsx! {
         div { class: if compact { "msg compact" } else { "msg" },
             div { class: "msg-actions",
+                button {
+                    title: "Reply",
+                    onclick: {
+                        let msg_for_reply = msg.clone();
+                        move |_| replying_ctx.set(Some(msg_for_reply.clone()))
+                    },
+                    Icon { name: "reply", size: 16 }
+                }
                 button {
                     title: "React",
                     onclick: move |_| {
@@ -2441,6 +2543,25 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                 UserAvatar { user: msg.author.clone(), class: "avatar" }
             }
             div { class: "msg-content",
+                if let Some(preview) = msg.reply_preview.clone() {
+                    div {
+                        class: "reply-ref",
+                        title: "Jump to the original message",
+                        onclick: {
+                            let target = msg.reply_to;
+                            move |_| {
+                                if let Some(id) = target {
+                                    jump_ctx.set(Some(id));
+                                }
+                            }
+                        },
+                        Icon { name: "reply", size: 11 }
+                        span { class: "reply-ref-author", "{preview.author}" }
+                        span { class: "reply-ref-snippet",
+                            {preview.content.chars().take(90).collect::<String>()}
+                        }
+                    }
+                }
                 if !compact {
                     div { class: "msg-head",
                         span {
@@ -2544,6 +2665,42 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
 
 fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
+}
+
+/// The partial name being typed after a trailing `@`, if the draft ends
+/// mid-mention (e.g. "hey @jo").
+fn mention_partial(draft: &str) -> Option<String> {
+    let idx = draft.rfind('@')?;
+    let boundary_ok = idx == 0 || !draft[..idx].chars().last().unwrap().is_alphanumeric();
+    let partial = &draft[idx + 1..];
+    if !boundary_ok || !partial.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(partial.to_lowercase())
+}
+
+fn mention_suggestions(draft: &str, members: &[UserStatus]) -> Vec<String> {
+    let Some(partial) = mention_partial(draft) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = members
+        .iter()
+        .filter(|m| !m.banned)
+        .map(|m| m.user.username.clone())
+        .filter(|n| n.to_lowercase().starts_with(&partial) && n.to_lowercase() != partial)
+        .take(5)
+        .collect();
+    if "everyone".starts_with(&partial) && partial != "everyone" {
+        names.push("everyone".into());
+    }
+    names
+}
+
+fn complete_mention(draft: &str, name: &str) -> String {
+    match draft.rfind('@') {
+        Some(idx) => format!("{}@{} ", &draft[..idx], name),
+        None => draft.to_owned(),
+    }
 }
 
 /// Username display color: first assigned tag's color, else the avatar hue.

@@ -84,6 +84,18 @@ pub struct Message {
     pub edited_at: Option<i64>,
     #[serde(default)]
     pub reactions: Vec<ReactionEntry>,
+    /// Id of the message this one replies to, if any.
+    #[serde(default)]
+    pub reply_to: Option<i64>,
+    /// Author + content of the replied-to message, for rendering.
+    #[serde(default)]
+    pub reply_preview: Option<ReplyPreview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyPreview {
+    pub author: String,
+    pub content: String,
 }
 
 /// One user's reaction on a message; the client aggregates these per emoji.
@@ -261,7 +273,12 @@ pub struct GifResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
-    SendMessage { channel_id: i64, content: String },
+    SendMessage {
+        channel_id: i64,
+        content: String,
+        #[serde(default)]
+        reply_to: Option<i64>,
+    },
     /// Sent (throttled) while the user is typing in a channel.
     Typing { channel_id: i64 },
     /// Add the reaction if the user hasn't reacted with this emoji, else remove it.

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.18.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Replies! Hover a message → ↩ to reply; click the reference line on any reply to jump to the original",
+      "@ mention autocomplete — type @ and pick with arrows + Enter/Tab"
+    ]
+  },
+  {
     "version": "0.17.0",
     "date": "2026-08-26",
     "changes": [

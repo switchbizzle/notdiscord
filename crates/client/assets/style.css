@@ -999,6 +999,51 @@ input:focus { border-color: #5865f2; }
 }
 .channel:hover .chan-del { display: inline; }
 .chan-del:hover { color: #f23f43; }
+.reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 16px 4px;
+    padding: 6px 10px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 8px;
+    color: #949ba4;
+    font-size: 12px;
+}
+.reply-bar-label { color: #dbdee1; font-weight: 600; flex-shrink: 0; }
+.reply-bar-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+.reply-ref {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #949ba4;
+    margin-bottom: 2px;
+    cursor: pointer;
+    max-width: 100%;
+}
+.reply-ref:hover { color: #dbdee1; }
+.reply-ref-author { font-weight: 600; color: #b5bac1; flex-shrink: 0; }
+.reply-ref-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.mention-pop {
+    margin: 0 16px 4px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.mention-row {
+    padding: 7px 12px;
+    font-size: 14px;
+    color: #dbdee1;
+    cursor: pointer;
+}
+.mention-row:hover { background: #35373c; }
+.mention-row.selected { background: #404249; color: #fff; }
+
 .confirm-overlay { z-index: 250; }
 .confirm-modal {
     background: #232428;

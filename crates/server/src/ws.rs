@@ -153,7 +153,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
 
 async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> anyhow::Result<()> {
     match event {
-        ClientEvent::SendMessage { channel_id, content } => {
+        ClientEvent::SendMessage { channel_id, content, reply_to } => {
             let content = content.trim().to_owned();
             if content.is_empty() || content.len() > 4000 {
                 return Ok(());
@@ -162,14 +162,34 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
                 return Ok(());
             }
+
+            // Resolve the reply target (same channel only) and its preview.
+            let mut reply_preview = None;
+            let mut valid_reply = None;
+            if let Some(target_id) = reply_to {
+                if let Some(row) = sqlx::query(
+                    "SELECT u.username, m.content FROM messages m JOIN users u ON u.id = m.author_id \
+                     WHERE m.id = ? AND m.channel_id = ?",
+                )
+                .bind(target_id)
+                .bind(channel_id)
+                .fetch_optional(&state.db)
+                .await?
+                {
+                    valid_reply = Some(target_id);
+                    reply_preview = Some(shared::ReplyPreview { author: row.get(0), content: row.get(1) });
+                }
+            }
+
             let created_at = now_ms();
             let result = sqlx::query(
-                "INSERT INTO messages (channel_id, author_id, content, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO messages (channel_id, author_id, content, created_at, reply_to) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(channel_id)
             .bind(user.id)
             .bind(&content)
             .bind(created_at)
+            .bind(valid_reply)
             .execute(&state.db)
             .await?;
 
@@ -181,6 +201,8 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 created_at,
                 edited_at: None,
                 reactions: Vec::new(),
+                reply_to: valid_reply,
+                reply_preview,
             };
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
         }

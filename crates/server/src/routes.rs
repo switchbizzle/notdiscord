@@ -1007,6 +1007,8 @@ pub async fn search(
                 edited_at: r.get(4),
                 author: User { id: r.get(5), username: r.get(6), avatar: r.get(7), role: r.get(8) },
                 reactions: Vec::new(),
+                reply_to: None,
+                reply_preview: None,
             },
             channel_name: r.get(9),
             channel_kind: r.get(10),
@@ -1095,8 +1097,11 @@ pub async fn channel_messages(
     let before = q.before.unwrap_or(i64::MAX);
 
     let rows = sqlx::query(
-        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username, u.avatar, u.role \
+        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username, u.avatar, u.role, \
+                m.reply_to, ru.username, r.content \
          FROM messages m JOIN users u ON u.id = m.author_id \
+         LEFT JOIN messages r ON r.id = m.reply_to \
+         LEFT JOIN users ru ON ru.id = r.author_id \
          WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?",
     )
     .bind(channel_id)
@@ -1117,6 +1122,15 @@ pub async fn channel_messages(
             edited_at: r.get(4),
             author: User { id: r.get(5), username: r.get(6), avatar: r.get(7), role: r.get(8) },
             reactions: Vec::new(),
+            reply_to: r.get(9),
+            reply_preview: {
+                let author: Option<String> = r.get(10);
+                let content: Option<String> = r.get(11);
+                match (author, content) {
+                    (Some(author), Some(content)) => Some(shared::ReplyPreview { author, content }),
+                    _ => None,
+                }
+            },
         })
         .collect();
     messages.reverse();
