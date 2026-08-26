@@ -428,7 +428,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 match list.iter_mut().find(|m| m.user.id == user.id) {
                                     Some(entry) => entry.online = online,
                                     None => {
-                                        list.push(UserStatus { user, online });
+                                        list.push(UserStatus { user, online, banned: false });
                                         list.sort_by(|a, b| a.user.username.to_lowercase().cmp(&b.user.username.to_lowercase()));
                                     }
                                 }
@@ -1040,7 +1040,12 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                         let user = uid
                                             .and_then(|id| members().into_iter().find(|m| m.user.id == id))
                                             .map(|m| m.user)
-                                            .unwrap_or(User { id: uid.unwrap_or(0), username: p.name.clone(), avatar: None });
+                                            .unwrap_or(User {
+                                                id: uid.unwrap_or(0),
+                                                username: p.name.clone(),
+                                                avatar: None,
+                                                role: "member".into(),
+                                            });
                                         rsx! { UserAvatar { user, class: "voice-avatar" } }
                                     }
                                     span { class: "voice-name", "{p.name}" }
