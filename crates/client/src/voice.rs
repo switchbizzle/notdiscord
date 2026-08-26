@@ -65,7 +65,8 @@ pub enum VoiceCmd {
     SetVoiceMode { mode: String, key: String },
     /// Voice-activity gate threshold (RMS, 0 = always transmit).
     SetVadThreshold(f32),
-    StartScreenShare,
+    /// monitor: 1-based index from share::list_monitors; None = primary.
+    StartScreenShare { monitor: Option<usize> },
     StopScreenShare,
     /// Open a viewer window for this participant's screen share.
     WatchScreen { identity: String },
@@ -320,7 +321,7 @@ pub async fn voice_task(
                 status.set(VoiceStatus::default());
                 mic_level.set(0.0);
             }
-            VoiceCmd::StartScreenShare => {
+            VoiceCmd::StartScreenShare { monitor } => {
                 if let Some(active) = call.as_mut() {
                     if active.share.is_none() {
                         let source = NativeVideoSource::new(
@@ -343,7 +344,7 @@ pub async fn voice_task(
                             )
                             .await
                         {
-                            Ok(publication) => match crate::share::start_capture(source) {
+                            Ok(publication) => match crate::share::start_capture(source, monitor) {
                                 Ok(control) => {
                                     active.share = Some((control, publication.sid()));
                                     let mut s = status.write();

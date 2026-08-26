@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.24.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Pick which monitor to share — multi-monitor setups get a chooser when you hit the share button (single-monitor folks share instantly like before)"
+    ]
+  },
+  {
     "version": "0.23.1",
     "date": "2026-08-26",
     "changes": [

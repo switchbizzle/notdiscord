@@ -81,9 +81,40 @@ impl GraphicsCaptureApiHandler for Capturer {
 
 pub type ShareControl = windows_capture::capture::CaptureControl<Capturer, CapError>;
 
-/// Start capturing the primary monitor into `source`.
-pub fn start_capture(source: NativeVideoSource) -> Result<ShareControl, String> {
-    let monitor = Monitor::primary().map_err(|e| format!("no primary monitor: {e}"))?;
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorChoice {
+    /// 1-based index for `Monitor::from_index`.
+    pub index: usize,
+    pub label: String,
+}
+
+/// All monitors, primary first, labeled for the share picker.
+pub fn list_monitors() -> Vec<MonitorChoice> {
+    let primary_name = Monitor::primary().and_then(|m| m.device_name()).ok();
+    let mut choices: Vec<(bool, MonitorChoice)> = Monitor::enumerate()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|monitor| {
+            let index = monitor.index().ok()?;
+            let is_primary = monitor.device_name().ok() == primary_name && primary_name.is_some();
+            let size = match (monitor.width(), monitor.height()) {
+                (Ok(w), Ok(h)) => format!(" — {w}×{h}"),
+                _ => String::new(),
+            };
+            let primary_tag = if is_primary { " (primary)" } else { "" };
+            Some((is_primary, MonitorChoice { index, label: format!("Monitor {index}{size}{primary_tag}") }))
+        })
+        .collect();
+    choices.sort_by_key(|(is_primary, c)| (!is_primary, c.index));
+    choices.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Start capturing a monitor into `source` (primary when `monitor` is None).
+pub fn start_capture(source: NativeVideoSource, monitor: Option<usize>) -> Result<ShareControl, String> {
+    let monitor = match monitor {
+        Some(index) => Monitor::from_index(index).map_err(|e| format!("monitor {index} not found: {e}"))?,
+        None => Monitor::primary().map_err(|e| format!("no primary monitor: {e}"))?,
+    };
     let settings = Settings::new(
         monitor,
         CursorCaptureSettings::WithCursor,

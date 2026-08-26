@@ -461,6 +461,8 @@ fn MainView(session: api::Session) -> Element {
     let mut pw_new = use_signal(String::new);
     let mut pw_confirm = use_signal(String::new);
     let mut pw_message = use_signal(|| (String::new(), false));
+    // Populated when the user must choose which monitor to share.
+    let mut share_picker = use_signal(|| None::<Vec<share::MonitorChoice>>);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -2180,6 +2182,28 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                             }
+                            if let Some(monitors) = share_picker() {
+                                div { class: "share-picker",
+                                    div { class: "share-picker-title", "Share which screen?" }
+                                    for m in monitors {
+                                        button {
+                                            key: "{m.index}",
+                                            class: "share-picker-option",
+                                            onclick: move |_| {
+                                                voice.send(voice::VoiceCmd::StartScreenShare { monitor: Some(m.index) });
+                                                share_picker.set(None);
+                                            },
+                                            Icon { name: "screen", size: 14 }
+                                            "{m.label}"
+                                        }
+                                    }
+                                    button {
+                                        class: "share-picker-cancel",
+                                        onclick: move |_| share_picker.set(None),
+                                        "Cancel"
+                                    }
+                                }
+                            }
                             div { class: "voice-controls",
                                 button {
                                     class: if voice_status().muted { "voice-btn muted" } else { "voice-btn" },
@@ -2199,8 +2223,15 @@ fn MainView(session: api::Session) -> Element {
                                     onclick: move |_| {
                                         if voice_status().sharing_self {
                                             voice.send(voice::VoiceCmd::StopScreenShare);
+                                        } else if share_picker().is_some() {
+                                            share_picker.set(None);
                                         } else {
-                                            voice.send(voice::VoiceCmd::StartScreenShare);
+                                            let monitors = share::list_monitors();
+                                            if monitors.len() > 1 {
+                                                share_picker.set(Some(monitors));
+                                            } else {
+                                                voice.send(voice::VoiceCmd::StartScreenShare { monitor: None });
+                                            }
                                         }
                                     },
                                     Icon { name: "screen" }
