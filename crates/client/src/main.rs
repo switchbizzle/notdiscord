@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod md;
 
 use std::collections::HashMap;
 
@@ -393,14 +394,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                 div { class: "messages",
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
-                    for msg in messages().into_iter().rev() {
-                        div { key: "{msg.id}", class: "msg",
-                            div { class: "msg-head",
-                                span { class: "msg-author", "{msg.author.username}" }
-                                span { class: "msg-time", {format_time(msg.created_at)} }
-                            }
-                            div { class: "msg-body", "{msg.content}" }
-                        }
+                    for (msg, compact) in group_messages(&messages()).into_iter().rev() {
+                        MessageRow { key: "{msg.id}", msg, compact }
                     }
                     if has_more() {
                         button {
@@ -434,8 +429,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     div {
                         key: "{member.user.id}",
                         class: if member.online { "member online" } else { "member" },
+                        span {
+                            class: "member-avatar",
+                            style: "background: hsl({avatar_hue(member.user.id)}, 55%, 42%)",
+                            {initial(&member.user.username)}
+                        }
+                        span { class: "member-name", "{member.user.username}" }
                         span { class: "member-dot" }
-                        "{member.user.username}"
                     }
                 }
             }
@@ -443,8 +443,70 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     }
 }
 
+/// Pair each message with whether it should render compactly: same author as
+/// the previous message, less than five minutes apart.
+fn group_messages(messages: &[Message]) -> Vec<(Message, bool)> {
+    let mut out = Vec::with_capacity(messages.len());
+    for (i, msg) in messages.iter().enumerate() {
+        let compact = i > 0 && {
+            let prev = &messages[i - 1];
+            prev.author.id == msg.author.id && msg.created_at - prev.created_at < 5 * 60 * 1000
+        };
+        out.push((msg.clone(), compact));
+    }
+    out
+}
+
+#[component]
+fn MessageRow(msg: Message, compact: bool) -> Element {
+    let hue = avatar_hue(msg.author.id);
+    rsx! {
+        div { class: if compact { "msg compact" } else { "msg" },
+            if compact {
+                div { class: "msg-gutter" }
+            } else {
+                div {
+                    class: "avatar",
+                    style: "background: hsl({hue}, 55%, 42%)",
+                    {initial(&msg.author.username)}
+                }
+            }
+            div { class: "msg-content",
+                if !compact {
+                    div { class: "msg-head",
+                        span { class: "msg-author", "{msg.author.username}" }
+                        span { class: "msg-time", {format_time(msg.created_at)} }
+                    }
+                }
+                div { class: "msg-body", md::Md { nodes: md::parse_markdown(&msg.content) } }
+            }
+        }
+    }
+}
+
+fn avatar_hue(user_id: i64) -> i64 {
+    (user_id * 137) % 360
+}
+
+fn initial(username: &str) -> String {
+    username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+}
+
 fn format_time(unix_ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(unix_ms)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%b %-d %H:%M").to_string())
-        .unwrap_or_default()
+    use chrono::{Datelike, Duration, Local};
+    let Some(dt) = chrono::DateTime::from_timestamp_millis(unix_ms) else {
+        return String::new();
+    };
+    let dt = dt.with_timezone(&Local);
+    let now = Local::now();
+    let clock = dt.format("%-I:%M %p");
+    if dt.date_naive() == now.date_naive() {
+        format!("Today at {clock}")
+    } else if dt.date_naive() == (now - Duration::days(1)).date_naive() {
+        format!("Yesterday at {clock}")
+    } else if dt.year() == now.year() {
+        dt.format("%b %-d at %-I:%M %p").to_string()
+    } else {
+        dt.format("%b %-d, %Y").to_string()
+    }
 }

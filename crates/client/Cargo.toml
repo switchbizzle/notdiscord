@@ -15,3 +15,5 @@ reqwest = { version = "0.12", features = ["json"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 chrono = "0.4"
 dirs = "6"
+pulldown-cmark = { version = "0.13", default-features = false }
+open = "5"
