@@ -559,6 +559,3 @@ fn spawn_playback(
     stop_tx
 }
 
-fn tracing_log(msg: &str) {
-    eprintln!("[voice] {msg}");
-}

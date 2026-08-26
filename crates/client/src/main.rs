@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod icons;
 mod md;
 mod voice;
+
+use icons::Icon;
 
 use std::collections::{HashMap, HashSet};
 
@@ -779,7 +782,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 }
                                 audio_settings_open.set(opening);
                             },
-                            "⚙"
+                            Icon { name: "settings", size: 14 }
                         }
                     }
                     if audio_settings_open() {
@@ -874,7 +877,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     }
                                 });
                             },
-                            "🔊 {channel.name}"
+                            Icon { name: "volume", size: 15 }
+                            span { class: "voice-channel-name", "{channel.name}" }
                         }
                     }
                 }
@@ -892,10 +896,11 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             }
                         } else {
                             div { class: "voice-head",
+                                Icon { name: "volume", size: 14 }
                                 if voice_status().connecting {
-                                    "🔊 joining {voice_status().channel_name}…"
+                                    "joining {voice_status().channel_name}…"
                                 } else {
-                                    "🔊 {voice_status().channel_name}"
+                                    "{voice_status().channel_name}"
                                 }
                             }
                             for p in voice_status().participants {
@@ -912,7 +917,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     }
                                     span { class: "voice-name", "{p.name}" }
                                     if p.is_me && voice_status().muted {
-                                        span { class: "voice-mic-off", "🔇" }
+                                        span { class: "voice-mic-off", Icon { name: "mic-off", size: 12 } }
                                     }
                                     if !p.is_me {
                                         input {
@@ -942,13 +947,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     class: if voice_status().muted { "voice-btn muted" } else { "voice-btn" },
                                     title: if voice_status().muted { "Unmute" } else { "Mute" },
                                     onclick: move |_| voice.send(voice::VoiceCmd::ToggleMute),
-                                    if voice_status().muted { "🔇" } else { "🎤" }
+                                    if voice_status().muted { Icon { name: "mic-off" } } else { Icon { name: "mic" } }
                                 }
                                 button {
                                     class: "voice-btn leave",
                                     title: "Disconnect",
                                     onclick: move |_| voice.send(voice::VoiceCmd::Leave),
-                                    "📞"
+                                    Icon { name: "phone-off" }
                                 }
                             }
                         }
@@ -1016,7 +1021,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             span { class: "me-status", "{status}" }
                         }
                     }
-                    button { class: "logout", title: "Log out", onclick: logout, "⏻" }
+                    button { class: "logout", title: "Log out", onclick: logout, Icon { name: "power", size: 16 } }
                 }
             }
             div { class: "main",
@@ -1183,7 +1188,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 if let Some(preview) = file.preview.clone() {
                                     img { class: "pending-thumb", src: "{preview}" }
                                 } else {
-                                    span { class: "pending-icon", "📄" }
+                                    span { class: "pending-icon", Icon { name: "file", size: 22 } }
                                 }
                                 span { class: "pending-name", "{file.name}" }
                                 button {
@@ -1217,7 +1222,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         class: "attach sticker-btn",
                         title: "Send a sticker",
                         onclick: move |_| sticker_open.set(!sticker_open()),
-                        "🏷"
+                        Icon { name: "tag" }
                     }
                     button {
                         class: "attach",
@@ -1242,7 +1247,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 pending_files.write().push(make_pending(name, bytes));
                             });
                         },
-                        if uploading() { "…" } else { "+" }
+                        if uploading() { "…" } else { Icon { name: "plus" } }
                     }
                     input {
                         placeholder: "Message #{selected_name}",
@@ -1373,7 +1378,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                     onclick: move |_| {
                         react_target.set(if react_target() == Some(msg_id) { None } else { Some(msg_id) });
                     },
-                    "🙂"
+                    Icon { name: "smile", size: 16 }
                 }
                 if own {
                     button {
@@ -1382,12 +1387,12 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                             edit_draft.set(content_for_edit.clone());
                             editing.set(true);
                         },
-                        "✏️"
+                        Icon { name: "edit", size: 16 }
                     }
                     button {
                         title: "Delete",
                         onclick: move |_| ws.send(ClientEvent::DeleteMessage { message_id: msg_id }),
-                        "🗑️"
+                        Icon { name: "trash", size: 16 }
                     }
                 }
             }
@@ -1456,7 +1461,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                                 onclick: move |_| {
                                     let _ = open::that(&url);
                                 },
-                                span { class: "msg-file-icon", "📄" }
+                                span { class: "msg-file-icon", Icon { name: "file", size: 22 } }
                                 span { class: "msg-file-name", "{filename}" }
                                 span { class: "msg-file-dl", "Download" }
                             }
