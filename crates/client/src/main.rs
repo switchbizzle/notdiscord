@@ -29,6 +29,31 @@ fn main() {
         .launch(App);
 }
 
+/// A file staged in the compose area, awaiting user confirmation to send.
+#[derive(Clone, PartialEq)]
+struct PendingFile {
+    name: String,
+    bytes: Vec<u8>,
+    /// data: URL thumbnail for images small enough to preview inline.
+    preview: Option<String>,
+}
+
+fn make_pending(name: String, bytes: Vec<u8>) -> PendingFile {
+    use base64::Engine;
+    let ext = name.rsplit('.').next().unwrap_or_default().to_lowercase();
+    let mime = match ext.as_str() {
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    };
+    let preview = mime.filter(|_| bytes.len() <= 10 * 1024 * 1024).map(|mime| {
+        format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes))
+    });
+    PendingFile { name, bytes, preview }
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -178,6 +203,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut draft = use_signal(String::new);
     let mut new_channel = use_signal(String::new);
     let mut uploading = use_signal(|| false);
+    let mut pending_files = use_signal(Vec::<PendingFile>::new);
     let mut drag_over = use_signal(|| false);
     let mut gif_open = use_signal(|| false);
     let mut gif_query = use_signal(String::new);
@@ -419,12 +445,28 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
 
     let mut send = move || {
         let content = draft().trim().to_string();
+        let files = pending_files();
         let Some(channel) = selected() else { return };
-        if content.is_empty() {
+        if content.is_empty() && files.is_empty() {
             return;
         }
-        ws.send(ClientEvent::SendMessage { channel_id: channel.id, content });
         draft.set(String::new());
+        pending_files.set(Vec::new());
+        spawn(async move {
+            if !files.is_empty() {
+                uploading.set(true);
+                for file in files {
+                    match api::upload(&session(), &file.name, file.bytes).await {
+                        Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
+                        Err(e) => status.set(e),
+                    }
+                }
+                uploading.set(false);
+            }
+            if !content.is_empty() {
+                ws.send(ClientEvent::SendMessage { channel_id: channel.id, content });
+            }
+        });
     };
 
     let mut notify_typing = move || {
@@ -457,8 +499,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
         });
     };
 
+    // Stage dropped/picked files in the compose area for confirmation.
     let upload_files = move |files: Vec<dioxus::html::FileData>| {
-        let Some(channel) = selected() else { return };
         spawn(async move {
             for file in files.into_iter().take(5) {
                 if file.size() > 50 * 1024 * 1024 {
@@ -469,12 +511,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     status.set("could not read dropped file".into());
                     continue;
                 };
-                uploading.set(true);
-                match api::upload(&session(), &file.name(), bytes.to_vec()).await {
-                    Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
-                    Err(e) => status.set(e),
-                }
-                uploading.set(false);
+                pending_files.write().push(make_pending(file.name(), bytes.to_vec()));
             }
         });
     };
@@ -492,9 +529,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
         });
     };
 
-    // Ctrl+V with an image on the clipboard uploads it as a PNG.
+    // Ctrl+V with an image on the clipboard stages it for confirmation.
     let paste_image = move || {
-        let Some(channel) = selected() else { return };
         spawn(async move {
             let clip = tokio::task::spawn_blocking(|| {
                 let mut clipboard = arboard::Clipboard::new().ok()?;
@@ -518,13 +554,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             .ok()
             .flatten();
             let Some(png) = png else { return };
-
-            uploading.set(true);
-            match api::upload(&session(), "pasted.png", png).await {
-                Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
-                Err(e) => status.set(e),
-            }
-            uploading.set(false);
+            pending_files.write().push(make_pending("pasted.png".into(), png));
         });
     };
 
@@ -1146,6 +1176,29 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         }
                     }
                 }
+                if !pending_files().is_empty() {
+                    div { class: "pending-row",
+                        for (i, file) in pending_files().into_iter().enumerate() {
+                            div { key: "{i}", class: "pending-card",
+                                if let Some(preview) = file.preview.clone() {
+                                    img { class: "pending-thumb", src: "{preview}" }
+                                } else {
+                                    span { class: "pending-icon", "📄" }
+                                }
+                                span { class: "pending-name", "{file.name}" }
+                                button {
+                                    class: "pending-remove",
+                                    title: "Remove",
+                                    onclick: move |_| {
+                                        pending_files.write().remove(i);
+                                    },
+                                    "✕"
+                                }
+                            }
+                        }
+                        span { class: "pending-hint", "Enter to send · Esc to cancel" }
+                    }
+                }
                 div { class: "typing-line", "{typing_line}" }
                 div { class: "compose",
                     button {
@@ -1171,7 +1224,6 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         title: "Upload a file, image, or GIF",
                         disabled: uploading(),
                         onclick: move |_| {
-                            let Some(channel) = selected() else { return };
                             spawn(async move {
                                 let Some(file) = rfd::AsyncFileDialog::new()
                                     .add_filter("All files", &["*"])
@@ -1187,12 +1239,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     status.set("file too large (max 50 MB)".into());
                                     return;
                                 }
-                                uploading.set(true);
-                                match api::upload(&session(), &name, bytes).await {
-                                    Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
-                                    Err(e) => status.set(e),
-                                }
-                                uploading.set(false);
+                                pending_files.write().push(make_pending(name, bytes));
                             });
                         },
                         if uploading() { "…" } else { "+" }
@@ -1207,6 +1254,8 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         onkeydown: move |e| {
                             if e.key() == Key::Enter {
                                 send();
+                            } else if e.key() == Key::Escape {
+                                pending_files.set(Vec::new());
                             } else if e.key() == Key::Character("v".into())
                                 && e.modifiers().contains(Modifiers::CONTROL)
                             {

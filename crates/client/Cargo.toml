@@ -1,6 +1,6 @@
-[package]
+﻿[package]
 name = "client"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 
 [dependencies]
@@ -21,6 +21,7 @@ rfd = "0.15"
 livekit = { version = "0.8", features = ["native-tls"] }
 cpal = "0.18"
 arboard = "3"
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
