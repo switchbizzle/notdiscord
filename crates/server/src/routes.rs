@@ -182,7 +182,8 @@ pub async fn list_users(
         .map(|r| {
             let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) };
             let banned: i64 = r.get(4);
-            let is_online = online.contains(&user.id);
+            // The bot never sleeps.
+            let is_online = online.contains(&user.id) || user.id == state.bot.id;
             let tag_ids = tag_map.remove(&user.id).unwrap_or_default();
             UserStatus { user, online: is_online, banned: banned != 0, tag_ids }
         })
@@ -911,7 +912,7 @@ pub async fn delete_sticker(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-fn client_dir() -> std::path::PathBuf {
+pub(crate) fn client_dir() -> std::path::PathBuf {
     std::env::var("NOTDISCORD_CLIENT_DIR")
         .unwrap_or_else(|_| "client".into())
         .into()

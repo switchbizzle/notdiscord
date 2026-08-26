@@ -1,4 +1,5 @@
 mod auth;
+mod bot;
 mod preview;
 mod routes;
 mod ws;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub presence: Mutex<HashMap<i64, u32>>,
     /// user id -> (voice channel id, user, sharing screen, camera on) for everyone in voice.
     pub voice: Mutex<HashMap<i64, (i64, shared::User, bool, bool)>>,
+    /// The resident bot's user account.
+    pub bot: shared::User,
 }
 
 impl AppState {
@@ -173,13 +176,19 @@ async fn main() -> anyhow::Result<()> {
             .await?;
     }
 
+    let bot_user = bot::ensure_bot_user(&db).await?;
+
     let (events, _) = broadcast::channel(256);
     let state = Arc::new(AppState {
         db,
         events,
         presence: Mutex::new(HashMap::new()),
         voice: Mutex::new(HashMap::new()),
+        bot: bot_user,
     });
+
+    // NotBot announces new client releases in chat.
+    tokio::spawn(bot::announce_loop(state.clone()));
 
     // Hourly sweep of expired uploads (avatars and stickers are protected).
     {

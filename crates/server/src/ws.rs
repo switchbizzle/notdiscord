@@ -213,6 +213,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             .execute(&state.db)
             .await?;
 
+            let mentioned_bot = user.id != state.bot.id && crate::bot::is_mention(&content);
             let message = Message {
                 id: result.last_insert_rowid(),
                 channel_id,
@@ -225,6 +226,11 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 reply_preview,
             };
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
+
+            // Summoned? Answer in the background so chat keeps flowing.
+            if mentioned_bot {
+                crate::bot::maybe_answer(state.clone(), channel_id);
+            }
         }
         // Handled at the connection level in handle_socket.
         ClientEvent::VoiceState { .. } => {}

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.30.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Meet NotBot 🤖 — @NotBot in any channel and it answers (it knows the chat history and the release notes)",
+      "NotBot announces new releases in #general the moment they ship",
+      "It remembers: long-term per-channel memory with automatic compaction, so it keeps context instead of starting fresh every question"
+    ]
+  },
+  {
     "version": "0.29.0",
     "date": "2026-08-26",
     "changes": [
