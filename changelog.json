@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.16.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Message search! The box in the top-right searches all history — Enter to search, click a result to jump to it",
+      "Your DMs are only searchable by you"
+    ]
+  },
+  {
     "version": "0.15.0",
     "date": "2026-08-26",
     "changes": [

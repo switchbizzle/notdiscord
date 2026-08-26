@@ -378,6 +378,9 @@ fn MainView(session: api::Session) -> Element {
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
+    let mut search_query = use_signal(String::new);
+    let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
+    let mut highlight_msg = use_signal(|| None::<i64>);
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
@@ -947,6 +950,69 @@ fn MainView(session: api::Session) -> Element {
                                     api::save_settings(&s);
                                 },
                                 "Nice"
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(results) = search_results() {
+                div {
+                    class: "settings-overlay",
+                    onclick: move |_| search_results.set(None),
+                    div {
+                        class: "settings-modal whatsnew-modal",
+                        onclick: move |e| e.stop_propagation(),
+                        div { class: "whatsnew-head",
+                            div { class: "whatsnew-title", "Search" }
+                            div { class: "whatsnew-sub",
+                                if results.is_empty() {
+                                    "no messages match \"{search_query}\""
+                                } else {
+                                    "{results.len()} result(s) for \"{search_query}\" — click to jump"
+                                }
+                            }
+                        }
+                        div { class: "settings-body whatsnew-body",
+                            for result in results {
+                                div {
+                                    key: "{result.message.id}",
+                                    class: "search-hit",
+                                    onclick: {
+                                        let msg_id = result.message.id;
+                                        let channel_id = result.message.channel_id;
+                                        move |_| {
+                                            search_results.set(None);
+                                            let Some(channel) = channels().into_iter().find(|c| c.id == channel_id) else {
+                                                status.set("that channel is no longer available".into());
+                                                return;
+                                            };
+                                            unread.write().remove(&channel.id);
+                                            selected.set(Some(channel));
+                                            messages.set(Vec::new());
+                                            has_more.set(false);
+                                            highlight_msg.set(Some(msg_id));
+                                            spawn(async move {
+                                                match api::messages(&session(), channel_id, Some(msg_id + 1)).await {
+                                                    Ok(msgs) => {
+                                                        has_more.set(msgs.len() == api::HISTORY_PAGE);
+                                                        messages.set(msgs);
+                                                    }
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        }
+                                    },
+                                    div { class: "search-hit-head",
+                                        span { class: "search-hit-channel",
+                                            if result.channel_kind == "dm" { "DM" } else { "# {result.channel_name}" }
+                                        }
+                                        span { class: "search-hit-author", "{result.message.author.username}" }
+                                        span { class: "release-date", {format_time(result.message.created_at)} }
+                                    }
+                                    div { class: "search-hit-content",
+                                        {result.message.content.chars().take(220).collect::<String>()}
+                                    }
+                                }
                             }
                         }
                     }
@@ -1847,12 +1913,41 @@ fn MainView(session: api::Session) -> Element {
                 }
             }
             div { class: "main",
-                div { class: "channel-header", "{selected_label}" }
+                div { class: "channel-header",
+                    span { class: "channel-header-label", "{selected_label}" }
+                    input {
+                        class: "search-input",
+                        placeholder: "search messages…",
+                        value: "{search_query}",
+                        oninput: move |e| search_query.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                let q = search_query();
+                                if q.trim().is_empty() {
+                                    return;
+                                }
+                                spawn(async move {
+                                    match api::search(&session(), &q).await {
+                                        Ok(results) => search_results.set(Some(results)),
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            }
+                        },
+                    }
+                }
                 div { class: "messages",
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
                     for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                        MessageRow { key: "{msg.id}", msg, compact }
+                        {
+                            let is_target = highlight_msg() == Some(msg.id);
+                            rsx! {
+                                div { class: if is_target { "hit-wrap" } else { "" },
+                                    MessageRow { key: "{msg.id}", msg, compact }
+                                }
+                            }
+                        }
                     }
                     if has_more() {
                         button {

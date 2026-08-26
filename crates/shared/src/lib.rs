@@ -238,6 +238,14 @@ pub struct ClientVersionInfo {
     pub url: String,
 }
 
+/// One message-search hit from GET /api/search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub message: Message,
+    pub channel_name: String,
+    pub channel_kind: String,
+}
+
 /// One GIF search result from GET /api/gifs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GifResult {

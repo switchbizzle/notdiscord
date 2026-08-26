@@ -10,7 +10,7 @@ use shared::{
     AuthResponse, Channel, ClientVersionInfo, CreateChannelRequest, CreateDmRequest,
     CreateStickerRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest,
     AssignTagRequest, CreateTagRequest, RenameServerRequest, RetentionSetting, ServerEvent,
-    ServerInfo, SetBanRequest, SetRoleRequest, SetServerIconRequest, Sticker, Tag,
+    SearchResult, ServerInfo, SetBanRequest, SetRoleRequest, SetServerIconRequest, Sticker, Tag,
     UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse,
 };
 
@@ -953,6 +953,66 @@ pub async fn download_client() -> Response {
         ],
     )
     .await
+}
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+}
+
+/// Full-text message search. DM messages only surface for participants.
+pub async fn search(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<Json<Vec<SearchResult>>> {
+    // Build a safe FTS5 query: quoted prefix tokens, implicit AND.
+    let fts: String = q
+        .q
+        .split_whitespace()
+        .take(8)
+        .map(|t| format!("\"{}\"*", t.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if fts.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let rows = sqlx::query(
+        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
+                u.id, u.username, u.avatar, u.role, c.name, c.kind \
+         FROM messages_fts f \
+         JOIN messages m ON m.id = f.rowid \
+         JOIN users u ON u.id = m.author_id \
+         JOIN channels c ON c.id = m.channel_id \
+         WHERE messages_fts MATCH ? \
+           AND (c.kind != 'dm' OR EXISTS ( \
+                SELECT 1 FROM dm_members dm WHERE dm.channel_id = c.id AND dm.user_id = ?)) \
+         ORDER BY m.id DESC LIMIT 30",
+    )
+    .bind(&fts)
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+
+    let results = rows
+        .into_iter()
+        .map(|r| SearchResult {
+            message: Message {
+                id: r.get(0),
+                channel_id: r.get(1),
+                content: r.get(2),
+                created_at: r.get(3),
+                edited_at: r.get(4),
+                author: User { id: r.get(5), username: r.get(6), avatar: r.get(7), role: r.get(8) },
+                reactions: Vec::new(),
+            },
+            channel_name: r.get(9),
+            channel_kind: r.get(10),
+        })
+        .collect();
+    Ok(Json(results))
 }
 
 #[derive(Deserialize)]

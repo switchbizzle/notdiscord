@@ -113,6 +113,17 @@ pub async fn server_info(base_url: &str) -> Result<shared::ServerInfo, String> {
     handle(resp).await
 }
 
+pub async fn search(session: &Session, query: &str) -> Result<Vec<shared::SearchResult>, String> {
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/search", session.base_url))
+        .query(&[("q", query)])
+        .bearer_auth(&session.token)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
+}
+
 pub async fn tags(session: &Session) -> Result<Vec<shared::Tag>, String> {
     get(session, "tags".into()).await
 }
