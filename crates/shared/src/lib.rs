@@ -69,6 +69,15 @@ pub struct UploadResponse {
     pub url: String,
 }
 
+/// One GIF search result from GET /api/gifs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GifResult {
+    /// Small animated preview for the picker grid.
+    pub preview: String,
+    /// Full-size URL to embed in the message.
+    pub url: String,
+}
+
 // ---------- WebSocket protocol ----------
 
 /// Events sent from client to server over the WebSocket.

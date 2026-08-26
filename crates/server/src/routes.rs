@@ -7,8 +7,8 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use shared::{
-    AuthResponse, Channel, CreateChannelRequest, LoginRequest, Message, RegisterRequest,
-    ServerEvent, UploadResponse, User, UserStatus,
+    AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message,
+    RegisterRequest, ServerEvent, UploadResponse, User, UserStatus,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -248,6 +248,64 @@ pub async fn serve_file_legacy(Path(name): Path<String>) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
     file_response(crate::uploads_dir().join(&name), &name).await
+}
+
+#[derive(Deserialize)]
+pub struct GifQuery {
+    pub q: Option<String>,
+}
+
+/// Proxy GIF search to GIPHY so the API key stays on the server.
+pub async fn gifs(
+    State(_state): State<SharedState>,
+    _user: AuthUser,
+    Query(q): Query<GifQuery>,
+) -> ApiResult<Json<Vec<GifResult>>> {
+    let Ok(key) = std::env::var("NOTDISCORD_GIPHY_KEY") else {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GIF search not configured on the server yet",
+        ));
+    };
+
+    let query = q.q.unwrap_or_default();
+    let endpoint = if query.trim().is_empty() {
+        "https://api.giphy.com/v1/gifs/trending"
+    } else {
+        "https://api.giphy.com/v1/gifs/search"
+    };
+    let response: serde_json::Value = reqwest::Client::new()
+        .get(endpoint)
+        .query(&[
+            ("api_key", key.as_str()),
+            ("q", query.trim()),
+            ("limit", "24"),
+            ("rating", "pg-13"),
+        ])
+        .send()
+        .await
+        .map_err(internal)?
+        .json()
+        .await
+        .map_err(internal)?;
+
+    let results = response["data"]
+        .as_array()
+        .map(|gifs| {
+            gifs.iter()
+                .filter_map(|gif| {
+                    let images = &gif["images"];
+                    let preview = images["fixed_width"]["url"].as_str()?;
+                    let url = images["downsized"]["url"]
+                        .as_str()
+                        .filter(|u| !u.is_empty())
+                        .or_else(|| images["original"]["url"].as_str())?;
+                    Some(GifResult { preview: preview.to_owned(), url: url.to_owned() })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(results))
 }
 
 #[derive(Deserialize)]

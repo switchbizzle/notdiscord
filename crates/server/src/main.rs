@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/upload",
             post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
+        .route("/api/gifs", get(routes::gifs))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))
         .route("/ws", any(ws::ws_handler))

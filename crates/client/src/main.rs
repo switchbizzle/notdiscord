@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use shared::{Channel, ClientEvent, Message, ServerEvent, UserStatus};
+use shared::{Channel, ClientEvent, GifResult, Message, ServerEvent, UserStatus};
 
 fn main() {
     let window = WindowBuilder::new()
@@ -163,6 +163,10 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut draft = use_signal(String::new);
     let mut new_channel = use_signal(String::new);
     let mut uploading = use_signal(|| false);
+    let mut gif_open = use_signal(|| false);
+    let mut gif_query = use_signal(String::new);
+    let mut gif_results = use_signal(Vec::<GifResult>::new);
+    let mut gif_status = use_signal(String::new);
     let mut status = use_signal(|| "connecting…".to_string());
 
     // Initial data load: channel list, then history for the first channel.
@@ -320,6 +324,19 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
         });
     };
 
+    let search_gifs = move |query: String| {
+        spawn(async move {
+            gif_status.set("searching…".into());
+            match api::gifs(&session(), &query).await {
+                Ok(results) => {
+                    gif_status.set(if results.is_empty() { "no results".into() } else { String::new() });
+                    gif_results.set(results);
+                }
+                Err(e) => gif_status.set(e),
+            }
+        });
+    };
+
     let add_channel = move || {
         let name = new_channel().trim().to_string();
         if name.is_empty() {
@@ -427,8 +444,57 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         }
                     }
                 }
+                if gif_open() {
+                    div { class: "gif-panel",
+                        input {
+                            class: "gif-search",
+                            placeholder: "Search GIPHY… (Enter)",
+                            value: "{gif_query}",
+                            oninput: move |e| gif_query.set(e.value()),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter {
+                                    search_gifs(gif_query());
+                                }
+                            },
+                        }
+                        if !gif_status().is_empty() {
+                            div { class: "gif-status", "{gif_status}" }
+                        }
+                        div { class: "gif-grid",
+                            for (i, gif) in gif_results().into_iter().enumerate() {
+                                img {
+                                    key: "{i}",
+                                    class: "gif-cell",
+                                    src: "{gif.preview}",
+                                    loading: "lazy",
+                                    onclick: move |_| {
+                                        if let Some(channel) = selected() {
+                                            ws.send(ClientEvent::SendMessage {
+                                                channel_id: channel.id,
+                                                content: gif.url.clone(),
+                                            });
+                                        }
+                                        gif_open.set(false);
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
                 div { class: "typing-line", "{typing_line}" }
                 div { class: "compose",
+                    button {
+                        class: "attach gif-btn",
+                        title: "Send a GIF",
+                        onclick: move |_| {
+                            let opening = !gif_open();
+                            gif_open.set(opening);
+                            if opening && gif_results().is_empty() {
+                                search_gifs(String::new());
+                            }
+                        },
+                        "GIF"
+                    }
                     button {
                         class: "attach",
                         title: "Upload a file, image, or GIF",
