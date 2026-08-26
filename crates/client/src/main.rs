@@ -87,7 +87,13 @@ fn App() -> Element {
     rsx! {
         style { dangerous_inner_html: include_str!("../assets/style.css") }
         if restoring() {
-            div { class: "login-wrap", div { class: "splash", "NotDiscord" } }
+            div { class: "login-wrap",
+                div { class: "splash-box",
+                    div { class: "spinner" }
+                    div { class: "splash", "NotDiscord" }
+                    div { class: "splash-version", "v{env!(\"CARGO_PKG_VERSION\")}" }
+                }
+            }
         } else {
             match session() {
                 Some(s) => rsx! { MainView { session: s, session_slot: session } },
@@ -618,6 +624,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             if drag_over() {
                 div { class: "drop-overlay", "Drop to upload to #{selected_name}" }
             }
+            if updating() {
+                div { class: "update-overlay",
+                    div { class: "spinner" }
+                    div { class: "update-overlay-title", "Updating NotDiscord…" }
+                    div { class: "update-overlay-sub", "downloading and restarting, hang tight" }
+                }
+            }
             if let Some(profile) = profile_card() {
                 div {
                     class: "profile-overlay",
@@ -984,6 +997,12 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             let info = info.clone();
                             spawn(async move {
                                 updating.set(true);
+                                // Leave voice gracefully so no ghost participant
+                                // lingers in the room through the restart.
+                                if voice_status().channel_id.is_some() {
+                                    voice.send(voice::VoiceCmd::Leave);
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                }
                                 let url = format!("{}{}", session().base_url, info.url);
                                 let result = async {
                                     let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
