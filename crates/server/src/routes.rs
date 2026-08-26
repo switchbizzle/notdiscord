@@ -359,15 +359,15 @@ pub async fn channel_messages(
     messages.reverse();
 
     if !messages.is_empty() {
-        // Ids come straight from our own rows, so inlining them is safe.
-        let ids: Vec<String> = messages.iter().map(|m| m.id.to_string()).collect();
-        let reaction_rows = sqlx::query(&format!(
-            "SELECT message_id, emoji, user_id FROM reactions WHERE message_id IN ({}) ORDER BY id",
-            ids.join(",")
-        ))
-        .fetch_all(&state.db)
-        .await
-        .map_err(internal)?;
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT message_id, emoji, user_id FROM reactions WHERE message_id IN (",
+        );
+        let mut ids = qb.separated(", ");
+        for msg in &messages {
+            ids.push_bind(msg.id);
+        }
+        qb.push(") ORDER BY id");
+        let reaction_rows = qb.build().fetch_all(&state.db).await.map_err(internal)?;
         for row in reaction_rows {
             let message_id: i64 = row.get(0);
             if let Some(msg) = messages.iter_mut().find(|m| m.id == message_id) {
