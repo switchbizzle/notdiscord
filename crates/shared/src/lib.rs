@@ -219,6 +219,14 @@ pub enum ClientEvent {
     EditMessage { message_id: i64, content: String },
     /// Delete own message.
     DeleteMessage { message_id: i64 },
+    /// Announce which voice channel this user is in (None = left voice).
+    VoiceState { channel_id: Option<i64> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceStateEntry {
+    pub channel_id: i64,
+    pub user: User,
 }
 
 /// Events pushed from server to all connected clients.
@@ -239,5 +247,9 @@ pub enum ServerEvent {
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
     ServerRenamed { name: String },
+    /// Someone joined (Some) or left (None) a voice channel.
+    VoiceStateChanged { user: User, channel_id: Option<i64> },
+    /// Full voice occupancy, sent to a client right after it connects.
+    VoiceSnapshot { entries: Vec<VoiceStateEntry> },
     Error { message: String },
 }

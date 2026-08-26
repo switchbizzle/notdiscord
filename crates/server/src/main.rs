@@ -25,6 +25,8 @@ pub struct AppState {
     pub events: broadcast::Sender<Envelope>,
     /// user id -> number of live WebSocket connections.
     pub presence: Mutex<HashMap<i64, u32>>,
+    /// user id -> (voice channel id, user) for everyone currently in voice.
+    pub voice: Mutex<HashMap<i64, (i64, shared::User)>>,
 }
 
 impl AppState {
@@ -107,7 +109,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (events, _) = broadcast::channel(256);
-    let state = Arc::new(AppState { db, events, presence: Mutex::new(HashMap::new()) });
+    let state = Arc::new(AppState {
+        db,
+        events,
+        presence: Mutex::new(HashMap::new()),
+        voice: Mutex::new(HashMap::new()),
+    });
 
     let app = Router::new()
         .route("/api/register", post(routes::register))

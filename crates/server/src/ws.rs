@@ -4,7 +4,7 @@ use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use sqlx::Row;
 
-use shared::{ClientEvent, Message, ServerEvent, User};
+use shared::{ClientEvent, Message, ServerEvent, User, VoiceStateEntry};
 
 use crate::auth::AuthUser;
 use crate::{dm_recipients, now_ms, SharedState};
@@ -40,6 +40,22 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: true });
     }
 
+    // Tell the fresh connection who's already in voice.
+    {
+        let entries: Vec<VoiceStateEntry> = state
+            .voice
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(channel_id, user)| VoiceStateEntry { channel_id: *channel_id, user: user.clone() })
+            .collect();
+        let snapshot = serde_json::to_string(&ServerEvent::VoiceSnapshot { entries }).expect("serialize");
+        let _ = sink.send(WsMessage::text(snapshot)).await;
+    }
+
+    // Voice channel this connection has announced itself in.
+    let mut my_voice: Option<i64> = None;
+
     loop {
         tokio::select! {
             // Broadcast events fan out to every connected client.
@@ -71,6 +87,22 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                 let Some(Ok(msg)) = incoming else { break };
                 if let WsMessage::Text(text) = msg {
                     match serde_json::from_str::<ClientEvent>(&text) {
+                        // Voice presence is connection-scoped state, handled here.
+                        Ok(ClientEvent::VoiceState { channel_id }) => {
+                            {
+                                let mut voice = state.voice.lock().unwrap();
+                                match channel_id {
+                                    Some(ch) => {
+                                        voice.insert(user.id, (ch, user.clone()));
+                                    }
+                                    None => {
+                                        voice.remove(&user.id);
+                                    }
+                                }
+                            }
+                            my_voice = channel_id;
+                            state.broadcast(ServerEvent::VoiceStateChanged { user: user.clone(), channel_id });
+                        }
                         Ok(event) => {
                             if let Err(e) = handle_event(&state, &user, event).await {
                                 tracing::warn!("ws event error from {}: {e}", user.username);
@@ -82,6 +114,23 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
             }
         }
     }
+    // A dropped connection clears its own voice announcement, so crashes
+    // never leave ghosts in the sidebar.
+    if let Some(channel) = my_voice {
+        let removed = {
+            let mut voice = state.voice.lock().unwrap();
+            if voice.get(&user.id).map(|(c, _)| *c) == Some(channel) {
+                voice.remove(&user.id);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            state.broadcast(ServerEvent::VoiceStateChanged { user: user.clone(), channel_id: None });
+        }
+    }
+
     let went_offline = {
         let mut presence = state.presence.lock().unwrap();
         match presence.get_mut(&user.id) {
@@ -135,6 +184,8 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             };
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
         }
+        // Handled at the connection level in handle_socket.
+        ClientEvent::VoiceState { .. } => {}
         ClientEvent::Typing { channel_id } => {
             let recipients = dm_recipients(&state.db, channel_id).await?;
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {

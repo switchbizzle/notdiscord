@@ -334,6 +334,7 @@ fn MainView(session: api::Session) -> Element {
     let mut loading_older = use_signal(|| false);
     let mut unread = use_signal(HashSet::<i64>::new);
     let mut armed_delete = use_signal(|| None::<i64>);
+    let mut voice_rosters = use_signal(HashMap::<i64, Vec<User>>::new);
     let window = use_window();
 
     // Mirror unread state onto the tray badge.
@@ -506,12 +507,11 @@ fn MainView(session: api::Session) -> Element {
                                 let is_dm = channels()
                                     .iter()
                                     .any(|c| c.id == message.channel_id && c.kind == "dm");
+                                let content_lower = message.content.to_lowercase();
                                 let mentioned = message.author.id != me.id
                                     && (is_dm
-                                        || message
-                                            .content
-                                            .to_lowercase()
-                                            .contains(&format!("@{}", me.username.to_lowercase())));
+                                        || content_lower.contains("@everyone")
+                                        || content_lower.contains(&format!("@{}", me.username.to_lowercase())));
                                 if mentioned && !window.window.is_focused() {
                                     window.window.request_user_attention(Some(UserAttentionType::Informational));
                                     if audio_settings().notification_sounds {
@@ -606,6 +606,23 @@ fn MainView(session: api::Session) -> Element {
                             ServerEvent::StickerDeleted { sticker_id } => {
                                 stickers.write().retain(|s| s.id != sticker_id);
                             }
+                            ServerEvent::VoiceSnapshot { entries } => {
+                                let mut map = HashMap::<i64, Vec<User>>::new();
+                                for entry in entries {
+                                    map.entry(entry.channel_id).or_default().push(entry.user);
+                                }
+                                voice_rosters.set(map);
+                            }
+                            ServerEvent::VoiceStateChanged { user, channel_id } => {
+                                let mut map = voice_rosters.write();
+                                for users in map.values_mut() {
+                                    users.retain(|u| u.id != user.id);
+                                }
+                                if let Some(ch) = channel_id {
+                                    map.entry(ch).or_default().push(user);
+                                }
+                                map.retain(|_, users| !users.is_empty());
+                            }
                             ServerEvent::ServerRenamed { name } => {
                                 let mut s = session();
                                 s.server_name = name;
@@ -643,6 +660,17 @@ fn MainView(session: api::Session) -> Element {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     }});
+
+    // Announce our own voice channel over the chat WebSocket whenever it
+    // changes, so everyone's sidebar shows who's in voice.
+    let mut announced_voice = use_signal(|| None::<i64>);
+    use_effect(move || {
+        let current = voice_status().channel_id.filter(|_| !voice_status().connecting);
+        if *announced_voice.peek() != current {
+            announced_voice.set(current);
+            ws.send(ClientEvent::VoiceState { channel_id: current });
+        }
+    });
 
     let mut send = move || {
         let content = draft().trim().to_string();
@@ -1434,6 +1462,9 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                     for channel in channels().into_iter().filter(|c| c.kind == "voice") {
+                        {
+                            let ch_id = channel.id;
+                            rsx! {
                         button {
                             key: "v{channel.id}",
                             class: if voice_status().channel_id == Some(channel.id) { "channel voice active" } else { "channel voice" },
@@ -1453,6 +1484,18 @@ fn MainView(session: api::Session) -> Element {
                             },
                             Icon { name: "volume", size: 15 }
                             span { class: "voice-channel-name", "{channel.name}" }
+                        }
+                        if let Some(occupants) = voice_rosters().get(&ch_id).cloned() {
+                            div { class: "voice-occupants",
+                                for occupant in occupants {
+                                    div { key: "{occupant.id}", class: "voice-occupant",
+                                        UserAvatar { user: occupant.clone(), class: "dm-avatar occupant-avatar" }
+                                        span { class: "voice-occupant-name", "{occupant.username}" }
+                                    }
+                                }
+                            }
+                        }
+                            }
                         }
                     }
                 }
