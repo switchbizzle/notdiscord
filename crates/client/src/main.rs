@@ -126,6 +126,14 @@ impl ConfirmAction {
     }
 }
 
+/// A track/video playing in the media dock (from a link preview card).
+#[derive(Clone, PartialEq)]
+struct NowPlaying {
+    embed: String,
+    height: i64,
+    title: String,
+}
+
 /// A file staged in the compose area, awaiting user confirmation to send.
 #[derive(Clone, PartialEq)]
 struct PendingFile {
@@ -461,6 +469,10 @@ fn MainView(session: api::Session) -> Element {
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
     let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
     let mut jump_to = use_context_provider(|| Signal::new(None::<i64>));
+    // The embedded media player: lives in a dock OUTSIDE the message list, so
+    // chat traffic re-rendering messages can never interrupt playback.
+    let mut now_playing = use_context_provider(|| Signal::new(None::<NowPlaying>));
+    let mut player_volume = use_signal(|| 100i64);
     let mut mention_sel = use_signal(|| 0usize);
     let mut incoming_call = use_signal(|| None::<(i64, User)>);
     let mut search_query = use_signal(String::new);
@@ -2790,6 +2802,52 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                 }
+                // Media dock: the one place embeds actually play. Deliberately
+                // outside the message list so chat re-renders can't kill it.
+                if let Some(np) = now_playing() {
+                    div { class: "player-dock",
+                        div { class: "player-dock-head",
+                            span { class: "player-dock-title", title: "{np.title}", "{np.title}" }
+                            input {
+                                class: "player-dock-vol",
+                                r#type: "range",
+                                min: "0",
+                                max: "100",
+                                title: "Player volume",
+                                value: "{player_volume}",
+                                oninput: move |e| {
+                                    let Ok(v) = e.value().parse::<i64>() else { return };
+                                    player_volume.set(v);
+                                    // Best-effort volume via each host's postMessage API.
+                                    dioxus::document::eval(&format!(
+                                        "var f=document.querySelector('.player-dock iframe');\
+                                         if(f){{var w=f.contentWindow,s=f.src;\
+                                         if(s.indexOf('soundcloud')>=0)w.postMessage(JSON.stringify({{method:'setVolume',value:{v}}}),'*');\
+                                         else if(s.indexOf('youtube')>=0)w.postMessage(JSON.stringify({{event:'command',func:'setVolume',args:[{v}]}}),'*');\
+                                         else if(s.indexOf('vimeo')>=0)w.postMessage(JSON.stringify({{method:'setVolume',value:{}}}),'*');}}",
+                                        v as f64 / 100.0
+                                    ));
+                                },
+                            }
+                            button {
+                                class: "player-dock-close",
+                                title: "Stop and close",
+                                onclick: move |_| now_playing.set(None),
+                                Icon { name: "x", size: 12 }
+                            }
+                        }
+                        iframe {
+                            key: "{np.embed}",
+                            class: "player-dock-frame",
+                            src: "{np.embed}",
+                            style: "height: {np.height}px",
+                            // Eager: Edge's lazy-loading intervention otherwise
+                            // defers the frame into a permanent black box.
+                            "loading": "eager",
+                            allow: "autoplay; encrypted-media; clipboard-write; picture-in-picture; fullscreen",
+                        }
+                    }
+                }
                 div { class: "typing-line", "{typing_line}" }
                 div { class: "compose",
                     button {
@@ -3032,7 +3090,7 @@ fn preview_cache() -> &'static std::sync::Mutex<HashMap<String, Option<shared::L
 fn LinkCard(url: String) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let mut card = use_signal(|| None::<shared::LinkPreview>);
-    let mut playing = use_signal(|| false);
+    let mut now_playing = use_context::<Signal<Option<NowPlaying>>>();
 
     use_future({
         let url = url.clone();
@@ -3060,24 +3118,30 @@ fn LinkCard(url: String) -> Element {
     };
     let open_url = url.clone();
     let playable = preview.embed.clone();
-    let height = preview.embed_height.max(120);
+
+    // Clicking play loads the track into the media dock (a stable element
+    // outside the message list, so chat traffic can't interrupt playback).
+    let start = {
+        let preview = preview.clone();
+        move |_| {
+            let Some(embed) = preview.embed.clone() else { return };
+            // YouTube only honors postMessage volume control with the JS API on.
+            let embed = if embed.contains("/embed/") && embed.contains("youtube") {
+                format!("{embed}?enablejsapi=1")
+            } else {
+                embed
+            };
+            now_playing.set(Some(NowPlaying {
+                embed,
+                height: preview.embed_height.max(120),
+                title: if preview.title.is_empty() { preview.url.clone() } else { preview.title.clone() },
+            }));
+        }
+    };
 
     rsx! {
         div { class: "link-card",
-            if playing() {
-                if let Some(embed) = playable.clone() {
-                    iframe {
-                        class: "link-card-embed",
-                        src: "{embed}",
-                        style: "height: {height}px",
-                        // Explicit eager: Edge's lazy-loading intervention
-                        // otherwise defers the frame into a permanent black box.
-                        // (String key: dioxus's iframe schema has no `loading`.)
-                        "loading": "eager",
-                        allow: "autoplay; encrypted-media; clipboard-write; picture-in-picture; fullscreen",
-                    }
-                }
-            } else if let Some(image) = preview.image.clone() {
+            if let Some(image) = preview.image.clone() {
                 div { class: "link-card-media",
                     // Eager, not lazy: Edge's lazy intervention swaps deferred
                     // images for a grey cloud placeholder and never recovers.
@@ -3086,7 +3150,7 @@ fn LinkCard(url: String) -> Element {
                         button {
                             class: "link-card-play",
                             title: "Play here",
-                            onclick: move |_| playing.set(true),
+                            onclick: start.clone(),
                             Icon { name: "play", size: 26 }
                         }
                     }
@@ -3109,10 +3173,10 @@ fn LinkCard(url: String) -> Element {
                 if !preview.description.is_empty() {
                     div { class: "link-card-desc", "{preview.description}" }
                 }
-                if playable.is_some() && preview.image.is_none() && !playing() {
+                if playable.is_some() && preview.image.is_none() {
                     button {
                         class: "link-card-playrow",
-                        onclick: move |_| playing.set(true),
+                        onclick: start,
                         Icon { name: "play", size: 14 }
                         span { "Play here" }
                     }

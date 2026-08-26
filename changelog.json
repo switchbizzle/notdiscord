@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.29.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Songs and videos now play in a floating mini-player above the compose box — chatting no longer kills the music (it used to; sorry)",
+      "The mini-player has its own volume slider and a close button, and keeps playing while you switch channels"
+    ]
+  },
+  {
     "version": "0.28.1",
     "date": "2026-08-26",
     "changes": [
