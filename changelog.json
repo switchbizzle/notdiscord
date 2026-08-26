@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.16.1",
+    "date": "2026-08-26",
+    "changes": [
+      "Fixed: the tray menu's Quit (and Open) actually work now"
+    ]
+  },
+  {
     "version": "0.16.0",
     "date": "2026-08-26",
     "changes": [
