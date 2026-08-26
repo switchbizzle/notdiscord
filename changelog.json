@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.28.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Emoji picker for typing messages — the smiley button next to GIF opens a searchable grid of ~440 emoji",
+      "Type to filter (\"fire\", \"skull\", \"moai\"...), click to drop it into your message; the panel stays open for combos"
+    ]
+  },
+  {
     "version": "0.27.0",
     "date": "2026-08-26",
     "changes": [

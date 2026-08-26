@@ -1389,6 +1389,45 @@ input:focus { border-color: #5865f2; }
 }
 .msg-file-dl { color: #949ba4; font-size: 12px; flex-shrink: 0; }
 
+/* ---------- Emoji picker (compose) ---------- */
+
+.emoji-panel {
+    margin: 0 16px 8px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 10px;
+    padding: 10px;
+}
+.emoji-scroll {
+    max-height: 260px;
+    overflow-y: auto;
+    margin-top: 8px;
+}
+.emoji-cat {
+    color: #949ba4;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    margin: 8px 2px 4px;
+}
+.emoji-section:first-child .emoji-cat { margin-top: 0; }
+.emoji-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+    gap: 2px;
+}
+.emoji-cell {
+    background: none;
+    border: none;
+    border-radius: 6px;
+    font-size: 22px;
+    line-height: 1;
+    padding: 6px 0;
+    cursor: pointer;
+}
+.emoji-cell:hover { background: #35373c; }
+
 /* ---------- Invite code (Settings → Server) ---------- */
 
 .invite-row {

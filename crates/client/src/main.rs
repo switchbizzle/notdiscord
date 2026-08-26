@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod emoji;
 mod icons;
 mod md;
 mod camera;
@@ -443,6 +444,8 @@ fn MainView(session: api::Session) -> Element {
     let mut update_progress = use_signal(|| 0.0f32);
     let mut stickers = use_signal(Vec::<shared::Sticker>::new);
     let mut sticker_open = use_signal(|| false);
+    let mut emoji_open = use_signal(|| false);
+    let mut emoji_query = use_signal(String::new);
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
@@ -2550,6 +2553,68 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                 }
+                if emoji_open() {
+                    div { class: "emoji-panel",
+                        input {
+                            class: "gif-search",
+                            placeholder: "Search emoji…",
+                            value: "{emoji_query}",
+                            oninput: move |e| emoji_query.set(e.value()),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Escape {
+                                    emoji_open.set(false);
+                                }
+                            },
+                        }
+                        div { class: "emoji-scroll",
+                            if emoji_query().trim().is_empty() {
+                                // Full catalog, grouped.
+                                for (category, list) in emoji::CATALOG {
+                                    div { key: "{category}", class: "emoji-section",
+                                        div { class: "emoji-cat", "{category}" }
+                                        div { class: "emoji-grid",
+                                            for (glyph, keywords) in list.iter() {
+                                                button {
+                                                    key: "{glyph}",
+                                                    class: "emoji-cell",
+                                                    title: "{keywords}",
+                                                    onclick: move |_| {
+                                                        draft.set(format!("{}{glyph}", draft()));
+                                                        notify_typing();
+                                                    },
+                                                    "{glyph}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                {
+                                    let hits = emoji::search(&emoji_query());
+                                    rsx! {
+                                        if hits.is_empty() {
+                                            div { class: "gif-status", "nothing matches \"{emoji_query}\"" }
+                                        }
+                                        div { class: "emoji-grid",
+                                            for (glyph, keywords) in hits {
+                                                button {
+                                                    key: "{glyph}",
+                                                    class: "emoji-cell",
+                                                    title: "{keywords}",
+                                                    onclick: move |_| {
+                                                        draft.set(format!("{}{glyph}", draft()));
+                                                        notify_typing();
+                                                    },
+                                                    "{glyph}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if sticker_open() {
                     div { class: "sticker-panel",
                         div { class: "sticker-grid",
@@ -2723,16 +2788,41 @@ fn MainView(session: api::Session) -> Element {
                         onclick: move |_| {
                             let opening = !gif_open();
                             gif_open.set(opening);
-                            if opening && gif_results().is_empty() {
-                                search_gifs(String::new());
+                            if opening {
+                                emoji_open.set(false);
+                                sticker_open.set(false);
+                                if gif_results().is_empty() {
+                                    search_gifs(String::new());
+                                }
                             }
                         },
                         "GIF"
                     }
                     button {
+                        class: "attach emoji-btn",
+                        title: "Insert an emoji",
+                        onclick: move |_| {
+                            let opening = !emoji_open();
+                            emoji_open.set(opening);
+                            if opening {
+                                emoji_query.set(String::new());
+                                gif_open.set(false);
+                                sticker_open.set(false);
+                            }
+                        },
+                        Icon { name: "smile" }
+                    }
+                    button {
                         class: "attach sticker-btn",
                         title: "Send a sticker",
-                        onclick: move |_| sticker_open.set(!sticker_open()),
+                        onclick: move |_| {
+                            let opening = !sticker_open();
+                            sticker_open.set(opening);
+                            if opening {
+                                emoji_open.set(false);
+                                gif_open.set(false);
+                            }
+                        },
                         Icon { name: "tag" }
                     }
                     button {
