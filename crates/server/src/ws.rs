@@ -17,7 +17,7 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, user))
 }
 
-async fn handle_socket(socket: WebSocket, state: SharedState, user: User) {
+async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
     tracing::info!("ws connected: {}", user.username);
     let (mut sink, mut stream) = socket.split();
     let mut events = state.events.subscribe();
@@ -38,6 +38,13 @@ async fn handle_socket(socket: WebSocket, state: SharedState, user: User) {
             event = events.recv() => {
                 match event {
                     Ok(event) => {
+                        // Keep this connection's snapshot of its own user fresh,
+                        // so messages sent after a profile change carry the new avatar.
+                        if let ServerEvent::UserUpdated { user: updated } = &event {
+                            if updated.id == user.id {
+                                user = updated.clone();
+                            }
+                        }
                         let text = serde_json::to_string(&event).expect("serialize event");
                         if sink.send(WsMessage::text(text)).await.is_err() {
                             break;
