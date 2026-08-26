@@ -45,9 +45,26 @@ fn main() {
         default_panic(info);
     }));
 
-    // Clean up the previous binary left behind by a self-update.
+    // A second instance is how updates break: the extra process keeps the
+    // old exe locked ("could not stage update: Access is denied"). Close-to-
+    // tray makes accidental double launches easy, so reveal the existing
+    // window and bow out instead.
+    ensure_single_instance();
+
+    // Clean up binaries left behind by self-updates. Old versions staged as
+    // NotDiscord.old.exe; current ones use unique names (NotDiscord.old-*.exe)
+    // so a locked leftover can never block the next update.
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(exe.with_file_name("NotDiscord.old.exe"));
+        if let Some(dir) = exe.parent() {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with("NotDiscord.old") && name.ends_with(".exe") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
     let window = WindowBuilder::new()
         .with_title("NotDiscord")
@@ -163,27 +180,20 @@ fn App() -> Element {
         });
     }
 
-    // Poll tray clicks and menu events.
+    // Tray menu (Open/Quit). Left-click-to-restore is dioxus built-in; menu
+    // events only reach us through this hook — see the note in tray.rs.
     {
         let tray_handle = tray_handle.clone();
         let window = window.clone();
-        use_future(move || {
-            let tray_handle = tray_handle.clone();
-            let window = window.clone();
-            async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-                    for action in tray::poll_events(&tray_handle) {
-                        match action {
-                            tray::TrayAction::Show => {
-                                window.window.set_visible(true);
-                                window.window.set_minimized(false);
-                                window.window.set_focus();
-                            }
-                            tray::TrayAction::Quit => std::process::exit(0),
-                        }
-                    }
-                }
+        dioxus::desktop::use_tray_menu_event_handler(move |event| {
+            let borrow = tray_handle.borrow();
+            let Some(tray) = borrow.as_ref() else { return };
+            if event.id() == &tray.open_id {
+                window.window.set_visible(true);
+                window.window.set_minimized(false);
+                window.window.set_focus();
+            } else if event.id() == &tray.quit_id {
+                std::process::exit(0);
             }
         });
     }
@@ -3551,19 +3561,88 @@ async fn download_with_progress(url: &str, mut progress: Signal<f32>) -> Result<
     Ok(bytes)
 }
 
+/// The single-instance mutex handle, held for the process's lifetime.
+/// Released explicitly right before an update relaunch spawns our successor.
+#[cfg(windows)]
+static INSTANCE_MUTEX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Only one NotDiscord at a time: hold a named mutex for the process's
+/// lifetime; if it's already held, surface the existing instance's window
+/// (it's probably hiding in the tray) and exit. Duplicate instances are how
+/// updates break — the extra process keeps the renamed exe locked forever.
+#[cfg(windows)]
+fn ensure_single_instance() {
+    use winapi::shared::winerror::ERROR_ALREADY_EXISTS;
+    use winapi::um::errhandlingapi::GetLastError;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::synchapi::CreateMutexW;
+    use winapi::um::winuser::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
+
+    let name: Vec<u16> = "Local\\NotDiscordSingleInstance\0".encode_utf16().collect();
+    let title: Vec<u16> = "NotDiscord\0".encode_utf16().collect();
+    for _ in 0..10 {
+        let handle = unsafe { CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return; // Can't create mutexes at all: don't block launching.
+        }
+        if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+            // We're the one instance; hold the mutex until the process dies.
+            INSTANCE_MUTEX.store(handle as usize, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        unsafe { CloseHandle(handle) };
+        // Someone's running. If their window exists, bring it up and bow out.
+        let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+        if !hwnd.is_null() {
+            unsafe {
+                ShowWindow(hwnd, SW_SHOW);
+                ShowWindow(hwnd, SW_RESTORE);
+                SetForegroundWindow(hwnd);
+            }
+            std::process::exit(0);
+        }
+        // Mutex held but no window: almost certainly an exiting process
+        // (update relaunch, or a quit in progress). Wait it out briefly.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    std::process::exit(0);
+}
+
+#[cfg(not(windows))]
+fn ensure_single_instance() {}
+
+/// Let go of the single-instance mutex so an update relaunch can start
+/// while this process is still winding down.
+fn release_single_instance() {
+    #[cfg(windows)]
+    {
+        use winapi::um::handleapi::CloseHandle;
+        let handle = INSTANCE_MUTEX.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if handle != 0 {
+            unsafe { CloseHandle(handle as *mut winapi::ctypes::c_void) };
+        }
+    }
+}
+
 /// Replace the running executable with `new_exe_bytes` and restart.
 /// Windows allows renaming a running exe, so: rename self aside, write the
 /// new binary at the original path, spawn it, exit.
 fn apply_self_update(new_exe_bytes: Vec<u8>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let old = exe.with_file_name("NotDiscord.old.exe");
+    // Unique per-process name: never collides with a leftover another
+    // process still has locked.
+    let old = exe.with_file_name(format!("NotDiscord.old-{}.exe", std::process::id()));
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|e| format!("could not stage update: {e}"))?;
+    std::fs::rename(&exe, &old).map_err(|e| {
+        let dir = exe.parent().map(|p| p.display().to_string()).unwrap_or_default();
+        format!("could not stage update in {dir}: {e}")
+    })?;
     if let Err(e) = std::fs::write(&exe, &new_exe_bytes) {
         // Roll back so the app still launches next time.
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("could not write update: {e}"));
     }
+    release_single_instance();
     std::process::Command::new(&exe)
         .spawn()
         .map_err(|e| format!("update installed but relaunch failed: {e}"))?;

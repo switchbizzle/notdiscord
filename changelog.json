@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.28.1",
+    "date": "2026-08-26",
+    "changes": [
+      "The tray menu actually works now — Open opens, Quit quits (it never did; left-click was carrying the team)",
+      "Fixed 'could not stage update: Access is denied' — a leftover locked file from an earlier update could block every future one",
+      "Only one NotDiscord runs at a time: launching a second just brings the existing window up (stray hidden copies were also what broke updates)"
+    ]
+  },
+  {
     "version": "0.28.0",
     "date": "2026-08-26",
     "changes": [
