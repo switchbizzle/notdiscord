@@ -400,6 +400,27 @@ input:focus { border-color: #5865f2; }
 }
 .voice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .voice-mic-off { font-size: 11px; }
+.live-pill {
+    background: #f23f43;
+    color: #fff;
+    font-size: 8px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 4px;
+    letter-spacing: 0.6px;
+    flex-shrink: 0;
+}
+.watch-btn {
+    background: #5865f2;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 5px;
+    flex-shrink: 0;
+}
+.watch-btn:hover { filter: brightness(1.15); }
+.voice-btn.sharing { background: #6b2a2c; color: #f23f43; }
 .volume-slider {
     width: 64px;
     height: 4px;

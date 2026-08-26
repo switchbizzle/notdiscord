@@ -3,6 +3,7 @@
 mod api;
 mod icons;
 mod md;
+mod share;
 mod tray;
 mod voice;
 
@@ -386,7 +387,7 @@ fn MainView(session: api::Session) -> Element {
     let mut loading_older = use_signal(|| false);
     let mut unread = use_signal(HashSet::<i64>::new);
     let mut confirm = use_signal(|| None::<ConfirmAction>);
-    let mut voice_rosters = use_signal(HashMap::<i64, Vec<User>>::new);
+    let mut voice_rosters = use_signal(HashMap::<i64, Vec<(User, bool)>>::new);
     let window = use_window();
 
     // Mirror unread state onto the tray badge.
@@ -723,20 +724,20 @@ fn MainView(session: api::Session) -> Element {
                                 stickers.write().retain(|s| s.id != sticker_id);
                             }
                             ServerEvent::VoiceSnapshot { entries } => {
-                                let mut map = HashMap::<i64, Vec<User>>::new();
+                                let mut map = HashMap::<i64, Vec<(User, bool)>>::new();
                                 for entry in entries {
-                                    map.entry(entry.channel_id).or_default().push(entry.user);
+                                    map.entry(entry.channel_id).or_default().push((entry.user, entry.sharing));
                                 }
                                 voice_rosters.set(map);
                             }
-                            ServerEvent::VoiceStateChanged { user, channel_id } => {
+                            ServerEvent::VoiceStateChanged { user, channel_id, sharing } => {
                                 {
                                     let mut map = voice_rosters.write();
                                     for users in map.values_mut() {
-                                        users.retain(|u| u.id != user.id);
+                                        users.retain(|(u, _)| u.id != user.id);
                                     }
                                     if let Some(ch) = channel_id {
-                                        map.entry(ch).or_default().push(user.clone());
+                                        map.entry(ch).or_default().push((user.clone(), sharing));
                                     }
                                     map.retain(|_, users| !users.is_empty());
                                 }
@@ -816,12 +817,13 @@ fn MainView(session: api::Session) -> Element {
 
     // Announce our own voice channel over the chat WebSocket whenever it
     // changes, so everyone's sidebar shows who's in voice.
-    let mut announced_voice = use_signal(|| None::<i64>);
+    let mut announced_voice = use_signal(|| (None::<i64>, false));
     use_effect(move || {
         let current = voice_status().channel_id.filter(|_| !voice_status().connecting);
-        if *announced_voice.peek() != current {
-            announced_voice.set(current);
-            ws.send(ClientEvent::VoiceState { channel_id: current });
+        let sharing = voice_status().sharing_self;
+        if *announced_voice.peek() != (current, sharing) {
+            announced_voice.set((current, sharing));
+            ws.send(ClientEvent::VoiceState { channel_id: current, sharing });
         }
     });
 
@@ -1956,10 +1958,13 @@ fn MainView(session: api::Session) -> Element {
                         }
                         if let Some(occupants) = voice_rosters().get(&ch_id).cloned() {
                             div { class: "voice-occupants",
-                                for occupant in occupants {
+                                for (occupant, occ_sharing) in occupants {
                                     div { key: "{occupant.id}", class: "voice-occupant",
                                         UserAvatar { user: occupant.clone(), class: "dm-avatar occupant-avatar" }
                                         span { class: "voice-occupant-name", "{occupant.username}" }
+                                        if occ_sharing {
+                                            span { class: "live-pill", "LIVE" }
+                                        }
                                     }
                                 }
                             }
@@ -2007,6 +2012,22 @@ fn MainView(session: api::Session) -> Element {
                                         rsx! { UserAvatar { user, class: "voice-avatar" } }
                                     }
                                     span { class: "voice-name", "{p.name}" }
+                                    if p.sharing {
+                                        span { class: "live-pill", "LIVE" }
+                                        if !p.is_me {
+                                            button {
+                                                class: "watch-btn",
+                                                title: "Watch {p.name}'s screen",
+                                                onclick: {
+                                                    let identity = p.identity.clone();
+                                                    move |_| voice.send(voice::VoiceCmd::WatchScreen {
+                                                        identity: identity.clone(),
+                                                    })
+                                                },
+                                                "Watch"
+                                            }
+                                        }
+                                    }
                                     if p.is_me && voice_status().muted {
                                         span { class: "voice-mic-off", Icon { name: "mic-off", size: 12 } }
                                     }
@@ -2055,6 +2076,18 @@ fn MainView(session: api::Session) -> Element {
                                     title: if voice_status().deafened { "Undeafen" } else { "Deafen" },
                                     onclick: move |_| voice.send(voice::VoiceCmd::ToggleDeafen),
                                     if voice_status().deafened { Icon { name: "headphones-off" } } else { Icon { name: "headphones" } }
+                                }
+                                button {
+                                    class: if voice_status().sharing_self { "voice-btn sharing" } else { "voice-btn" },
+                                    title: if voice_status().sharing_self { "Stop sharing your screen" } else { "Share your screen" },
+                                    onclick: move |_| {
+                                        if voice_status().sharing_self {
+                                            voice.send(voice::VoiceCmd::StopScreenShare);
+                                        } else {
+                                            voice.send(voice::VoiceCmd::StartScreenShare);
+                                        }
+                                    },
+                                    Icon { name: "screen" }
                                 }
                                 button {
                                     class: "voice-btn leave",

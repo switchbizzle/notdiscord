@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.21.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Screen share! Hit the monitor button in the voice panel to go LIVE with your primary screen",
+      "Sharers get a red LIVE pill next to their name — everyone in the channel gets a Watch button",
+      "Watching opens a resizable viewer window; close it whenever you're done"
+    ]
+  },
+  {
     "version": "0.20.1",
     "date": "2026-08-26",
     "changes": [

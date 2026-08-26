@@ -48,7 +48,11 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
             .lock()
             .unwrap()
             .values()
-            .map(|(channel_id, user)| VoiceStateEntry { channel_id: *channel_id, user: user.clone() })
+            .map(|(channel_id, user, sharing)| VoiceStateEntry {
+                channel_id: *channel_id,
+                user: user.clone(),
+                sharing: *sharing,
+            })
             .collect();
         let mut entries = Vec::with_capacity(raw.len());
         for entry in raw {
@@ -96,12 +100,12 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                 if let WsMessage::Text(text) = msg {
                     match serde_json::from_str::<ClientEvent>(&text) {
                         // Voice presence is connection-scoped state, handled here.
-                        Ok(ClientEvent::VoiceState { channel_id }) => {
+                        Ok(ClientEvent::VoiceState { channel_id, sharing }) => {
                             {
                                 let mut voice = state.voice.lock().unwrap();
                                 match channel_id {
                                     Some(ch) => {
-                                        voice.insert(user.id, (ch, user.clone()));
+                                        voice.insert(user.id, (ch, user.clone(), sharing));
                                     }
                                     None => {
                                         voice.remove(&user.id);
@@ -115,7 +119,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                                 None => None,
                             };
                             my_voice = channel_id;
-                            send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id });
+                            send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id, sharing });
                         }
                         Ok(event) => {
                             if let Err(e) = handle_event(&state, &user, event).await {
@@ -133,7 +137,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
     if let Some(channel) = my_voice {
         let removed = {
             let mut voice = state.voice.lock().unwrap();
-            if voice.get(&user.id).map(|(c, _)| *c) == Some(channel) {
+            if voice.get(&user.id).map(|(c, _, _)| *c) == Some(channel) {
                 voice.remove(&user.id);
                 true
             } else {
@@ -142,7 +146,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         };
         if removed {
             let recipients = dm_recipients(&state.db, channel).await.unwrap_or(None);
-            send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id: None });
+            send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id: None, sharing: false });
         }
     }
 

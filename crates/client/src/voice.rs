@@ -14,7 +14,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use livekit::options::TrackPublishOptions;
-use livekit::track::{LocalAudioTrack, LocalTrack, RemoteTrack, TrackSource};
+use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, RemoteTrack, RemoteVideoTrack, TrackSource};
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
@@ -27,6 +29,7 @@ pub struct VoiceParticipant {
     pub name: String,
     pub speaking: bool,
     pub is_me: bool,
+    pub sharing: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -36,6 +39,8 @@ pub struct VoiceStatus {
     pub connecting: bool,
     pub muted: bool,
     pub deafened: bool,
+    /// We are currently sharing our screen.
+    pub sharing_self: bool,
     /// Push-to-talk mode is active and the key is currently held.
     pub ptt_held: bool,
     pub participants: Vec<VoiceParticipant>,
@@ -57,6 +62,10 @@ pub enum VoiceCmd {
     SetVoiceMode { mode: String, key: String },
     /// Voice-activity gate threshold (RMS, 0 = always transmit).
     SetVadThreshold(f32),
+    StartScreenShare,
+    StopScreenShare,
+    /// Open a viewer window for this participant's screen share.
+    WatchScreen { identity: String },
 }
 
 pub fn parse_ptt_key(name: &str) -> device_query::Keycode {
@@ -191,7 +200,23 @@ struct ActiveCall {
     ptt_key: Arc<Mutex<device_query::Keycode>>,
     /// Dropping ends the PTT polling thread.
     _ptt_stop: std_mpsc::Sender<()>,
+    /// Active screen capture + its published track sid.
+    share: Option<(crate::share::ShareControl, livekit::id::TrackSid)>,
+    /// Remote screenshare tracks by participant identity.
+    video_tracks: Arc<Mutex<HashMap<String, RemoteVideoTrack>>>,
     event_task: tokio::task::JoinHandle<()>,
+}
+
+async fn stop_share(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
+    if let Some((control, sid)) = active.share.take() {
+        let _ = control.stop();
+        let _ = active.room.local_participant().unpublish_track(&sid).await;
+    }
+    let mut s = status.write();
+    s.sharing_self = false;
+    if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
+        me.sharing = false;
+    }
 }
 
 fn gain_handle(
@@ -225,7 +250,8 @@ pub async fn voice_task(
         match cmd {
             VoiceCmd::Join { channel_id, channel_name, url, token } => {
                 // Leave any current room first.
-                if let Some(old) = call.take() {
+                if let Some(mut old) = call.take() {
+                    stop_share(&mut old, status).await;
                     old.room.close().await.ok();
                 }
                 status.set(VoiceStatus {
@@ -248,11 +274,78 @@ pub async fn voice_task(
                 }
             }
             VoiceCmd::Leave => {
-                if let Some(old) = call.take() {
+                if let Some(mut old) = call.take() {
+                    stop_share(&mut old, status).await;
                     old.room.close().await.ok();
                 }
                 status.set(VoiceStatus::default());
                 mic_level.set(0.0);
+            }
+            VoiceCmd::StartScreenShare => {
+                if let Some(active) = call.as_mut() {
+                    if active.share.is_none() {
+                        let source = NativeVideoSource::new(
+                            VideoResolution { width: 1920, height: 1080 },
+                            true,
+                        );
+                        let track = LocalVideoTrack::create_video_track(
+                            "screen",
+                            RtcVideoSource::Native(source.clone()),
+                        );
+                        match active
+                            .room
+                            .local_participant()
+                            .publish_track(
+                                LocalTrack::Video(track),
+                                TrackPublishOptions {
+                                    source: TrackSource::Screenshare,
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                        {
+                            Ok(publication) => match crate::share::start_capture(source) {
+                                Ok(control) => {
+                                    active.share = Some((control, publication.sid()));
+                                    let mut s = status.write();
+                                    s.sharing_self = true;
+                                    if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
+                                        me.sharing = true;
+                                    }
+                                }
+                                Err(e) => {
+                                    let sid = publication.sid();
+                                    let _ = active.room.local_participant().unpublish_track(&sid).await;
+                                    status.write().error = e;
+                                }
+                            },
+                            Err(e) => status.write().error = format!("screen share failed: {e}"),
+                        }
+                    }
+                }
+            }
+            VoiceCmd::StopScreenShare => {
+                if let Some(active) = call.as_mut() {
+                    stop_share(active, status).await;
+                }
+            }
+            VoiceCmd::WatchScreen { identity } => {
+                if let Some(active) = &call {
+                    let track = active.video_tracks.lock().unwrap().get(&identity).cloned();
+                    match track {
+                        Some(track) => {
+                            let name = status
+                                .peek()
+                                .participants
+                                .iter()
+                                .find(|p| p.identity == identity)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| identity.clone());
+                            crate::share::open_viewer(track, format!("{name}'s screen — NotDiscord"));
+                        }
+                        None => status.write().error = "that screen share is no longer available".into(),
+                    }
+                }
             }
             VoiceCmd::ToggleMute => {
                 if let Some(active) = &call {
@@ -563,6 +656,8 @@ async fn connect(
     }
     let playback_stops: Arc<Mutex<HashMap<String, std_mpsc::Sender<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let video_tracks: Arc<Mutex<HashMap<String, RemoteVideoTrack>>> = Arc::new(Mutex::new(HashMap::new()));
+    let tracks_for_events = video_tracks.clone();
     let gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>> = Arc::new(Mutex::new(HashMap::new()));
     let stops = playback_stops.clone();
     let gains_for_events = gains.clone();
@@ -573,35 +668,50 @@ async fn connect(
     let output_device = settings.output_device.clone();
     let event_task = tokio::spawn(async move {
         let mut events = events;
-        refresh_participants(&room_handle, status);
+        refresh_participants(&room_handle, status, &tracks_for_events);
         while let Some(event) = events.recv().await {
             match event {
-                RoomEvent::TrackSubscribed { track, participant, .. } => {
-                    if let RemoteTrack::Audio(audio) = track {
-                        let sid = audio.sid().to_string();
-                        let identity = participant.identity().to_string();
-                        let initial = *saved_volumes.get(&identity).unwrap_or(&1.0);
-                        let gain = gain_handle(&gains_for_events, &identity, initial);
-                        let stop = spawn_playback(audio, output_device.clone(), status, gain, master_for_events.clone(), deafen_for_events.clone());
-                        stops.lock().unwrap().insert(sid, stop);
+                RoomEvent::TrackSubscribed { track, publication, participant } => {
+                    match track {
+                        RemoteTrack::Audio(audio) => {
+                            let sid = audio.sid().to_string();
+                            let identity = participant.identity().to_string();
+                            let initial = *saved_volumes.get(&identity).unwrap_or(&1.0);
+                            let gain = gain_handle(&gains_for_events, &identity, initial);
+                            let stop = spawn_playback(audio, output_device.clone(), status, gain, master_for_events.clone(), deafen_for_events.clone());
+                            stops.lock().unwrap().insert(sid, stop);
+                        }
+                        RemoteTrack::Video(video) => {
+                            if publication.source() == TrackSource::Screenshare {
+                                tracks_for_events
+                                    .lock()
+                                    .unwrap()
+                                    .insert(participant.identity().to_string(), video);
+                            }
+                        }
                     }
-                    refresh_participants(&room_handle, status);
+                    refresh_participants(&room_handle, status, &tracks_for_events);
                 }
-                RoomEvent::TrackUnsubscribed { track, .. } => {
-                    if let RemoteTrack::Audio(audio) = track {
-                        stops.lock().unwrap().remove(&audio.sid().to_string());
+                RoomEvent::TrackUnsubscribed { track, participant, .. } => {
+                    match track {
+                        RemoteTrack::Audio(audio) => {
+                            stops.lock().unwrap().remove(&audio.sid().to_string());
+                        }
+                        RemoteTrack::Video(_) => {
+                            tracks_for_events.lock().unwrap().remove(&participant.identity().to_string());
+                        }
                     }
-                    refresh_participants(&room_handle, status);
+                    refresh_participants(&room_handle, status, &tracks_for_events);
                 }
                 RoomEvent::ParticipantConnected(_) => {
                     play_voice_blip(true);
-                    refresh_participants(&room_handle, status);
+                    refresh_participants(&room_handle, status, &tracks_for_events);
                 }
                 RoomEvent::ParticipantDisconnected(_) => {
                     play_voice_blip(false);
-                    refresh_participants(&room_handle, status);
+                    refresh_participants(&room_handle, status, &tracks_for_events);
                 }
-                RoomEvent::Connected { .. } => refresh_participants(&room_handle, status),
+                RoomEvent::Connected { .. } => refresh_participants(&room_handle, status, &tracks_for_events),
                 RoomEvent::ActiveSpeakersChanged { speakers } => {
                     let speaking: Vec<String> =
                         speakers.iter().map(|p| p.identity().to_string()).collect();
@@ -636,6 +746,8 @@ async fn connect(
         vad_threshold,
         ptt_key,
         _ptt_stop: ptt_stop_tx,
+        share: None,
+        video_tracks,
         event_task,
     })
 }
@@ -693,15 +805,21 @@ fn play_voice_blip(join: bool) {
 #[cfg(not(windows))]
 fn play_voice_blip(_join: bool) {}
 
-fn refresh_participants(room: &Room, status: VoiceStatusSignal) {
+fn refresh_participants(
+    room: &Room,
+    status: VoiceStatusSignal,
+    video_tracks: &Mutex<HashMap<String, RemoteVideoTrack>>,
+) {
     let mut s = status;
+    let sharing_ids: std::collections::HashSet<String> =
+        video_tracks.lock().unwrap().keys().cloned().collect();
     // Preserve current speaking flags so a roster refresh doesn't blink them off.
-    let previous: HashMap<String, bool> = s
-        .peek()
-        .participants
-        .iter()
-        .map(|p| (p.identity.clone(), p.speaking))
-        .collect();
+    let (previous, self_sharing) = {
+        let st = s.peek();
+        let prev: HashMap<String, bool> =
+            st.participants.iter().map(|p| (p.identity.clone(), p.speaking)).collect();
+        (prev, st.sharing_self)
+    };
 
     let mut list: Vec<VoiceParticipant> = Vec::new();
     let me = room.local_participant();
@@ -711,11 +829,13 @@ fn refresh_participants(room: &Room, status: VoiceStatusSignal) {
         identity: me_identity,
         name: me.name().to_string(),
         is_me: true,
+        sharing: self_sharing,
     });
     for (_, p) in room.remote_participants() {
         let identity = p.identity().to_string();
         list.push(VoiceParticipant {
             speaking: *previous.get(&identity).unwrap_or(&false),
+            sharing: sharing_ids.contains(&identity),
             identity,
             name: p.name().to_string(),
             is_me: false,
