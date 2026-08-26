@@ -425,6 +425,7 @@ fn MainView(session: api::Session) -> Element {
     let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
     let mut jump_to = use_context_provider(|| Signal::new(None::<i64>));
     let mut mention_sel = use_signal(|| 0usize);
+    let mut incoming_call = use_signal(|| None::<(i64, User)>);
     let mut search_query = use_signal(String::new);
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
     let mut highlight_msg = use_signal(|| None::<i64>);
@@ -728,14 +729,36 @@ fn MainView(session: api::Session) -> Element {
                                 voice_rosters.set(map);
                             }
                             ServerEvent::VoiceStateChanged { user, channel_id } => {
-                                let mut map = voice_rosters.write();
-                                for users in map.values_mut() {
-                                    users.retain(|u| u.id != user.id);
+                                {
+                                    let mut map = voice_rosters.write();
+                                    for users in map.values_mut() {
+                                        users.retain(|u| u.id != user.id);
+                                    }
+                                    if let Some(ch) = channel_id {
+                                        map.entry(ch).or_default().push(user.clone());
+                                    }
+                                    map.retain(|_, users| !users.is_empty());
                                 }
-                                if let Some(ch) = channel_id {
-                                    map.entry(ch).or_default().push(user);
+                                // Ring on an incoming DM call.
+                                match channel_id {
+                                    Some(ch) => {
+                                        let me = session().user.id;
+                                        let is_my_dm = channels()
+                                            .iter()
+                                            .any(|c| c.id == ch && c.kind == "dm");
+                                        if is_my_dm && user.id != me && voice_status().channel_id != Some(ch) {
+                                            incoming_call.set(Some((ch, user)));
+                                            if audio_settings().notification_sounds {
+                                                play_ring_sound();
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        if incoming_call().is_some_and(|(_, caller)| caller.id == user.id) {
+                                            incoming_call.set(None);
+                                        }
+                                    }
                                 }
-                                map.retain(|_, users| !users.is_empty());
                             }
                             ServerEvent::ServerRenamed { name } => {
                                 let mut s = session();
@@ -1450,6 +1473,42 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
             }
+            if let Some((call_channel, caller)) = incoming_call() {
+                div { class: "incoming-call",
+                    UserAvatar { user: caller.clone(), class: "member-avatar" }
+                    div { class: "incoming-call-text",
+                        span { class: "incoming-call-name", "{caller.username}" }
+                        span { class: "incoming-call-sub", "is calling…" }
+                    }
+                    button {
+                        class: "profile-btn primary",
+                        onclick: {
+                            let caller_name = caller.username.clone();
+                            move |_| {
+                                incoming_call.set(None);
+                                let caller_name = caller_name.clone();
+                                spawn(async move {
+                                    match api::voice_token(&session(), call_channel).await {
+                                        Ok(grant) => voice.send(voice::VoiceCmd::Join {
+                                            channel_id: call_channel,
+                                            channel_name: format!("@{caller_name}"),
+                                            url: grant.url,
+                                            token: grant.token,
+                                        }),
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            }
+                        },
+                        "Join"
+                    }
+                    button {
+                        class: "profile-btn",
+                        onclick: move |_| incoming_call.set(None),
+                        "Ignore"
+                    }
+                }
+            }
             if let Some(action) = confirm() {
                 div {
                     class: "settings-overlay confirm-overlay",
@@ -1842,6 +1901,9 @@ fn MainView(session: api::Session) -> Element {
                                 UserAvatar { user: peer, class: "dm-avatar" }
                             }
                             span { class: "chan-name", "{dm_peer_name(&channel, session().user.id)}" }
+                            if voice_rosters().get(&channel.id).is_some_and(|v| !v.is_empty()) {
+                                span { class: "dm-call-live", Icon { name: "phone", size: 11 } }
+                            }
                         }
                     }
                     div { class: "section-row",
@@ -2085,6 +2147,28 @@ fn MainView(session: api::Session) -> Element {
             div { class: "main",
                 div { class: "channel-header",
                     span { class: "channel-header-label", "{selected_label}" }
+                    if selected().is_some_and(|c| c.kind == "dm") {
+                        button {
+                            class: "call-btn",
+                            title: "Start a voice call",
+                            onclick: move |_| {
+                                let Some(channel) = selected() else { return };
+                                let peer = dm_peer_name(&channel, session().user.id);
+                                spawn(async move {
+                                    match api::voice_token(&session(), channel.id).await {
+                                        Ok(grant) => voice.send(voice::VoiceCmd::Join {
+                                            channel_id: channel.id,
+                                            channel_name: format!("@{peer}"),
+                                            url: grant.url,
+                                            token: grant.token,
+                                        }),
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            },
+                            Icon { name: "phone", size: 16 }
+                        }
+                    }
                     input {
                         class: "search-input",
                         placeholder: "search messages…",
@@ -2842,6 +2926,58 @@ fn notification_wav() -> &'static [u8] {
         wav
     })
 }
+
+/// Incoming-call ring: two double-pulses, distinct from the message bloop.
+#[cfg(windows)]
+fn play_ring_sound() {
+    use std::sync::OnceLock;
+    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
+    let wav = WAV.get_or_init(|| {
+        const RATE: u32 = 44100;
+        let mut samples: Vec<i16> = Vec::new();
+        for _ in 0..2 {
+            for _ in 0..2 {
+                let n = RATE * 120 / 1000;
+                for i in 0..n {
+                    let t = i as f32 / RATE as f32;
+                    let env = (1.0 - i as f32 / n as f32).powf(1.2);
+                    let s = ((t * 784.0 * std::f32::consts::TAU).sin()
+                        + (t * 988.0 * std::f32::consts::TAU).sin() * 0.6)
+                        * env
+                        * 0.22;
+                    samples.push((s * 32767.0) as i16);
+                }
+                samples.extend(std::iter::repeat(0).take((RATE * 60 / 1000) as usize));
+            }
+            samples.extend(std::iter::repeat(0).take((RATE * 250 / 1000) as usize));
+        }
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend(b"RIFF");
+        wav.extend((36 + data_len).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(RATE.to_le_bytes());
+        wav.extend((RATE * 2).to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data_len.to_le_bytes());
+        for s in samples {
+            wav.extend(s.to_le_bytes());
+        }
+        wav
+    });
+    use winapi::um::playsoundapi::{PlaySoundW, SND_ASYNC, SND_MEMORY};
+    unsafe {
+        PlaySoundW(wav.as_ptr() as *const u16, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC);
+    }
+}
+
+#[cfg(not(windows))]
+fn play_ring_sound() {}
 
 #[cfg(windows)]
 fn play_notification_sound() {

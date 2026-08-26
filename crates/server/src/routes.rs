@@ -561,8 +561,15 @@ pub async fn voice_token(
         .fetch_optional(&state.db)
         .await
         .map_err(internal)?;
-    match row {
-        Some(r) if r.get::<String, _>(0) == "voice" => {}
+    match row.map(|r| r.get::<String, _>(0)) {
+        Some(kind) if kind == "voice" => {}
+        // Private calls: a DM doubles as a voice room for its two members.
+        Some(kind) if kind == "dm" => {
+            let members = crate::dm_recipients(&state.db, q.channel_id).await.map_err(internal)?;
+            if !members.is_some_and(|ids| ids.contains(&user.id)) {
+                return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+            }
+        }
         Some(_) => return Err(err(StatusCode::BAD_REQUEST, "not a voice channel")),
         None => return Err(err(StatusCode::NOT_FOUND, "no such channel")),
     }

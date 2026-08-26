@@ -40,15 +40,23 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: true });
     }
 
-    // Tell the fresh connection who's already in voice.
+    // Tell the fresh connection who's already in voice — hiding DM calls
+    // this user isn't part of.
     {
-        let entries: Vec<VoiceStateEntry> = state
+        let raw: Vec<VoiceStateEntry> = state
             .voice
             .lock()
             .unwrap()
             .values()
             .map(|(channel_id, user)| VoiceStateEntry { channel_id: *channel_id, user: user.clone() })
             .collect();
+        let mut entries = Vec::with_capacity(raw.len());
+        for entry in raw {
+            match dm_recipients(&state.db, entry.channel_id).await {
+                Ok(Some(members)) if !members.contains(&user.id) => {}
+                _ => entries.push(entry),
+            }
+        }
         let snapshot = serde_json::to_string(&ServerEvent::VoiceSnapshot { entries }).expect("serialize");
         let _ = sink.send(WsMessage::text(snapshot)).await;
     }
@@ -100,8 +108,14 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                                     }
                                 }
                             }
+                            // DM call presence stays between its two members.
+                            let scope_channel = channel_id.or(my_voice);
+                            let recipients = match scope_channel {
+                                Some(ch) => dm_recipients(&state.db, ch).await.unwrap_or(None),
+                                None => None,
+                            };
                             my_voice = channel_id;
-                            state.broadcast(ServerEvent::VoiceStateChanged { user: user.clone(), channel_id });
+                            send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id });
                         }
                         Ok(event) => {
                             if let Err(e) = handle_event(&state, &user, event).await {
@@ -127,7 +141,8 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
             }
         };
         if removed {
-            state.broadcast(ServerEvent::VoiceStateChanged { user: user.clone(), channel_id: None });
+            let recipients = dm_recipients(&state.db, channel).await.unwrap_or(None);
+            send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id: None });
         }
     }
 

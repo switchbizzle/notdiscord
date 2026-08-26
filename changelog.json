@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.20.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Private calls! Open a DM and hit the phone button — your friend gets a ring and a Join/Ignore card",
+      "Calls are fully private: the rest of the server can't even see one is happening",
+      "DMs with a live call show a green phone in the sidebar"
+    ]
+  },
+  {
     "version": "0.19.0",
     "date": "2026-08-26",
     "changes": [

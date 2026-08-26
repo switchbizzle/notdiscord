@@ -1054,6 +1054,39 @@ input:focus { border-color: #5865f2; }
 .mention-row:hover { background: #35373c; }
 .mention-row.selected { background: #404249; color: #fff; }
 
+.call-btn {
+    background: transparent;
+    color: #949ba4;
+    padding: 5px 8px;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+.call-btn:hover { color: #23a55a; background: #2b2d31; }
+.dm-call-live { color: #23a55a; display: inline-flex; flex-shrink: 0; }
+
+.incoming-call {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 260;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #232428;
+    border: 1px solid #23a55a;
+    border-radius: 12px;
+    padding: 12px 14px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    animation: call-pulse 1.2s ease-in-out infinite;
+}
+@keyframes call-pulse {
+    0%, 100% { border-color: #23a55a; }
+    50% { border-color: #2b2d31; }
+}
+.incoming-call-text { display: flex; flex-direction: column; min-width: 0; }
+.incoming-call-name { color: #fff; font-weight: 700; font-size: 14px; }
+.incoming-call-sub { color: #949ba4; font-size: 12px; }
+
 .confirm-overlay { z-index: 250; }
 .confirm-modal {
     background: #232428;
