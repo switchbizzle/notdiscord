@@ -6,7 +6,7 @@
 //! (i.e. when the `ActiveCall` owning it is dropped).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -35,6 +35,9 @@ pub struct VoiceStatus {
     pub channel_name: String,
     pub connecting: bool,
     pub muted: bool,
+    pub deafened: bool,
+    /// Push-to-talk mode is active and the key is currently held.
+    pub ptt_held: bool,
     pub participants: Vec<VoiceParticipant>,
     /// Playback volume per identity (1.0 = 100%).
     pub volumes: HashMap<String, f32>,
@@ -49,7 +52,29 @@ pub enum VoiceCmd {
     SetMicVolume(f32),
     SetMasterVolume(f32),
     SetNoiseSuppression(bool),
+    ToggleDeafen,
+    /// mode: "vad" | "ptt"; key: device_query Keycode name.
+    SetVoiceMode { mode: String, key: String },
 }
+
+pub fn parse_ptt_key(name: &str) -> device_query::Keycode {
+    use device_query::Keycode::*;
+    match name {
+        "F1" => F1, "F2" => F2, "F3" => F3, "F4" => F4, "F5" => F5, "F6" => F6,
+        "F7" => F7, "F8" => F8, "F10" => F10, "F11" => F11, "F12" => F12,
+        "Grave" => Grave,
+        "CapsLock" => CapsLock,
+        "LShift" => LShift,
+        "LControl" => LControl,
+        "LAlt" => LAlt,
+        _ => F9,
+    }
+}
+
+pub const PTT_KEY_CHOICES: &[&str] = &[
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    "Grave", "CapsLock", "LShift", "LControl", "LAlt",
+];
 
 /// Mic input level (0..1), updated ~10x/sec while in a call. Kept separate
 /// from VoiceStatus so only the meter widget re-renders on ticks.
@@ -154,7 +179,14 @@ struct ActiveCall {
     gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>>,
     mic_gain: Arc<AtomicU32>,
     master_gain: Arc<AtomicU32>,
-    ns_enabled: Arc<std::sync::atomic::AtomicBool>,
+    ns_enabled: Arc<AtomicBool>,
+    deafened: Arc<AtomicBool>,
+    /// True when voice mode is push-to-talk.
+    ptt_mode: Arc<AtomicBool>,
+    /// The configured PTT key, read by the polling thread each tick.
+    ptt_key: Arc<Mutex<device_query::Keycode>>,
+    /// Dropping ends the PTT polling thread.
+    _ptt_stop: std_mpsc::Sender<()>,
     event_task: tokio::task::JoinHandle<()>,
 }
 
@@ -228,6 +260,31 @@ pub async fn voice_task(
                     }
                     status.write().muted = muted;
                 }
+            }
+            VoiceCmd::ToggleDeafen => {
+                if let Some(active) = &call {
+                    let deafened = !status.peek().deafened;
+                    active.deafened.store(deafened, Ordering::Relaxed);
+                    // Deafen implies mute; undeafen restores both.
+                    if deafened {
+                        active.mic_publication.mute();
+                    } else {
+                        active.mic_publication.unmute();
+                    }
+                    let mut s = status.write();
+                    s.deafened = deafened;
+                    s.muted = deafened;
+                }
+            }
+            VoiceCmd::SetVoiceMode { mode, key } => {
+                if let Some(active) = &call {
+                    active.ptt_mode.store(mode == "ptt", Ordering::Relaxed);
+                    *active.ptt_key.lock().unwrap() = parse_ptt_key(&key);
+                }
+                let mut settings = crate::api::load_settings();
+                settings.voice_mode = mode;
+                settings.ptt_key = key;
+                crate::api::save_settings(&settings);
             }
             VoiceCmd::SetNoiseSuppression(enabled) => {
                 if let Some(active) = &call {
@@ -341,10 +398,47 @@ async fn connect(
     // after denoise, so background noise doesn't light the ring).
     let mic_gain = Arc::new(AtomicU32::new(settings.input_volume.clamp(0.0, 2.0).to_bits()));
     let master_gain = Arc::new(AtomicU32::new(settings.output_volume.clamp(0.0, 2.0).to_bits()));
-    let ns_enabled = Arc::new(std::sync::atomic::AtomicBool::new(settings.noise_suppression));
+    let ns_enabled = Arc::new(AtomicBool::new(settings.noise_suppression));
+    let deafened = Arc::new(AtomicBool::new(false));
+    let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
+    let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
+    let ptt_active = Arc::new(AtomicBool::new(false));
+
+    // PTT key poller: 30ms ticks, no global hotkey registration, so the key
+    // keeps working in other apps and is never swallowed system-wide.
+    let (ptt_stop_tx, ptt_stop_rx) = std_mpsc::channel::<()>();
+    {
+        let key = ptt_key.clone();
+        let active = ptt_active.clone();
+        let mode = ptt_mode.clone();
+        let mut ptt_status = status;
+        std::thread::spawn(move || {
+            use device_query::DeviceQuery;
+            let device = device_query::DeviceState::new();
+            loop {
+                match ptt_stop_rx.recv_timeout(std::time::Duration::from_millis(30)) {
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => break,
+                }
+                let held = if mode.load(Ordering::Relaxed) {
+                    let target = *key.lock().unwrap();
+                    device.get_keys().contains(&target)
+                } else {
+                    false
+                };
+                let prev = active.swap(held, Ordering::Relaxed);
+                if prev != held {
+                    ptt_status.write().ptt_held = held;
+                }
+            }
+        });
+    }
+
     let mut pump_status = status;
     let pump_gain = mic_gain.clone();
     let pump_ns = ns_enabled.clone();
+    let pump_ptt_mode = ptt_mode.clone();
+    let pump_ptt_active = ptt_active.clone();
     tokio::spawn(async move {
         const SPEAK_THRESHOLD_RMS: f64 = 500.0; // of i16 full scale ≈ -36 dB
         const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
@@ -409,7 +503,9 @@ async fn connect(
                     last_voice = now;
                 }
                 let muted = pump_status.peek().muted;
-                let now_speaking = !muted && now.duration_since(last_voice) < SPEAK_HOLD;
+                let transmitting = !muted
+                    && (!pump_ptt_mode.load(Ordering::Relaxed) || pump_ptt_active.load(Ordering::Relaxed));
+                let now_speaking = transmitting && now.duration_since(last_voice) < SPEAK_HOLD;
                 if now_speaking != speaking {
                     speaking = now_speaking;
                     let mut s = pump_status.write();
@@ -418,6 +514,10 @@ async fn connect(
                     }
                 }
 
+                // In PTT mode with the key up, send nothing at all.
+                if !transmitting {
+                    continue;
+                }
                 let data: Vec<i16> = frame.iter().map(|s| s.clamp(-32768.0, 32767.0) as i16).collect();
                 let audio_frame = AudioFrame {
                     data: data.into(),
@@ -443,6 +543,7 @@ async fn connect(
     let stops = playback_stops.clone();
     let gains_for_events = gains.clone();
     let master_for_events = master_gain.clone();
+    let deafen_for_events = deafened.clone();
     let saved_volumes = settings.volumes.clone();
     let room_handle = room.clone();
     let output_device = settings.output_device.clone();
@@ -457,7 +558,7 @@ async fn connect(
                         let identity = participant.identity().to_string();
                         let initial = *saved_volumes.get(&identity).unwrap_or(&1.0);
                         let gain = gain_handle(&gains_for_events, &identity, initial);
-                        let stop = spawn_playback(audio, output_device.clone(), status, gain, master_for_events.clone());
+                        let stop = spawn_playback(audio, output_device.clone(), status, gain, master_for_events.clone(), deafen_for_events.clone());
                         stops.lock().unwrap().insert(sid, stop);
                     }
                     refresh_participants(&room_handle, status);
@@ -491,7 +592,21 @@ async fn connect(
         }
     });
 
-    Ok(ActiveCall { room, mic_publication, _mic_stop: mic_stop_tx, playback_stops, gains, mic_gain, master_gain, ns_enabled, event_task })
+    Ok(ActiveCall {
+        room,
+        mic_publication,
+        _mic_stop: mic_stop_tx,
+        playback_stops,
+        gains,
+        mic_gain,
+        master_gain,
+        ns_enabled,
+        deafened,
+        ptt_mode,
+        ptt_key,
+        _ptt_stop: ptt_stop_tx,
+        event_task,
+    })
 }
 
 fn refresh_participants(room: &Room, status: VoiceStatusSignal) {
@@ -534,6 +649,7 @@ fn spawn_playback(
     mut status: VoiceStatusSignal,
     gain: Arc<AtomicU32>,
     master: Arc<AtomicU32>,
+    deafened: Arc<AtomicBool>,
 ) -> std_mpsc::Sender<()> {
     let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
 
@@ -573,8 +689,12 @@ fn spawn_playback(
         let stream = device.build_output_stream(
             config,
             move |out: &mut [f32], _: &_| {
-                let g = f32::from_bits(gain.load(Ordering::Relaxed))
-                    * f32::from_bits(master.load(Ordering::Relaxed));
+                let g = if deafened.load(Ordering::Relaxed) {
+                    0.0
+                } else {
+                    f32::from_bits(gain.load(Ordering::Relaxed))
+                        * f32::from_bits(master.load(Ordering::Relaxed))
+                };
                 let mut buf = cb_buffer.lock().unwrap();
                 for sample in out.iter_mut() {
                     let s = buf.pop_front().map(|s| s as f32 / 32768.0).unwrap_or(0.0);

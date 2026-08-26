@@ -236,10 +236,18 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
-    let mut audio_settings_open = use_signal(|| false);
+    let mut settings_open = use_signal(|| false);
+    let mut settings_tab = use_signal(|| "voice");
     let mut audio_settings = use_signal(api::load_settings);
     let mut input_devices = use_signal(Vec::<String>::new);
     let mut output_devices = use_signal(Vec::<String>::new);
+
+    let mut open_settings = move |tab: &'static str| {
+        input_devices.set(voice::list_input_devices());
+        output_devices.set(voice::list_output_devices());
+        settings_tab.set(tab);
+        settings_open.set(true);
+    };
 
     // Rejoin the current voice channel (used after an audio device change).
     let rejoin_voice = move || {
@@ -363,7 +371,9 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                             .contains(&format!("@{}", me.username.to_lowercase())));
                                 if mentioned && !window.window.is_focused() {
                                     window.window.request_user_attention(Some(UserAttentionType::Informational));
-                                    play_notification_sound();
+                                    if audio_settings().notification_sounds {
+                                        play_notification_sound();
+                                    }
                                 }
                                 if selected().map(|c| c.id) == Some(message.channel_id) {
                                     messages.write().push(message);
@@ -678,6 +688,197 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     }
                 }
             }
+            if settings_open() {
+                div {
+                    class: "settings-overlay",
+                    onclick: move |_| settings_open.set(false),
+                    div {
+                        class: "settings-modal",
+                        onclick: move |e| e.stop_propagation(),
+                        div { class: "settings-tabs",
+                            button {
+                                class: if settings_tab() == "voice" { "settings-tab active" } else { "settings-tab" },
+                                onclick: move |_| settings_tab.set("voice"),
+                                "Voice"
+                            }
+                            button {
+                                class: if settings_tab() == "app" { "settings-tab active" } else { "settings-tab" },
+                                onclick: move |_| settings_tab.set("app"),
+                                "App"
+                            }
+                            button {
+                                class: "settings-close",
+                                onclick: move |_| settings_open.set(false),
+                                Icon { name: "x", size: 14 }
+                            }
+                        }
+                        div { class: "settings-body",
+                            if settings_tab() == "voice" {
+                                label { "Microphone" }
+                                select {
+                                    onchange: move |e| {
+                                        let v = e.value();
+                                        let mut s = audio_settings.write();
+                                        s.input_device = if v.is_empty() { None } else { Some(v) };
+                                        api::save_settings(&s);
+                                        drop(s);
+                                        rejoin_voice();
+                                    },
+                                    option { value: "", selected: audio_settings().input_device.is_none(), "Default" }
+                                    for name in input_devices() {
+                                        option {
+                                            value: "{name}",
+                                            selected: audio_settings().input_device.as_deref() == Some(name.as_str()),
+                                            "{name}"
+                                        }
+                                    }
+                                }
+                                label { "Output" }
+                                select {
+                                    onchange: move |e| {
+                                        let v = e.value();
+                                        let mut s = audio_settings.write();
+                                        s.output_device = if v.is_empty() { None } else { Some(v) };
+                                        api::save_settings(&s);
+                                        drop(s);
+                                        rejoin_voice();
+                                    },
+                                    option { value: "", selected: audio_settings().output_device.is_none(), "Default" }
+                                    for name in output_devices() {
+                                        option {
+                                            value: "{name}",
+                                            selected: audio_settings().output_device.as_deref() == Some(name.as_str()),
+                                            "{name}"
+                                        }
+                                    }
+                                }
+                                label { "Voice mode" }
+                                div { class: "mode-row",
+                                    button {
+                                        class: if audio_settings().voice_mode != "ptt" { "mode-btn active" } else { "mode-btn" },
+                                        onclick: move |_| {
+                                            audio_settings.write().voice_mode = "vad".into();
+                                            voice.send(voice::VoiceCmd::SetVoiceMode {
+                                                mode: "vad".into(),
+                                                key: audio_settings().ptt_key,
+                                            });
+                                        },
+                                        "Voice activity"
+                                    }
+                                    button {
+                                        class: if audio_settings().voice_mode == "ptt" { "mode-btn active" } else { "mode-btn" },
+                                        onclick: move |_| {
+                                            audio_settings.write().voice_mode = "ptt".into();
+                                            voice.send(voice::VoiceCmd::SetVoiceMode {
+                                                mode: "ptt".into(),
+                                                key: audio_settings().ptt_key,
+                                            });
+                                        },
+                                        "Push to talk"
+                                    }
+                                }
+                                if audio_settings().voice_mode == "ptt" {
+                                    label { "Push-to-talk key (works while in game)" }
+                                    select {
+                                        onchange: move |e| {
+                                            let key = e.value();
+                                            audio_settings.write().ptt_key = key.clone();
+                                            voice.send(voice::VoiceCmd::SetVoiceMode { mode: "ptt".into(), key });
+                                        },
+                                        for key in voice::PTT_KEY_CHOICES {
+                                            option {
+                                                value: "{key}",
+                                                selected: audio_settings().ptt_key == *key,
+                                                "{key}"
+                                            }
+                                        }
+                                    }
+                                }
+                                label { "Mic volume · {(audio_settings().input_volume * 100.0) as i32}%" }
+                                input {
+                                    r#type: "range",
+                                    class: "settings-slider",
+                                    min: "0",
+                                    max: "200",
+                                    value: "{(audio_settings().input_volume * 100.0) as i32}",
+                                    oninput: move |e| {
+                                        if let Ok(v) = e.value().parse::<f32>() {
+                                            audio_settings.write().input_volume = v / 100.0;
+                                            voice.send(voice::VoiceCmd::SetMicVolume(v / 100.0));
+                                        }
+                                    },
+                                }
+                                MicMeter { level: mic_level }
+                                if voice_status().channel_id.is_none() {
+                                    div { class: "settings-hint", "join a voice channel to test your mic" }
+                                }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().noise_suppression,
+                                        onchange: move |e| {
+                                            let enabled = e.checked();
+                                            audio_settings.write().noise_suppression = enabled;
+                                            voice.send(voice::VoiceCmd::SetNoiseSuppression(enabled));
+                                        },
+                                    }
+                                    " Noise suppression"
+                                }
+                                label { "Output volume · {(audio_settings().output_volume * 100.0) as i32}%" }
+                                input {
+                                    r#type: "range",
+                                    class: "settings-slider",
+                                    min: "0",
+                                    max: "200",
+                                    value: "{(audio_settings().output_volume * 100.0) as i32}",
+                                    oninput: move |e| {
+                                        if let Ok(v) = e.value().parse::<f32>() {
+                                            audio_settings.write().output_volume = v / 100.0;
+                                            voice.send(voice::VoiceCmd::SetMasterVolume(v / 100.0));
+                                        }
+                                    },
+                                }
+                            } else {
+                                label { "Version" }
+                                div { class: "settings-value", "v{env!(\"CARGO_PKG_VERSION\")}" }
+                                label { "Server" }
+                                div { class: "settings-value", "{session().base_url}" }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().notification_sounds,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.notification_sounds = e.checked();
+                                            api::save_settings(&s);
+                                        },
+                                    }
+                                    " Notification sounds"
+                                }
+                                button {
+                                    class: "profile-btn",
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            match api::client_version(&session()).await {
+                                                Ok(info) => {
+                                                    if info.version != env!("CARGO_PKG_VERSION") {
+                                                        update_available.set(Some(info));
+                                                        status.set("update available — see the banner".into());
+                                                    } else {
+                                                        status.set("you're on the latest version".into());
+                                                    }
+                                                }
+                                                Err(e) => status.set(e),
+                                            }
+                                        });
+                                    },
+                                    "Check for updates"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(profile) = profile_card() {
                 div {
                     class: "profile-overlay",
@@ -982,102 +1183,9 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                         span { class: "section-label", "Voice" }
                         button {
                             class: "audio-settings-btn",
-                            title: "Audio settings",
-                            onclick: move |_| {
-                                let opening = !audio_settings_open();
-                                if opening {
-                                    input_devices.set(voice::list_input_devices());
-                                    output_devices.set(voice::list_output_devices());
-                                }
-                                audio_settings_open.set(opening);
-                            },
+                            title: "Voice settings",
+                            onclick: move |_| open_settings("voice"),
                             Icon { name: "settings", size: 14 }
-                        }
-                    }
-                    if audio_settings_open() {
-                        div { class: "audio-settings",
-                            label { "Microphone" }
-                            select {
-                                onchange: move |e| {
-                                    let v = e.value();
-                                    let mut s = audio_settings.write();
-                                    s.input_device = if v.is_empty() { None } else { Some(v) };
-                                    api::save_settings(&s);
-                                    drop(s);
-                                    rejoin_voice();
-                                },
-                                option { value: "", selected: audio_settings().input_device.is_none(), "Default" }
-                                for name in input_devices() {
-                                    option {
-                                        value: "{name}",
-                                        selected: audio_settings().input_device.as_deref() == Some(name.as_str()),
-                                        "{name}"
-                                    }
-                                }
-                            }
-                            label { "Output" }
-                            select {
-                                onchange: move |e| {
-                                    let v = e.value();
-                                    let mut s = audio_settings.write();
-                                    s.output_device = if v.is_empty() { None } else { Some(v) };
-                                    api::save_settings(&s);
-                                    drop(s);
-                                    rejoin_voice();
-                                },
-                                option { value: "", selected: audio_settings().output_device.is_none(), "Default" }
-                                for name in output_devices() {
-                                    option {
-                                        value: "{name}",
-                                        selected: audio_settings().output_device.as_deref() == Some(name.as_str()),
-                                        "{name}"
-                                    }
-                                }
-                            }
-                            label { "Mic volume · {(audio_settings().input_volume * 100.0) as i32}%" }
-                            input {
-                                r#type: "range",
-                                class: "settings-slider",
-                                min: "0",
-                                max: "200",
-                                value: "{(audio_settings().input_volume * 100.0) as i32}",
-                                oninput: move |e| {
-                                    if let Ok(v) = e.value().parse::<f32>() {
-                                        audio_settings.write().input_volume = v / 100.0;
-                                        voice.send(voice::VoiceCmd::SetMicVolume(v / 100.0));
-                                    }
-                                },
-                            }
-                            MicMeter { level: mic_level }
-                            if voice_status().channel_id.is_none() {
-                                div { class: "settings-hint", "join a voice channel to test your mic" }
-                            }
-                            label { class: "ns-toggle-row",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: audio_settings().noise_suppression,
-                                    onchange: move |e| {
-                                        let enabled = e.checked();
-                                        audio_settings.write().noise_suppression = enabled;
-                                        voice.send(voice::VoiceCmd::SetNoiseSuppression(enabled));
-                                    },
-                                }
-                                " Noise suppression"
-                            }
-                            label { "Output volume · {(audio_settings().output_volume * 100.0) as i32}%" }
-                            input {
-                                r#type: "range",
-                                class: "settings-slider",
-                                min: "0",
-                                max: "200",
-                                value: "{(audio_settings().output_volume * 100.0) as i32}",
-                                oninput: move |e| {
-                                    if let Ok(v) = e.value().parse::<f32>() {
-                                        audio_settings.write().output_volume = v / 100.0;
-                                        voice.send(voice::VoiceCmd::SetMasterVolume(v / 100.0));
-                                    }
-                                },
-                            }
                         }
                     }
                     for channel in channels().into_iter().filter(|c| c.kind == "voice") {
@@ -1168,12 +1276,28 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     }
                                 }
                             }
+                            if audio_settings().voice_mode == "ptt" {
+                                div {
+                                    class: if voice_status().ptt_held { "ptt-hint held" } else { "ptt-hint" },
+                                    if voice_status().ptt_held {
+                                        "transmitting — {audio_settings().ptt_key}"
+                                    } else {
+                                        "hold {audio_settings().ptt_key} to talk"
+                                    }
+                                }
+                            }
                             div { class: "voice-controls",
                                 button {
                                     class: if voice_status().muted { "voice-btn muted" } else { "voice-btn" },
                                     title: if voice_status().muted { "Unmute" } else { "Mute" },
                                     onclick: move |_| voice.send(voice::VoiceCmd::ToggleMute),
                                     if voice_status().muted { Icon { name: "mic-off" } } else { Icon { name: "mic" } }
+                                }
+                                button {
+                                    class: if voice_status().deafened { "voice-btn muted" } else { "voice-btn" },
+                                    title: if voice_status().deafened { "Undeafen" } else { "Deafen" },
+                                    onclick: move |_| voice.send(voice::VoiceCmd::ToggleDeafen),
+                                    if voice_status().deafened { Icon { name: "headphones-off" } } else { Icon { name: "headphones" } }
                                 }
                                 button {
                                     class: "voice-btn leave",
@@ -1246,6 +1370,12 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             span { class: "me-name", "{session().user.username}" }
                             span { class: "me-status", "{status}" }
                         }
+                    }
+                    button {
+                        class: "logout",
+                        title: "Settings",
+                        onclick: move |_| open_settings("voice"),
+                        Icon { name: "settings", size: 16 }
                     }
                     button { class: "logout", title: "Log out", onclick: logout, Icon { name: "power", size: 16 } }
                 }

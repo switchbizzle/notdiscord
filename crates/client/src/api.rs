@@ -56,6 +56,23 @@ pub struct Settings {
     /// RNNoise ML noise suppression on the microphone.
     #[serde(default = "yes")]
     pub noise_suppression: bool,
+    /// "vad" (voice activity) or "ptt" (push to talk).
+    #[serde(default = "vad")]
+    pub voice_mode: String,
+    /// Push-to-talk key name (device_query Keycode).
+    #[serde(default = "default_ptt_key")]
+    pub ptt_key: String,
+    /// Play the notification sound on pings.
+    #[serde(default = "yes")]
+    pub notification_sounds: bool,
+}
+
+fn vad() -> String {
+    "vad".into()
+}
+
+fn default_ptt_key() -> String {
+    "F9".into()
 }
 
 fn yes() -> bool {
@@ -78,6 +95,9 @@ pub fn load_settings() -> Settings {
             input_volume: 1.0,
             output_volume: 1.0,
             noise_suppression: true,
+            voice_mode: vad(),
+            ptt_key: default_ptt_key(),
+            notification_sounds: true,
             ..Default::default()
         })
 }
