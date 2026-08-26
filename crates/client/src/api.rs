@@ -35,6 +35,36 @@ pub fn clear_session() {
     }
 }
 
+// ---------- Local app settings ----------
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Audio device names; None = system default.
+    #[serde(default)]
+    pub input_device: Option<String>,
+    #[serde(default)]
+    pub output_device: Option<String>,
+}
+
+fn settings_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("NotDiscord").join("settings.json"))
+}
+
+pub fn load_settings() -> Settings {
+    settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_settings(settings: &Settings) {
+    let Some(path) = settings_path() else { return };
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    if let Ok(json) = serde_json::to_string_pretty(settings) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
 fn normalize_base(base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     if base.starts_with("http://") || base.starts_with("https://") {

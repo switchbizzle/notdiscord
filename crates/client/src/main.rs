@@ -178,9 +178,30 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut gif_query = use_signal(String::new);
     let mut gif_results = use_signal(Vec::<GifResult>::new);
     let mut gif_status = use_signal(String::new);
+    let mut status = use_signal(|| "connecting…".to_string());
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status));
-    let mut status = use_signal(|| "connecting…".to_string());
+    let mut audio_settings_open = use_signal(|| false);
+    let mut audio_settings = use_signal(api::load_settings);
+    let mut input_devices = use_signal(Vec::<String>::new);
+    let mut output_devices = use_signal(Vec::<String>::new);
+
+    // Rejoin the current voice channel (used after an audio device change).
+    let rejoin_voice = move || {
+        let Some(channel_id) = voice_status().channel_id else { return };
+        let Some(channel) = channels().into_iter().find(|c| c.id == channel_id) else { return };
+        spawn(async move {
+            match api::voice_token(&session(), channel.id).await {
+                Ok(grant) => voice.send(voice::VoiceCmd::Join {
+                    channel_id: channel.id,
+                    channel_name: channel.name.clone(),
+                    url: grant.url,
+                    token: grant.token,
+                }),
+                Err(e) => status.set(e),
+            }
+        });
+    };
 
     // Initial data load: channel list, then history for the first channel.
     use_future(move || async move {
@@ -564,7 +585,64 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             "# {channel.name}"
                         }
                     }
-                    div { class: "section-label", "Voice" }
+                    div { class: "section-row",
+                        span { class: "section-label", "Voice" }
+                        button {
+                            class: "audio-settings-btn",
+                            title: "Audio settings",
+                            onclick: move |_| {
+                                let opening = !audio_settings_open();
+                                if opening {
+                                    input_devices.set(voice::list_input_devices());
+                                    output_devices.set(voice::list_output_devices());
+                                }
+                                audio_settings_open.set(opening);
+                            },
+                            "⚙"
+                        }
+                    }
+                    if audio_settings_open() {
+                        div { class: "audio-settings",
+                            label { "Microphone" }
+                            select {
+                                onchange: move |e| {
+                                    let v = e.value();
+                                    let mut s = audio_settings.write();
+                                    s.input_device = if v.is_empty() { None } else { Some(v) };
+                                    api::save_settings(&s);
+                                    drop(s);
+                                    rejoin_voice();
+                                },
+                                option { value: "", selected: audio_settings().input_device.is_none(), "Default" }
+                                for name in input_devices() {
+                                    option {
+                                        value: "{name}",
+                                        selected: audio_settings().input_device.as_deref() == Some(name.as_str()),
+                                        "{name}"
+                                    }
+                                }
+                            }
+                            label { "Output" }
+                            select {
+                                onchange: move |e| {
+                                    let v = e.value();
+                                    let mut s = audio_settings.write();
+                                    s.output_device = if v.is_empty() { None } else { Some(v) };
+                                    api::save_settings(&s);
+                                    drop(s);
+                                    rejoin_voice();
+                                },
+                                option { value: "", selected: audio_settings().output_device.is_none(), "Default" }
+                                for name in output_devices() {
+                                    option {
+                                        value: "{name}",
+                                        selected: audio_settings().output_device.as_deref() == Some(name.as_str()),
+                                        "{name}"
+                                    }
+                                }
+                            }
+                        }
+                    }
                     for channel in channels().into_iter().filter(|c| c.kind == "voice") {
                         button {
                             key: "v{channel.id}",

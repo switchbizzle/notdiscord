@@ -46,6 +46,81 @@ pub enum VoiceCmd {
 /// Thread-safe signal: voice status is updated from tokio worker tasks.
 pub type VoiceStatusSignal = Signal<VoiceStatus, SyncStorage>;
 
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
+pub fn list_input_devices() -> Vec<String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|d| device_name(&d)).collect())
+        .unwrap_or_default()
+}
+
+pub fn list_output_devices() -> Vec<String> {
+    cpal::default_host()
+        .output_devices()
+        .map(|devices| devices.filter_map(|d| device_name(&d)).collect())
+        .unwrap_or_default()
+}
+
+fn pick_input_device(host: &cpal::Host, preferred: &Option<String>) -> Option<cpal::Device> {
+    if let Some(name) = preferred {
+        if let Ok(mut devices) = host.input_devices() {
+            if let Some(d) = devices.find(|d| device_name(d).as_deref() == Some(name)) {
+                return Some(d);
+            }
+        }
+    }
+    host.default_input_device()
+}
+
+fn pick_output_device(host: &cpal::Host, preferred: &Option<String>) -> Option<cpal::Device> {
+    if let Some(name) = preferred {
+        if let Ok(mut devices) = host.output_devices() {
+            if let Some(d) = devices.find(|d| device_name(d).as_deref() == Some(name)) {
+                return Some(d);
+            }
+        }
+    }
+    host.default_output_device()
+}
+
+/// Convert any cpal input sample slice to i16.
+fn build_capture_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
+    mut status: VoiceStatusSignal,
+) -> Result<cpal::Stream, cpal::Error> {
+    let cfg = config.config();
+    let err_cb = move |e: cpal::Error| {
+        status.write().error = format!("mic stream error: {e}");
+    };
+    macro_rules! stream_as {
+        ($ty:ty, $conv:expr) => {{
+            let tx = tx.clone();
+            device.build_input_stream(
+                cfg.clone(),
+                move |data: &[$ty], _: &_| {
+                    let conv: fn(&$ty) -> i16 = $conv;
+                    let _ = tx.send(data.iter().map(conv).collect());
+                },
+                err_cb,
+                None,
+            )
+        }};
+    }
+    match config.sample_format() {
+        cpal::SampleFormat::I16 => stream_as!(i16, |s| *s),
+        cpal::SampleFormat::U16 => stream_as!(u16, |s| (*s as i32 - 32768) as i16),
+        cpal::SampleFormat::I32 => stream_as!(i32, |s| (*s >> 16) as i16),
+        cpal::SampleFormat::U8 => stream_as!(u8, |s| ((*s as i16 - 128) << 8) as i16),
+        cpal::SampleFormat::F64 => stream_as!(f64, |s| (s.clamp(-1.0, 1.0) * 32767.0) as i16),
+        _ => stream_as!(f32, |s| (s.clamp(-1.0, 1.0) * 32767.0) as i16),
+    }
+}
+
 struct ActiveCall {
     room: Arc<Room>,
     mic_publication: livekit::publication::LocalTrackPublication,
@@ -117,11 +192,14 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
     let room = Arc::new(room);
 
     // ---- Microphone capture ----
+    let settings = crate::api::load_settings();
     let host = cpal::default_host();
-    let mic = host
-        .default_input_device()
+    let mic = pick_input_device(&host, &settings.input_device)
         .ok_or_else(|| anyhow::anyhow!("no microphone found"))?;
-    let mic_config = mic.default_input_config()?;
+    let mic_name = device_name(&mic).unwrap_or_else(|| "unknown".into());
+    let mic_config = mic
+        .default_input_config()
+        .map_err(|e| anyhow::anyhow!("cannot open mic '{mic_name}': {e}"))?;
     let sample_rate: u32 = mic_config.sample_rate();
     let channels = mic_config.channels() as u32;
 
@@ -148,38 +226,24 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
     // Device thread: cpal callback -> unbounded channel of i16 buffers.
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
     let (mic_stop_tx, mic_stop_rx) = std_mpsc::channel::<()>();
+    let mic_status = status;
     std::thread::spawn(move || {
-        let build = |device: &cpal::Device, config: &cpal::SupportedStreamConfig| {
-            let cfg = config.config();
-            match config.sample_format() {
-                cpal::SampleFormat::F32 => device.build_input_stream(
-                    cfg.clone(),
-                    move |data: &[f32], _: &_| {
-                        let samples: Vec<i16> =
-                            data.iter().map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
-                        let _ = frame_tx.send(samples);
-                    },
-                    |e| tracing_log(&format!("mic stream error: {e}")),
-                    None,
-                ),
-                _ => device.build_input_stream(
-                    cfg.clone(),
-                    move |data: &[i16], _: &_| {
-                        let _ = frame_tx.send(data.to_vec());
-                    },
-                    |e| tracing_log(&format!("mic stream error: {e}")),
-                    None,
-                ),
-            }
-        };
-        match build(&mic, &mic_config) {
-            Ok(stream) => {
-                if stream.play().is_ok() {
+        match build_capture_stream(&mic, &mic_config, frame_tx, mic_status) {
+            Ok(stream) => match stream.play() {
+                Ok(()) => {
                     // Block until the ActiveCall drops the sender.
                     let _ = mic_stop_rx.recv();
                 }
+                Err(e) => {
+                    let mut s = mic_status;
+                    s.write().error = format!("mic '{mic_name}' failed to start: {e}");
+                }
+            },
+            Err(e) => {
+                let mut s = mic_status;
+                s.write().error =
+                    format!("mic '{mic_name}' failed to open: {e} — try another input device in the audio settings");
             }
-            Err(e) => tracing_log(&format!("mic open failed: {e}")),
         }
     });
 
@@ -209,6 +273,7 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
         Arc::new(Mutex::new(HashMap::new()));
     let stops = playback_stops.clone();
     let room_handle = room.clone();
+    let output_device = settings.output_device.clone();
     let event_task = tokio::spawn(async move {
         let mut events = events;
         refresh_participants(&room_handle, status);
@@ -217,7 +282,7 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
                 RoomEvent::TrackSubscribed { track, participant, .. } => {
                     if let RemoteTrack::Audio(audio) = track {
                         let sid = audio.sid().to_string();
-                        let stop = spawn_playback(audio);
+                        let stop = spawn_playback(audio, output_device.clone(), status);
                         stops.lock().unwrap().insert(sid, stop);
                     }
                     let _ = participant;
@@ -274,9 +339,13 @@ fn refresh_participants(room: &Room, status: VoiceStatusSignal) {
     s.write().participants = list;
 }
 
-/// Play one remote audio track on the default output device. Returns a stop
-/// handle; dropping it ends the playback thread.
-fn spawn_playback(track: livekit::track::RemoteAudioTrack) -> std_mpsc::Sender<()> {
+/// Play one remote audio track on the configured (or default) output device.
+/// Returns a stop handle; dropping it ends the playback thread.
+fn spawn_playback(
+    track: livekit::track::RemoteAudioTrack,
+    output_device: Option<String>,
+    mut status: VoiceStatusSignal,
+) -> std_mpsc::Sender<()> {
     let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
 
     // Shared buffer between the LiveKit frame reader and the cpal callback.
@@ -302,8 +371,8 @@ fn spawn_playback(track: livekit::track::RemoteAudioTrack) -> std_mpsc::Sender<(
 
     std::thread::spawn(move || {
         let host = cpal::default_host();
-        let Some(device) = host.default_output_device() else {
-            tracing_log("no output device");
+        let Some(device) = pick_output_device(&host, &output_device) else {
+            status.write().error = "no audio output device found".into();
             return;
         };
         let config = cpal::StreamConfig {
@@ -320,7 +389,10 @@ fn spawn_playback(track: livekit::track::RemoteAudioTrack) -> std_mpsc::Sender<(
                     *sample = buf.pop_front().map(|s| s as f32 / 32768.0).unwrap_or(0.0);
                 }
             },
-            |e| tracing_log(&format!("playback stream error: {e}")),
+            move |e| {
+                let mut s = status;
+                s.write().error = format!("audio output error: {e}");
+            },
             None,
         );
         match stream {
@@ -329,7 +401,10 @@ fn spawn_playback(track: livekit::track::RemoteAudioTrack) -> std_mpsc::Sender<(
                     let _ = stop_rx.recv();
                 }
             }
-            Err(e) => tracing_log(&format!("playback open failed: {e}")),
+            Err(e) => {
+                let mut s = status;
+                s.write().error = format!("audio output failed to open: {e}");
+            }
         }
         reader.abort();
     });
