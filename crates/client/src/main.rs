@@ -26,8 +26,8 @@ fn main() {
     // Panics land in a crash log (release builds have no console to read).
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if let Some(dir) = dirs::config_dir() {
-            let path = dir.join("NotDiscord").join("crash.log");
+        if let Some(dir) = api::config_root() {
+            let path = dir.join("crash.log");
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let entry = format!(
                 "[{}] thread '{}' {}\n{}\n\n",
@@ -2970,12 +2970,18 @@ fn LinkCard(url: String) -> Element {
                         class: "link-card-embed",
                         src: "{embed}",
                         style: "height: {height}px",
+                        // Explicit eager: Edge's lazy-loading intervention
+                        // otherwise defers the frame into a permanent black box.
+                        // (String key: dioxus's iframe schema has no `loading`.)
+                        "loading": "eager",
                         allow: "autoplay; encrypted-media; clipboard-write; picture-in-picture; fullscreen",
                     }
                 }
             } else if let Some(image) = preview.image.clone() {
                 div { class: "link-card-media",
-                    img { class: "link-card-img", src: "{image}", loading: "lazy" }
+                    // Eager, not lazy: Edge's lazy intervention swaps deferred
+                    // images for a grey cloud placeholder and never recovers.
+                    img { class: "link-card-img", src: "{image}", loading: "eager" }
                     if playable.is_some() {
                         button {
                             class: "link-card-play",
@@ -3376,56 +3382,30 @@ fn notification_wav() -> &'static [u8] {
 }
 
 /// Incoming-call ring: two double-pulses, distinct from the message bloop.
-#[cfg(windows)]
+/// Plays on the voice output device (not the system default) so it lands
+/// where the user actually listens.
 fn play_ring_sound() {
-    use std::sync::OnceLock;
-    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
-    let wav = WAV.get_or_init(|| {
-        const RATE: u32 = 44100;
-        let mut samples: Vec<i16> = Vec::new();
+    const RATE: u32 = 48000;
+    let mut samples: Vec<f32> = Vec::new();
+    for _ in 0..2 {
         for _ in 0..2 {
-            for _ in 0..2 {
-                let n = RATE * 120 / 1000;
-                for i in 0..n {
-                    let t = i as f32 / RATE as f32;
-                    let env = (1.0 - i as f32 / n as f32).powf(1.2);
-                    let s = ((t * 784.0 * std::f32::consts::TAU).sin()
+            let n = RATE * 120 / 1000;
+            for i in 0..n {
+                let t = i as f32 / RATE as f32;
+                let env = (1.0 - i as f32 / n as f32).powf(1.2);
+                samples.push(
+                    ((t * 784.0 * std::f32::consts::TAU).sin()
                         + (t * 988.0 * std::f32::consts::TAU).sin() * 0.6)
                         * env
-                        * 0.22;
-                    samples.push((s * 32767.0) as i16);
-                }
-                samples.extend(std::iter::repeat(0).take((RATE * 60 / 1000) as usize));
+                        * 0.22,
+                );
             }
-            samples.extend(std::iter::repeat(0).take((RATE * 250 / 1000) as usize));
+            samples.extend(std::iter::repeat(0.0).take((RATE * 60 / 1000) as usize));
         }
-        let data_len = (samples.len() * 2) as u32;
-        let mut wav = Vec::with_capacity(44 + data_len as usize);
-        wav.extend(b"RIFF");
-        wav.extend((36 + data_len).to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes());
-        wav.extend(1u16.to_le_bytes());
-        wav.extend(RATE.to_le_bytes());
-        wav.extend((RATE * 2).to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend(data_len.to_le_bytes());
-        for s in samples {
-            wav.extend(s.to_le_bytes());
-        }
-        wav
-    });
-    use winapi::um::playsoundapi::{PlaySoundW, SND_ASYNC, SND_MEMORY};
-    unsafe {
-        PlaySoundW(wav.as_ptr() as *const u16, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC);
+        samples.extend(std::iter::repeat(0.0).take((RATE * 250 / 1000) as usize));
     }
+    voice::play_samples_on_voice_output(samples, RATE);
 }
-
-#[cfg(not(windows))]
-fn play_ring_sound() {}
 
 #[cfg(windows)]
 fn play_notification_sound() {

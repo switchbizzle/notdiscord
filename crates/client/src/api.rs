@@ -35,8 +35,17 @@ impl ServersFile {
     }
 }
 
+/// Where config lives: %APPDATA%\NotDiscord, or NOTDISCORD_CONFIG_DIR when
+/// set (portable installs, and running a second instance for testing).
+pub fn config_root() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("NOTDISCORD_CONFIG_DIR") {
+        return Some(dir.into());
+    }
+    dirs::config_dir().map(|d| d.join("NotDiscord"))
+}
+
 fn servers_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("NotDiscord").join("servers.json"))
+    config_root().map(|d| d.join("servers.json"))
 }
 
 pub fn load_servers() -> ServersFile {
@@ -240,7 +249,7 @@ pub async fn change_password(session: &Session, current: String, new: String) ->
 // ---------- Local session persistence ----------
 
 fn session_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("NotDiscord").join("session.json"))
+    config_root().map(|d| d.join("session.json"))
 }
 
 pub fn save_session(session: &Session) {
@@ -324,7 +333,7 @@ fn one() -> f32 {
 }
 
 fn settings_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("NotDiscord").join("settings.json"))
+    config_root().map(|d| d.join("settings.json"))
 }
 
 pub fn load_settings() -> Settings {

@@ -4,7 +4,9 @@
     "date": "2026-08-26",
     "changes": [
       "Invite code management: admins can see, copy, change, or shuffle the signup code in Settings → Server — no more SSHing into the box",
-      "Clearing the code opens registration to anyone (probably don't)"
+      "Fixed the SoundCloud/YouTube player showing a black box (the browser engine was lazily never-loading it — same fix for grey-cloud preview images)",
+      "Voice join/leave blips now play through your chosen voice output device instead of the Windows default — and you hear your own joins and leaves too",
+      "The DM call ring moved to your voice output device as well"
     ]
   },
   {

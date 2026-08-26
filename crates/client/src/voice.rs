@@ -303,6 +303,8 @@ pub async fn voice_task(
                     Ok(active) => {
                         call = Some(active);
                         status.write().connecting = false;
+                        // You hear your own arrival too, like Discord.
+                        play_voice_blip(true);
                     }
                     Err(e) => {
                         status.set(VoiceStatus {
@@ -317,6 +319,7 @@ pub async fn voice_task(
                     stop_share(&mut old, status).await;
                     stop_camera(&mut old, status).await;
                     old.room.close().await.ok();
+                    play_voice_blip(false);
                 }
                 status.set(VoiceStatus::default());
                 mic_level.set(0.0);
@@ -871,58 +874,73 @@ async fn connect(
     })
 }
 
-/// Short two-tone blip: rising for a join, falling for a leave.
-#[cfg(windows)]
+/// Short two-tone blip: rising for a join, falling for a leave. Played on the
+/// output device picked in voice settings (PlaySound only knew the Windows
+/// default device, which made blips inaudible for anyone routing voice to
+/// headphones that aren't the system default).
 fn play_voice_blip(join: bool) {
     if !crate::api::load_settings().voice_join_sounds {
         return;
     }
-    use std::sync::OnceLock;
-    static JOIN: OnceLock<Vec<u8>> = OnceLock::new();
-    static LEAVE: OnceLock<Vec<u8>> = OnceLock::new();
-    fn synth(f1: f32, f2: f32) -> Vec<u8> {
-        const RATE: u32 = 44100;
-        let mut samples: Vec<i16> = Vec::new();
-        for (freq, ms) in [(f1, 70u32), (f2, 90u32)] {
-            let n = RATE * ms / 1000;
-            for i in 0..n {
-                let t = i as f32 / RATE as f32;
-                let env = (1.0 - i as f32 / n as f32).powf(1.4);
-                samples.push(((t * freq * std::f32::consts::TAU).sin() * env * 0.22 * 32767.0) as i16);
-            }
+    let (f1, f2) = if join { (440.0, 587.33) } else { (587.33, 392.0) };
+    const RATE: u32 = 48000;
+    let mut samples: Vec<f32> = Vec::new();
+    for (freq, ms) in [(f1, 70u32), (f2, 90u32)] {
+        let n = RATE * ms / 1000;
+        for i in 0..n {
+            let t = i as f32 / RATE as f32;
+            let env = (1.0 - i as f32 / n as f32).powf(1.4);
+            samples.push((t * freq * std::f32::consts::TAU).sin() * env * 0.22);
         }
-        let data_len = (samples.len() * 2) as u32;
-        let mut wav = Vec::with_capacity(44 + data_len as usize);
-        wav.extend(b"RIFF");
-        wav.extend((36 + data_len).to_le_bytes());
-        wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes());
-        wav.extend(1u16.to_le_bytes());
-        wav.extend(1u16.to_le_bytes());
-        wav.extend(RATE.to_le_bytes());
-        wav.extend((RATE * 2).to_le_bytes());
-        wav.extend(2u16.to_le_bytes());
-        wav.extend(16u16.to_le_bytes());
-        wav.extend(b"data");
-        wav.extend(data_len.to_le_bytes());
-        for s in samples {
-            wav.extend(s.to_le_bytes());
-        }
-        wav
     }
-    let wav = if join {
-        JOIN.get_or_init(|| synth(440.0, 587.33))
-    } else {
-        LEAVE.get_or_init(|| synth(587.33, 392.0))
-    };
-    use winapi::um::playsoundapi::{PlaySoundW, SND_ASYNC, SND_MEMORY};
-    unsafe {
-        PlaySoundW(wav.as_ptr() as *const u16, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC);
-    }
+    play_samples_on_voice_output(samples, RATE);
 }
 
-#[cfg(not(windows))]
-fn play_voice_blip(_join: bool) {}
+/// Fire-and-forget playback of mono samples on the configured voice output
+/// device (default device when none is picked). Each call runs on its own
+/// short-lived thread; errors are swallowed — a missing device shouldn't
+/// break anything, the cue just doesn't play.
+pub fn play_samples_on_voice_output(samples: Vec<f32>, rate: u32) {
+    std::thread::spawn(move || {
+        use cpal::traits::{DeviceTrait, StreamTrait};
+        let host = cpal::default_host();
+        let preferred = crate::api::load_settings().output_device;
+        let Some(device) = pick_output_device(&host, &preferred) else { return };
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let total = samples.len();
+        let mut pos = 0usize;
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let stream = device.build_output_stream(
+            config,
+            move |out: &mut [f32], _: &_| {
+                for frame in out.chunks_mut(2) {
+                    let s = samples.get(pos).copied().unwrap_or(0.0);
+                    for sample in frame {
+                        *sample = s;
+                    }
+                    pos += 1;
+                }
+                if pos >= total {
+                    let _ = done_tx.send(());
+                }
+            },
+            |_| {},
+            None,
+        );
+        if let Ok(stream) = stream {
+            if stream.play().is_ok() {
+                // Wait until the callback has drained the samples (or bail
+                // after 2s if the device stalls).
+                let _ = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    });
+}
 
 fn refresh_participants(
     room: &Room,
