@@ -432,6 +432,8 @@ input:focus { border-color: #5865f2; }
     flex-shrink: 0;
 }
 .voice-btn.camera-on { background: #1e4d33; color: #23a55a; }
+.settings-hint.pw-bad { color: #f23f43; }
+.settings-hint.pw-good { color: #23a55a; }
 .volume-slider {
     width: 64px;
     height: 4px;

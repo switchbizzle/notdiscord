@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.23.0",
+    "date": "2026-08-26",
+    "changes": [
+      "You can finally change your password: Settings → Account (it logs out your other devices too)",
+      "New passwords have real strength rules now — length, variety, and no top-40 classics like 'password1'",
+      "Signup enforces the same rules, so no more hilariously weak passwords"
+    ]
+  },
+  {
     "version": "0.22.0",
     "date": "2026-08-26",
     "changes": [

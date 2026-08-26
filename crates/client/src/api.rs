@@ -174,6 +174,23 @@ pub async fn rename_server(session: &Session, name: String) -> Result<shared::Se
     handle(resp).await
 }
 
+pub async fn change_password(session: &Session, current: String, new: String) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/password", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::ChangePasswordRequest { current, new }))
+        .await?;
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        match resp.json::<ApiError>().await {
+            Ok(e) => Err(e.error),
+            Err(_) => Err(format!("request failed ({status})")),
+        }
+    }
+}
+
 // ---------- Local session persistence ----------
 
 fn session_path() -> Option<std::path::PathBuf> {

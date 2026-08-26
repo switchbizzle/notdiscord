@@ -157,6 +157,42 @@ pub struct LoginRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current: String,
+    pub new: String,
+}
+
+/// Why a password isn't acceptable, or None if it is. Shared so the client
+/// can show the problem live and the server can enforce the same rules.
+pub fn password_problem(password: &str, username: &str) -> Option<&'static str> {
+    if password.len() < 8 {
+        return Some("password must be at least 8 characters");
+    }
+    if password.len() > 128 {
+        return Some("password must be at most 128 characters");
+    }
+    let has_letter = password.chars().any(|c| c.is_alphabetic());
+    let has_other = password.chars().any(|c| !c.is_alphabetic());
+    if !has_letter || !has_other {
+        return Some("password needs at least one letter and one number or symbol");
+    }
+    let lower = password.to_lowercase();
+    if username.len() >= 3 && lower.contains(&username.to_lowercase()) {
+        return Some("password can't contain your username");
+    }
+    const COMMON: &[&str] = &[
+        "password", "password1", "password123", "12345678", "123456789", "1234567890",
+        "qwerty123", "qwertyuiop", "iloveyou1", "letmein1", "welcome1", "admin123",
+        "abc12345", "trustno1", "sunshine1", "princess1", "football1", "baseball1",
+        "dragon123", "monkey123", "master123", "shadow123", "superman1", "notdiscord",
+    ];
+    if COMMON.contains(&lower.as_str()) {
+        return Some("that password is too common — pick something less guessable");
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
     pub token: String,
     pub user: User,

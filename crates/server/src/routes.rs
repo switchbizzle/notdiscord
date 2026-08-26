@@ -32,8 +32,8 @@ pub async fn register(
     if username.len() < 2 || username.len() > 32 {
         return Err(err(StatusCode::BAD_REQUEST, "username must be 2-32 characters"));
     }
-    if req.password.len() < 8 {
-        return Err(err(StatusCode::BAD_REQUEST, "password must be at least 8 characters"));
+    if let Some(problem) = shared::password_problem(&req.password, &username) {
+        return Err(err(StatusCode::BAD_REQUEST, problem));
     }
 
     let hash = auth::hash_password(req.password).await.map_err(internal)?;
@@ -109,6 +109,49 @@ async fn create_session(state: &SharedState, user_id: i64) -> ApiResult<String> 
 
 pub async fn me(AuthUser(user): AuthUser) -> Json<User> {
     Json(user)
+}
+
+pub async fn change_password(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<shared::ChangePasswordRequest>,
+) -> ApiResult<StatusCode> {
+    let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
+        .bind(user.id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    if !auth::verify_password(req.current, hash).await {
+        return Err(err(StatusCode::UNAUTHORIZED, "current password is incorrect"));
+    }
+    if let Some(problem) = shared::password_problem(&req.new, &user.username) {
+        return Err(err(StatusCode::BAD_REQUEST, problem));
+    }
+
+    let new_hash = auth::hash_password(req.new).await.map_err(internal)?;
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(&new_hash)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+
+    // Log out every other device; the session making this request survives.
+    let current_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default()
+        .to_owned();
+    sqlx::query("DELETE FROM sessions WHERE user_id = ? AND token != ?")
+        .bind(user.id)
+        .bind(&current_token)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_users(

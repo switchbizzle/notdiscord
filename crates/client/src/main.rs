@@ -436,6 +436,10 @@ fn MainView(session: api::Session) -> Element {
     let mut editing_bio = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
     let mut settings_tab = use_signal(|| "voice");
+    let mut pw_current = use_signal(String::new);
+    let mut pw_new = use_signal(String::new);
+    let mut pw_confirm = use_signal(String::new);
+    let mut pw_message = use_signal(|| (String::new(), false));
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -1163,6 +1167,17 @@ fn MainView(session: api::Session) -> Element {
                                 onclick: move |_| settings_tab.set("app"),
                                 "App"
                             }
+                            button {
+                                class: if settings_tab() == "account" { "settings-tab active" } else { "settings-tab" },
+                                onclick: move |_| {
+                                    pw_current.set(String::new());
+                                    pw_new.set(String::new());
+                                    pw_confirm.set(String::new());
+                                    pw_message.set((String::new(), false));
+                                    settings_tab.set("account");
+                                },
+                                "Account"
+                            }
                             if session().user.role == "admin" {
                                 button {
                                     class: if settings_tab() == "server" { "settings-tab active" } else { "settings-tab" },
@@ -1185,7 +1200,66 @@ fn MainView(session: api::Session) -> Element {
                             }
                         }
                         div { class: "settings-body",
-                            if settings_tab() == "server" {
+                            if settings_tab() == "account" {
+                                label { "Logged in as" }
+                                div { class: "settings-value", "{session().user.username}" }
+                                label { "Current password" }
+                                input {
+                                    r#type: "password",
+                                    value: "{pw_current}",
+                                    oninput: move |e| pw_current.set(e.value()),
+                                }
+                                label { "New password" }
+                                input {
+                                    r#type: "password",
+                                    value: "{pw_new}",
+                                    oninput: move |e| pw_new.set(e.value()),
+                                }
+                                label { "Confirm new password" }
+                                input {
+                                    r#type: "password",
+                                    value: "{pw_confirm}",
+                                    oninput: move |e| pw_confirm.set(e.value()),
+                                }
+                                // Live rule check so problems show before submitting.
+                                if !pw_new().is_empty() {
+                                    if let Some(problem) = shared::password_problem(&pw_new(), &session().user.username) {
+                                        div { class: "settings-hint pw-bad", "{problem}" }
+                                    } else if !pw_confirm().is_empty() && pw_confirm() != pw_new() {
+                                        div { class: "settings-hint pw-bad", "passwords don't match" }
+                                    } else if !pw_confirm().is_empty() {
+                                        div { class: "settings-hint pw-good", "looks good" }
+                                    }
+                                }
+                                if !pw_message().0.is_empty() {
+                                    div {
+                                        class: if pw_message().1 { "settings-hint pw-good" } else { "settings-hint pw-bad" },
+                                        "{pw_message().0}"
+                                    }
+                                }
+                                button {
+                                    class: "profile-btn primary",
+                                    disabled: pw_current().is_empty()
+                                        || pw_new().is_empty()
+                                        || pw_confirm() != pw_new()
+                                        || shared::password_problem(&pw_new(), &session().user.username).is_some(),
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            match api::change_password(&session(), pw_current(), pw_new()).await {
+                                                Ok(()) => {
+                                                    pw_current.set(String::new());
+                                                    pw_new.set(String::new());
+                                                    pw_confirm.set(String::new());
+                                                    pw_message.set(("password changed — other devices were logged out".into(), true));
+                                                }
+                                                Err(e) => pw_message.set((e, false)),
+                                            }
+                                        });
+                                    },
+                                    "Change password"
+                                }
+                                div { class: "settings-hint", "changing your password signs you out everywhere else" }
+                            } else if settings_tab() == "server" {
                                 label { "Server name" }
                                 input {
                                     value: "{server_name_draft}",
