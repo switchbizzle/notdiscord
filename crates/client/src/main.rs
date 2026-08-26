@@ -62,7 +62,7 @@ fn LoginView(session: Signal<Option<api::Session>>) -> Element {
         api::load_session()
             .map(|s| s.base_url)
             .or_else(|| std::env::var("NOTDISCORD_SERVER").ok())
-            .unwrap_or_else(|| "http://127.0.0.1:3000".into())
+            .unwrap_or_else(|| "https://notdiscord.switchbhost.com".into())
     });
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
