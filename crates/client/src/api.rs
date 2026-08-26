@@ -265,6 +265,18 @@ fn session_path() -> Option<std::path::PathBuf> {
     config_root().map(|d| d.join("session.json"))
 }
 
+/// Append a line to debug.log next to the settings. Audio routing problems
+/// are invisible from the UI, so the sound paths leave a breadcrumb trail.
+pub fn debug_log(line: &str) {
+    let Some(path) = config_root().map(|d| d.join("debug.log")) else { return };
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let stamp = chrono::Local::now().format("%H:%M:%S%.3f");
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "[{stamp}] {line}");
+    }
+}
+
 pub fn save_session(session: &Session) {
     let Some(path) = session_path() else { return };
     let _ = std::fs::create_dir_all(path.parent().unwrap());

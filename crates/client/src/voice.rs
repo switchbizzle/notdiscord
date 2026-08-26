@@ -878,22 +878,41 @@ async fn connect(
 /// output device picked in voice settings (PlaySound only knew the Windows
 /// default device, which made blips inaudible for anyone routing voice to
 /// headphones that aren't the system default).
-fn play_voice_blip(join: bool) {
-    if !crate::api::load_settings().voice_join_sounds {
-        return;
-    }
+const CUE_RATE: u32 = 48000;
+
+fn blip_samples(join: bool) -> Vec<f32> {
     let (f1, f2) = if join { (440.0, 587.33) } else { (587.33, 392.0) };
-    const RATE: u32 = 48000;
     let mut samples: Vec<f32> = Vec::new();
     for (freq, ms) in [(f1, 70u32), (f2, 90u32)] {
-        let n = RATE * ms / 1000;
+        let n = CUE_RATE * ms / 1000;
         for i in 0..n {
-            let t = i as f32 / RATE as f32;
+            let t = i as f32 / CUE_RATE as f32;
             let env = (1.0 - i as f32 / n as f32).powf(1.4);
-            samples.push((t * freq * std::f32::consts::TAU).sin() * env * 0.22);
+            samples.push((t * freq * std::f32::consts::TAU).sin() * env * 0.3);
         }
     }
-    play_samples_on_voice_output(samples, RATE);
+    samples
+}
+
+fn play_voice_blip(join: bool) {
+    if !crate::api::load_settings().voice_join_sounds {
+        crate::api::debug_log("blip skipped: voice_join_sounds is off");
+        return;
+    }
+    crate::api::debug_log(if join { "blip: join" } else { "blip: leave" });
+    play_samples_on_voice_output(blip_samples(join), CUE_RATE);
+}
+
+/// Settings → Voice "Test" button: play the join cue on the selected output
+/// device, so it's obvious where NotDiscord's audio actually goes.
+pub fn play_test_cue() {
+    crate::api::debug_log("blip: test button");
+    play_samples_on_voice_output(blip_samples(true), CUE_RATE);
+}
+
+/// Name of the Windows default output device (what everything else uses).
+pub fn default_output_name() -> Option<String> {
+    cpal::default_host().default_output_device().as_ref().and_then(device_name)
 }
 
 /// Fire-and-forget playback of mono samples on the configured voice output
@@ -905,7 +924,11 @@ pub fn play_samples_on_voice_output(samples: Vec<f32>, rate: u32) {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let host = cpal::default_host();
         let preferred = crate::api::load_settings().output_device;
-        let Some(device) = pick_output_device(&host, &preferred) else { return };
+        let Some(device) = pick_output_device(&host, &preferred) else {
+            crate::api::debug_log("cue: no output device found");
+            return;
+        };
+        crate::api::debug_log(&format!("cue device: {:?}", device_name(&device)));
         let config = cpal::StreamConfig {
             channels: 2,
             sample_rate: rate,
@@ -931,13 +954,18 @@ pub fn play_samples_on_voice_output(samples: Vec<f32>, rate: u32) {
             |_| {},
             None,
         );
-        if let Ok(stream) = stream {
-            if stream.play().is_ok() {
-                // Wait until the callback has drained the samples (or bail
-                // after 2s if the device stalls).
-                let _ = done_rx.recv_timeout(std::time::Duration::from_secs(2));
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+        match stream {
+            Ok(stream) => match stream.play() {
+                Ok(()) => {
+                    // Wait until the callback has drained the samples (or bail
+                    // after 2s if the device stalls).
+                    let drained = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    crate::api::debug_log(&format!("cue played (drained: {})", drained.is_ok()));
+                }
+                Err(e) => crate::api::debug_log(&format!("cue play failed: {e}")),
+            },
+            Err(e) => crate::api::debug_log(&format!("cue stream failed: {e}")),
         }
     });
 }

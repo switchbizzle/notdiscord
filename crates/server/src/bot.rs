@@ -124,6 +124,42 @@ pub async fn ensure_bot_user(db: &sqlx::SqlitePool) -> anyhow::Result<User> {
 
 /// Post a message as the bot (DM-scoped when the channel is a DM). Long
 /// replies are split into <=4000-char messages to fit the normal limit.
+/// Post one message as the bot and return its id (no chunking — used for
+/// messages the server edits later, like the music player card).
+pub async fn post_and_get_id(state: &SharedState, channel_id: i64, content: &str) -> anyhow::Result<i64> {
+    let recipients = dm_recipients(&state.db, channel_id).await?;
+    let bot = state.bot_user();
+    let created_at = now_ms();
+    let result = sqlx::query(
+        "INSERT INTO messages (channel_id, author_id, content, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(channel_id)
+    .bind(bot.id)
+    .bind(content)
+    .bind(created_at)
+    .execute(&state.db)
+    .await?;
+    let id = result.last_insert_rowid();
+
+    let message = Message {
+        id,
+        channel_id,
+        author: bot,
+        content: content.to_owned(),
+        created_at,
+        edited_at: None,
+        reactions: Vec::new(),
+        reply_to: None,
+        reply_preview: None,
+    };
+    let event = ServerEvent::MessageCreated { message };
+    match &recipients {
+        Some(ids) => state.broadcast_only(ids.clone(), event),
+        None => state.broadcast(event),
+    }
+    Ok(id)
+}
+
 pub async fn post_message(state: &SharedState, channel_id: i64, content: &str) -> anyhow::Result<()> {
     let recipients = dm_recipients(&state.db, channel_id).await?;
     let bot = state.bot_user();

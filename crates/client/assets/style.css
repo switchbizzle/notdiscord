@@ -1443,6 +1443,72 @@ input:focus { border-color: #5865f2; }
 }
 .msg-file-dl { color: #949ba4; font-size: 12px; flex-shrink: 0; }
 
+/* ---------- Music player card (in chat) ---------- */
+
+.player-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+    padding: 10px 12px;
+    max-width: 460px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-left: 4px solid #23a55a;
+    border-radius: 8px;
+}
+.player-info { flex: 1; min-width: 0; }
+.player-title {
+    color: #f2f3f5;
+    font-weight: 600;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.player-state {
+    color: #23a55a;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-right: 8px;
+}
+.player-next {
+    color: #949ba4;
+    font-size: 12px;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.player-btn {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #3a3c42;
+    border: none;
+    border-radius: 50%;
+    color: #dbdee1;
+    cursor: pointer;
+}
+.player-btn:hover { background: #4e5058; color: #fff; }
+.player-btn.primary { background: #23a55a; color: #fff; }
+.player-btn.primary:hover { background: #1f8b4c; }
+
+/* ---------- Slash command popup ---------- */
+
+.slash-pop .mention-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+.slash-name { color: #f2f3f5; font-weight: 600; }
+.slash-help { color: #949ba4; font-size: 12px; }
+
 /* ---------- Emoji picker (compose) ---------- */
 
 .emoji-panel {

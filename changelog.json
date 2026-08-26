@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.34.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Slash commands! Type / in the message box and pick from the menu — no more memorizing bot syntax",
+      "The music bot now posts a player card with real ⏯ ⏭ ⏹ buttons — click to pause, skip, or stop",
+      "One card that updates itself instead of a wall of 'now playing' lines, and it lists what's up next",
+      "Settings → Voice has a Test button: hear exactly which device NotDiscord plays to (join cues included)"
+    ]
+  },
+  {
     "version": "0.33.0",
     "date": "2026-08-26",
     "changes": [

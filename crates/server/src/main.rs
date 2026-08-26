@@ -34,6 +34,8 @@ pub struct AppState {
     pub bot: Mutex<shared::User>,
     /// Whether a music status watcher task is currently running.
     pub music_watch: Mutex<bool>,
+    /// The live player card message: (channel id, message id).
+    pub music_player: Mutex<Option<(i64, i64)>>,
 }
 
 impl AppState {
@@ -195,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
         voice: Mutex::new(HashMap::new()),
         bot: Mutex::new(bot_user),
         music_watch: Mutex::new(false),
+        music_player: Mutex::new(None),
     });
 
     // NotBot announces new client releases in chat.

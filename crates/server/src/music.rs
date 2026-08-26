@@ -19,30 +19,68 @@ pub enum MusicCmd {
     Play(String),
     Skip,
     Stop,
+    Pause,
+    Resume,
     Queue,
     /// "play" with no link.
     PlayUsage,
+    /// Not music — hand the message to the LLM (`/ask`, `/image`).
+    Ask,
 }
 
-/// Parse a music command out of a message that mentions the bot. None means
-/// it's not a music command (fall through to the LLM).
+/// Parse a bot command from a message: either "@bot play …" or "/play …".
+/// None means it isn't a command at all.
 pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
-    let lower = content.to_lowercase();
-    let mention = format!("@{}", bot_name.to_lowercase());
-    let at = lower.find(&mention)?;
-    let after = content[at + mention.len()..].trim();
+    let trimmed = content.trim_start();
+    let after = if let Some(rest) = trimmed.strip_prefix('/') {
+        // Slash form: only a known verb counts, so "/shrug" stays chat.
+        rest
+    } else {
+        let lower = content.to_lowercase();
+        let mention = format!("@{}", bot_name.to_lowercase());
+        let at = lower.find(&mention)?;
+        &content[at + mention.len()..]
+    };
+
+    let after = after.trim();
     let mut words = after.split_whitespace();
     let verb = words.next()?.to_lowercase();
-    match verb.trim_matches(|c: char| c.is_ascii_punctuation() && c != '!').as_ref() {
+    let verb = verb.trim_matches(|c: char| c.is_ascii_punctuation());
+    match verb {
         "play" | "p" => match words.find(|w| w.starts_with("http://") || w.starts_with("https://")) {
             Some(url) => Some(MusicCmd::Play(url.to_owned())),
             None => Some(MusicCmd::PlayUsage),
         },
         "skip" | "next" => Some(MusicCmd::Skip),
         "stop" | "leave" | "dc" | "disconnect" => Some(MusicCmd::Stop),
+        "pause" => Some(MusicCmd::Pause),
+        "resume" | "unpause" => Some(MusicCmd::Resume),
         "queue" | "q" | "np" | "nowplaying" => Some(MusicCmd::Queue),
+        "ask" | "image" | "draw" => Some(MusicCmd::Ask),
         _ => None,
     }
+}
+
+/// A button press on the player card.
+pub fn handle_control(_state: SharedState, action: String) {
+    tokio::spawn(async move {
+        let cmd = match action.as_str() {
+            "pause" => MusicCmd::Pause,
+            "resume" => MusicCmd::Resume,
+            "skip" => MusicCmd::Skip,
+            "stop" => MusicCmd::Stop,
+            _ => return,
+        };
+        let http = reqwest::Client::new();
+        let endpoint = match cmd {
+            MusicCmd::Pause => "pause",
+            MusicCmd::Resume => "resume",
+            MusicCmd::Skip => "skip",
+            _ => "stop",
+        };
+        let _ = http.post(format!("{}/{endpoint}", sidecar_url())).send().await;
+        // The status watcher repaints the card within a beat.
+    });
 }
 
 #[derive(Deserialize)]
@@ -54,6 +92,58 @@ struct SidecarStatus {
     queue_len: usize,
     #[serde(default)]
     up_next: Vec<String>,
+    #[serde(default)]
+    paused: bool,
+}
+
+/// The player card the client renders with transport buttons:
+/// `⟦player⟧playing` / title / up-next.
+fn player_card(status: &SidecarStatus) -> String {
+    let state = if status.paused { "paused" } else { "playing" };
+    let title = status
+        .now_playing
+        .as_ref()
+        .map(|t| t.title.as_str())
+        .unwrap_or("loading…");
+    let mut out = format!("{}{state}\n{title}\n", shared::PLAYER_MARKER);
+    if status.queue_len > 0 {
+        let names: Vec<&str> = status.up_next.iter().map(String::as_str).collect();
+        out.push_str(&format!("up next: {}", names.join(" · ")));
+        if status.queue_len > names.len() {
+            out.push_str(&format!(" (+{} more)", status.queue_len - names.len()));
+        }
+    } else {
+        out.push_str("up next: nothing — queue's empty");
+    }
+    out
+}
+
+/// Post the player card, or edit the existing one in place so the channel
+/// gets one live-updating card instead of a wall of "now playing" lines.
+async fn paint_player(state: &SharedState, channel_id: i64, content: &str) -> anyhow::Result<()> {
+    let existing = *state.music_player.lock().unwrap();
+    match existing {
+        Some((ch, message_id)) if ch == channel_id => {
+            let edited_at = now_ms();
+            sqlx::query("UPDATE messages SET content = ?, edited_at = ? WHERE id = ?")
+                .bind(content)
+                .bind(edited_at)
+                .bind(message_id)
+                .execute(&state.db)
+                .await?;
+            state.broadcast(ServerEvent::MessageEdited {
+                channel_id,
+                message_id,
+                content: content.to_owned(),
+                edited_at,
+            });
+        }
+        _ => {
+            let id = crate::bot::post_and_get_id(state, channel_id, content).await?;
+            *state.music_player.lock().unwrap() = Some((channel_id, id));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -120,19 +210,26 @@ async fn run_command(
 
             if started {
                 join_roster(state, vc);
-                spawn_status_watch(state.clone(), text_channel, vc);
+                spawn_status_watch(state.clone(), text_channel);
                 Ok(if queued > 1 {
                     format!("🎶 coming right up — {queued} tracks queued!")
                 } else {
-                    String::new() // the status watch posts "now playing" momentarily
+                    String::new() // the player card appears momentarily
                 })
             } else {
                 Ok(format!("added to the queue (+{queued}) 🎵"))
             }
         }
+        MusicCmd::Ask => Ok(String::new()), // handled by the LLM path
         MusicCmd::Skip => {
             let resp = http.post(format!("{}/skip", sidecar_url())).send().await?;
-            Ok(if resp.status().is_success() { "⏭ skipped".into() } else { "nothing is playing".into() })
+            Ok(if resp.status().is_success() { String::new() } else { "nothing is playing".into() })
+        }
+        MusicCmd::Pause | MusicCmd::Resume => {
+            let endpoint = if cmd == MusicCmd::Pause { "pause" } else { "resume" };
+            let resp = http.post(format!("{}/{endpoint}", sidecar_url())).send().await?;
+            // The card repaints itself; only speak up when there's nothing to control.
+            Ok(if resp.status().is_success() { String::new() } else { "nothing is playing".into() })
         }
         MusicCmd::Stop => {
             let resp = http.post(format!("{}/stop", sidecar_url())).send().await?;
@@ -218,9 +315,9 @@ fn leave_roster(state: &SharedState) {
     });
 }
 
-/// Poll the sidecar while a session runs: announce track changes in chat,
-/// and clean up the roster when the music ends. One watcher at a time.
-fn spawn_status_watch(state: SharedState, text_channel: i64, voice_channel: i64) {
+/// Poll the sidecar while a session runs: keep the player card up to date and
+/// clean up when the music ends. One watcher at a time.
+fn spawn_status_watch(state: SharedState, text_channel: i64) {
     {
         let mut music = state.music_watch.lock().unwrap();
         if *music {
@@ -230,9 +327,9 @@ fn spawn_status_watch(state: SharedState, text_channel: i64, voice_channel: i64)
     }
     tokio::spawn(async move {
         let http = reqwest::Client::new();
-        let mut last_title: Option<String> = None;
+        let mut painted = String::new();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let status: Option<SidecarStatus> = match http
                 .get(format!("{}/status", sidecar_url()))
                 .timeout(std::time::Duration::from_secs(10))
@@ -246,22 +343,24 @@ fn spawn_status_watch(state: SharedState, text_channel: i64, voice_channel: i64)
 
             if !status.active {
                 leave_roster(&state);
-                let _ = crate::bot::post_message(&state, text_channel, "🎶 that's the end of the queue — thanks for listening! leaving voice~").await;
+                // Retire the card: no buttons once there's nothing to control.
+                let _ = paint_player(
+                    &state,
+                    text_channel,
+                    "🎶 that's the end of the queue — thanks for listening! leaving voice~",
+                )
+                .await;
+                *state.music_player.lock().unwrap() = None;
                 break;
             }
-            if let Some(track) = &status.now_playing {
-                if last_title.as_deref() != Some(track.title.as_str()) {
-                    last_title = Some(track.title.clone());
-                    let _ = crate::bot::post_message(
-                        &state,
-                        text_channel,
-                        &format!("▶ now playing: **{}**", track.title),
-                    )
-                    .await;
+
+            let card = player_card(&status);
+            if card != painted {
+                if paint_player(&state, text_channel, &card).await.is_ok() {
+                    painted = card;
                 }
             }
         }
         *state.music_watch.lock().unwrap() = false;
-        let _ = voice_channel;
     });
 }

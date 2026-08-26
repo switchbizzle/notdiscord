@@ -41,6 +41,7 @@ struct Track {
 struct Controls {
     skip: AtomicBool,
     stop: AtomicBool,
+    paused: AtomicBool,
 }
 
 struct Session {
@@ -83,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/play", post(play))
         .route("/skip", post(skip))
         .route("/stop", post(stop))
+        .route("/pause", post(pause))
+        .route("/resume", post(resume))
         .route("/status", get(status))
         .with_state(state);
 
@@ -136,7 +139,11 @@ async fn play(
             format!("already playing in another channel ({})", session.room_name),
         )),
         None => {
-            let controls = Arc::new(Controls { skip: AtomicBool::new(false), stop: AtomicBool::new(false) });
+            let controls = Arc::new(Controls {
+                skip: AtomicBool::new(false),
+                stop: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+            });
             *guard = Some(Session {
                 room_name: req.room.clone(),
                 queue: tracks.into(),
@@ -174,6 +181,25 @@ async fn stop(State(state): State<Shared>) -> StatusCode {
     }
 }
 
+/// Pause/resume: playback stops feeding frames, ffmpeg blocks on pipe
+/// backpressure, and picks up where it left off on resume.
+async fn pause(State(state): State<Shared>) -> StatusCode {
+    set_paused(&state, true)
+}
+
+async fn resume(State(state): State<Shared>) -> StatusCode {
+    set_paused(&state, false)
+}
+
+fn set_paused(state: &Shared, paused: bool) -> StatusCode {
+    if let Some(session) = state.session.lock().unwrap().as_ref() {
+        session.controls.paused.store(paused, Ordering::Relaxed);
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
 #[derive(Serialize)]
 struct StatusResponse {
     active: bool,
@@ -181,6 +207,7 @@ struct StatusResponse {
     now_playing: Option<Track>,
     queue_len: usize,
     up_next: Vec<String>,
+    paused: bool,
 }
 
 async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
@@ -192,6 +219,7 @@ async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
             now_playing: s.now_playing.clone(),
             queue_len: s.queue.len(),
             up_next: s.queue.iter().take(5).map(|t| t.title.clone()).collect(),
+            paused: s.controls.paused.load(Ordering::Relaxed),
         },
         None => StatusResponse {
             active: false,
@@ -199,6 +227,7 @@ async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
             now_playing: None,
             queue_len: 0,
             up_next: Vec::new(),
+            paused: false,
         },
     })
 }
@@ -242,16 +271,33 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
     Ok(tracks)
 }
 
-/// Readable stand-in title from a track URL's slug ("some-track-1" → "some track 1").
+/// Readable stand-in title from a track URL's slug, used until the real one
+/// resolves at play time ("some-track-2" → "Some Track"). SoundCloud's
+/// trailing dedup digits aren't part of the name.
 fn slug_title(url: &str) -> String {
-    url.trim_end_matches('/')
+    let slug = url
+        .trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or(url)
         .split('?')
         .next()
-        .unwrap_or(url)
-        .replace('-', " ")
+        .unwrap_or(url);
+    let mut words: Vec<String> = slug
+        .split('-')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect();
+    if words.last().is_some_and(|w| w.chars().all(|c| c.is_ascii_digit())) && words.len() > 1 {
+        words.pop();
+    }
+    words.join(" ")
 }
 
 /// Resolve one track page to (title, direct stream URL).
@@ -306,9 +352,9 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         let next = {
             let mut guard = state.session.lock().unwrap();
             let Some(session) = guard.as_mut() else { break };
-            let next = session.queue.pop_front();
-            session.now_playing = next.clone();
-            next
+            // now_playing is set only once the real title is resolved, so
+            // chat announces each track exactly once.
+            session.queue.pop_front()
         };
         let Some(track) = next else { break };
 
@@ -358,6 +404,12 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
         if controls.skip.load(Ordering::Relaxed) || controls.stop.load(Ordering::Relaxed) {
             let _ = ffmpeg.start_kill();
             break;
+        }
+        // Paused: stop pulling frames. ffmpeg blocks on pipe backpressure,
+        // so the track resumes exactly where it left off.
+        if controls.paused.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
         }
         // Fill a whole 10ms frame (read_exact over the pipe).
         let mut filled = 0;

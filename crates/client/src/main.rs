@@ -464,6 +464,7 @@ fn MainView(session: api::Session) -> Element {
     let mut sticker_open = use_signal(|| false);
     let mut emoji_open = use_signal(|| false);
     let mut emoji_query = use_signal(String::new);
+    let mut slash_sel = use_signal(|| 0usize);
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
@@ -1620,23 +1621,43 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                                 label { "Output" }
-                                select {
-                                    onchange: move |e| {
-                                        let v = e.value();
-                                        let mut s = audio_settings.write();
-                                        s.output_device = if v.is_empty() { None } else { Some(v) };
-                                        api::save_settings(&s);
-                                        drop(s);
-                                        rejoin_voice();
-                                    },
-                                    option { value: "", selected: audio_settings().output_device.is_none(), "Default" }
-                                    for name in output_devices() {
-                                        option {
-                                            value: "{name}",
-                                            selected: audio_settings().output_device.as_deref() == Some(name.as_str()),
-                                            "{name}"
+                                div { class: "invite-row",
+                                    select {
+                                        onchange: move |e| {
+                                            let v = e.value();
+                                            let mut s = audio_settings.write();
+                                            s.output_device = if v.is_empty() { None } else { Some(v) };
+                                            api::save_settings(&s);
+                                            drop(s);
+                                            rejoin_voice();
+                                        },
+                                        option { value: "", selected: audio_settings().output_device.is_none(), "System default" }
+                                        for name in output_devices() {
+                                            option {
+                                                value: "{name}",
+                                                selected: audio_settings().output_device.as_deref() == Some(name.as_str()),
+                                                "{name}"
+                                            }
                                         }
                                     }
+                                    button {
+                                        class: "profile-btn",
+                                        title: "Play a test cue on this device",
+                                        onclick: move |_| voice::play_test_cue(),
+                                        "Test"
+                                    }
+                                }
+                                {
+                                    // Voice and cues use THIS device — which is easy to have
+                                    // pointing somewhere your headphones aren't.
+                                    let default_name = voice::default_output_name().unwrap_or_else(|| "unknown".into());
+                                    let hint = match audio_settings().output_device {
+                                        Some(picked) if picked != default_name => format!(
+                                            "voice + join cues play on \"{picked}\" — your system default is \"{default_name}\". Hit Test if you hear nothing."
+                                        ),
+                                        _ => format!("voice + join cues play on your system default (\"{default_name}\")"),
+                                    };
+                                    rsx! { div { class: "settings-hint", "{hint}" } }
                                 }
                                 label { "Voice mode" }
                                 div { class: "mode-row",
@@ -2895,6 +2916,31 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
                 {
+                    // Slash commands: no syntax to memorize.
+                    let commands = slash_suggestions(&draft());
+                    rsx! {
+                        if !commands.is_empty() {
+                            div { class: "mention-pop slash-pop",
+                                for (i, (name, help)) in commands.iter().enumerate() {
+                                    div {
+                                        key: "{name}",
+                                        class: if i == slash_sel() % commands.len() { "mention-row selected" } else { "mention-row" },
+                                        onclick: {
+                                            let name = *name;
+                                            move |_| {
+                                                draft.set(format!("{name} "));
+                                                slash_sel.set(0);
+                                            }
+                                        },
+                                        span { class: "slash-name", "{name}" }
+                                        span { class: "slash-help", "{help}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                {
                     let suggestions = mention_suggestions(&draft(), &members());
                     rsx! {
                         if !suggestions.is_empty() {
@@ -3039,9 +3085,43 @@ fn MainView(session: api::Session) -> Element {
                         oninput: move |e| {
                             draft.set(e.value());
                             mention_sel.set(0);
+                            slash_sel.set(0);
                             notify_typing();
                         },
                         onkeydown: move |e| {
+                            // Slash popup takes the keys first — it only ever
+                            // shows while the verb is still being typed.
+                            let commands = slash_suggestions(&draft());
+                            if !commands.is_empty() {
+                                let sel = slash_sel() % commands.len();
+                                match e.key() {
+                                    Key::ArrowDown => {
+                                        e.prevent_default();
+                                        slash_sel.set(sel + 1);
+                                        return;
+                                    }
+                                    Key::ArrowUp => {
+                                        e.prevent_default();
+                                        slash_sel.set((sel + commands.len() - 1) % commands.len());
+                                        return;
+                                    }
+                                    Key::Tab => {
+                                        e.prevent_default();
+                                        draft.set(format!("{} ", commands[sel].0));
+                                        slash_sel.set(0);
+                                        return;
+                                    }
+                                    // Enter completes the command unless it's
+                                    // already an exact match (then it sends).
+                                    Key::Enter if draft().trim() != commands[sel].0 => {
+                                        e.prevent_default();
+                                        draft.set(format!("{} ", commands[sel].0));
+                                        slash_sel.set(0);
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
                             let suggestions = mention_suggestions(&draft(), &members());
                             if !suggestions.is_empty() {
                                 let sel = mention_sel() % suggestions.len();
@@ -3301,6 +3381,89 @@ fn LinkCard(url: String) -> Element {
     }
 }
 
+/// The bot's music player message, rendered as a live transport card:
+/// `⟦player⟧playing` / title / up-next. Buttons drive the sidecar directly.
+#[component]
+fn PlayerCard(data: String) -> Element {
+    let ws = use_coroutine_handle::<ClientEvent>();
+    let mut lines = data.lines();
+    let paused = lines.next().unwrap_or_default().trim() == "paused";
+    let title = lines.next().unwrap_or_default().to_owned();
+    let up_next = lines.collect::<Vec<_>>().join(" ");
+
+    let mut press = move |action: &str| {
+        ws.send(ClientEvent::MusicControl { action: action.to_owned() });
+    };
+    // Precomputed so the rsx attributes stay single-typed.
+    let toggle_title: &str = if paused { "Resume" } else { "Pause" };
+    let toggle_icon: &'static str = if paused { "play" } else { "pause" };
+    let toggle_action: &'static str = if paused { "resume" } else { "pause" };
+    let state_label: &str = if paused { "paused" } else { "now playing" };
+
+    rsx! {
+        div { class: "player-card",
+            button {
+                class: "player-btn primary",
+                title: "{toggle_title}",
+                onclick: move |_| press(toggle_action),
+                Icon { name: toggle_icon, size: 18 }
+            }
+            div { class: "player-info",
+                div { class: "player-title",
+                    span { class: "player-state", "{state_label}" }
+                    "{title}"
+                }
+                if !up_next.is_empty() {
+                    div { class: "player-next", "{up_next}" }
+                }
+            }
+            button {
+                class: "player-btn",
+                title: "Skip to the next track",
+                onclick: move |_| press("skip"),
+                Icon { name: "skip", size: 16 }
+            }
+            button {
+                class: "player-btn",
+                title: "Stop and leave voice",
+                onclick: move |_| press("stop"),
+                Icon { name: "stop", size: 16 }
+            }
+        }
+    }
+}
+
+/// Commands offered by the `/` popup above the compose box.
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/play", "queue a SoundCloud track or playlist — /play <url>"),
+    ("/pause", "pause the music"),
+    ("/resume", "resume the music"),
+    ("/skip", "skip to the next track"),
+    ("/queue", "see what's playing and what's next"),
+    ("/stop", "stop the music and leave voice"),
+    ("/ask", "ask the bot a question — /ask <question>"),
+    ("/image", "have the bot draw something — /image <prompt>"),
+];
+
+/// Matching commands while the verb is still being typed (empty once the
+/// user moves on to arguments).
+fn slash_suggestions(draft: &str) -> Vec<(&'static str, &'static str)> {
+    let draft = draft.trim_start();
+    if !draft.starts_with('/') {
+        return Vec::new();
+    }
+    let verb = draft.split_whitespace().next().unwrap_or("/");
+    // Already typing arguments: the popup has done its job.
+    if draft.len() > verb.len() {
+        return Vec::new();
+    }
+    SLASH_COMMANDS
+        .iter()
+        .filter(|(name, _)| name.starts_with(verb))
+        .copied()
+        .collect()
+}
+
 const REACTION_EMOJIS: &[&str] = &[
     "👍", "👎", "😂", "❤️", "🔥", "😮", "😭", "🎉", "💀", "👀", "🤡", "🫡",
 ];
@@ -3318,8 +3481,13 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
-    let (images, videos, files, text) = extract_media(&msg.content);
-    let links = preview_urls(&text);
+    // The bot's music message renders as a transport card, not as text.
+    let player = msg.content.strip_prefix(shared::PLAYER_MARKER).map(str::to_owned);
+    let (images, videos, files, text) = match player {
+        Some(_) => (Vec::new(), Vec::new(), Vec::new(), String::new()),
+        None => extract_media(&msg.content),
+    };
+    let links = if player.is_some() { Vec::new() } else { preview_urls(&text) };
     let me_id = session().user.id;
     let own = msg.author.id == me_id;
     let msg_id = msg.id;
@@ -3426,6 +3594,8 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                         },
                     }
                     div { class: "edit-hint", "Enter to save · Esc to cancel" }
+                } else if let Some(data) = player.clone() {
+                    PlayerCard { data }
                 } else if !text.is_empty() {
                     div { class: "msg-body",
                         md::Md { nodes: md::parse_markdown(&text) }

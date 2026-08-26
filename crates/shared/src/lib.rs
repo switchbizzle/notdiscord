@@ -309,6 +309,10 @@ pub struct StorageCapSetting {
     pub cap_gb: i64,
 }
 
+/// First line marker of the bot's music player message: the client renders
+/// those messages as a player card with transport buttons instead of text.
+pub const PLAYER_MARKER: &str = "⟦player⟧";
+
 /// A server-fetched card for a link posted in chat (GET /api/preview?url=…).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkPreview {
@@ -383,6 +387,8 @@ pub enum ClientEvent {
     EditMessage { message_id: i64, content: String },
     /// Delete own message.
     DeleteMessage { message_id: i64 },
+    /// Press a button on the music player card: "pause", "resume", "skip", "stop".
+    MusicControl { action: String },
     /// Announce which voice channel this user is in (None = left voice).
     VoiceState {
         channel_id: Option<i64>,

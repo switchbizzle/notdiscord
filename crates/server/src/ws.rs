@@ -100,6 +100,10 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                 let Some(Ok(msg)) = incoming else { break };
                 if let WsMessage::Text(text) = msg {
                     match serde_json::from_str::<ClientEvent>(&text) {
+                        // Player card buttons: deterministic, no LLM involved.
+                        Ok(ClientEvent::MusicControl { action }) => {
+                            crate::music::handle_control(state.clone(), action);
+                        }
                         // Voice presence is connection-scoped state, handled here.
                         Ok(ClientEvent::VoiceState { channel_id, sharing, camera }) => {
                             {
@@ -214,8 +218,9 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             .await?;
 
             let bot = state.bot_user();
+            let is_slash = content.trim_start().starts_with('/');
             let mentioned_bot = user.id != bot.id && crate::bot::is_mention(&content, &bot.username);
-            let music_cmd = if mentioned_bot {
+            let music_cmd = if (mentioned_bot || is_slash) && user.id != bot.id {
                 crate::music::parse_command(&content, &bot.username)
             } else {
                 None
@@ -233,17 +238,17 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             };
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
 
-            // Summoned? Music commands are deterministic and free; anything
-            // else goes to the LLM. Both run in the background.
-            if mentioned_bot {
-                match music_cmd {
-                    Some(cmd) => crate::music::handle_command(state.clone(), user.clone(), channel_id, cmd),
-                    None => crate::bot::maybe_answer(state.clone(), channel_id),
-                }
+            // Summoned? Music commands are deterministic and free; questions
+            // (and /ask, /image) go to the LLM. Both run in the background.
+            match music_cmd {
+                Some(crate::music::MusicCmd::Ask) => crate::bot::maybe_answer(state.clone(), channel_id),
+                Some(cmd) => crate::music::handle_command(state.clone(), user.clone(), channel_id, cmd),
+                None if mentioned_bot => crate::bot::maybe_answer(state.clone(), channel_id),
+                None => {}
             }
         }
         // Handled at the connection level in handle_socket.
-        ClientEvent::VoiceState { .. } => {}
+        ClientEvent::VoiceState { .. } | ClientEvent::MusicControl { .. } => {}
         ClientEvent::Typing { channel_id } => {
             let recipients = dm_recipients(&state.db, channel_id).await?;
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
