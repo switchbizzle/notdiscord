@@ -228,6 +228,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
     let mic_level = use_signal_sync(|| 0.0f32);
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status, mic_level));
+    let mut whats_new = use_signal(|| None::<Vec<shared::ChangelogEntry>>);
     let mut update_available = use_signal(|| None::<shared::ClientVersionInfo>);
     let mut updating = use_signal(|| false);
     let mut update_progress = use_signal(|| 0.0f32);
@@ -265,6 +266,15 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             }
         });
     };
+
+    // First launch after an update: greet with what changed.
+    use_future(move || async move {
+        if api::load_settings().last_seen_version.as_deref() != Some(env!("CARGO_PKG_VERSION")) {
+            if let Ok(entries) = api::changelog(&session()).await {
+                whats_new.set(Some(entries));
+            }
+        }
+    });
 
     // Check for a newer client build on the server, at launch and periodically.
     use_future(move || async move {
@@ -688,6 +698,57 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     }
                 }
             }
+            if let Some(entries) = whats_new() {
+                div {
+                    class: "settings-overlay",
+                    onclick: move |_| {
+                        whats_new.set(None);
+                        let mut s = api::load_settings();
+                        s.last_seen_version = Some(env!("CARGO_PKG_VERSION").into());
+                        api::save_settings(&s);
+                    },
+                    div {
+                        class: "settings-modal whatsnew-modal",
+                        onclick: move |e| e.stop_propagation(),
+                        div { class: "whatsnew-head",
+                            div { class: "whatsnew-title", "What's new" }
+                            div { class: "whatsnew-sub", "you're on v{env!(\"CARGO_PKG_VERSION\")}" }
+                        }
+                        div { class: "settings-body whatsnew-body",
+                            for (i, entry) in entries.into_iter().take(10).enumerate() {
+                                div {
+                                    key: "{entry.version}",
+                                    class: if i == 0 { "release latest" } else { "release" },
+                                    div { class: "release-head",
+                                        span { class: "release-version", "v{entry.version}" }
+                                        if i == 0 {
+                                            span { class: "role-badge", "NEW" }
+                                        }
+                                        span { class: "release-date", "{entry.date}" }
+                                    }
+                                    ul { class: "release-changes",
+                                        for (j, change) in entry.changes.iter().enumerate() {
+                                            li { key: "{j}", "{change}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "whatsnew-foot",
+                            button {
+                                class: "profile-btn primary",
+                                onclick: move |_| {
+                                    whats_new.set(None);
+                                    let mut s = api::load_settings();
+                                    s.last_seen_version = Some(env!("CARGO_PKG_VERSION").into());
+                                    api::save_settings(&s);
+                                },
+                                "Nice"
+                            }
+                        }
+                    }
+                }
+            }
             if settings_open() {
                 div {
                     class: "settings-overlay",
@@ -873,6 +934,19 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                         });
                                     },
                                     "Check for updates"
+                                }
+                                button {
+                                    class: "profile-btn",
+                                    onclick: move |_| {
+                                        settings_open.set(false);
+                                        spawn(async move {
+                                            match api::changelog(&session()).await {
+                                                Ok(entries) => whats_new.set(Some(entries)),
+                                                Err(e) => status.set(e),
+                                            }
+                                        });
+                                    },
+                                    "What's new"
                                 }
                             }
                         }

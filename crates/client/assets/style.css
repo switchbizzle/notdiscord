@@ -226,6 +226,27 @@ input:focus { border-color: #5865f2; }
     margin-top: 4px;
 }
 .ptt-hint.held { color: #fff; background: rgba(35, 165, 90, 0.25); }
+.whatsnew-modal { width: 480px; }
+.whatsnew-head { padding: 18px 20px 12px; border-bottom: 1px solid #1a1b1e; }
+.whatsnew-title { color: #fff; font-size: 20px; font-weight: 700; }
+.whatsnew-sub { color: #949ba4; font-size: 12px; margin-top: 2px; }
+.whatsnew-body { gap: 14px; }
+.release { opacity: 0.75; }
+.release.latest { opacity: 1; }
+.release-head { display: flex; align-items: baseline; gap: 8px; }
+.release-version { color: #fff; font-weight: 700; font-size: 15px; }
+.release.latest .release-version { color: #23a55a; }
+.release-date { color: #4e5058; font-size: 11px; margin-left: auto; }
+.release-changes { margin: 6px 0 0 18px; }
+.release-changes li { color: #dbdee1; font-size: 13px; line-height: 1.6; }
+.whatsnew-foot {
+    padding: 12px 18px;
+    background: #2b2d31;
+    border-top: 1px solid #1a1b1e;
+    display: flex;
+    justify-content: flex-end;
+}
+
 .settings-slider {
     width: 100%;
     height: 4px;

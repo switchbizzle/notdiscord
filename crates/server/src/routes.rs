@@ -715,6 +715,14 @@ pub async fn client_version() -> Result<Json<ClientVersionInfo>, StatusCode> {
     Ok(Json(ClientVersionInfo { version: version.trim().to_owned(), url: "/download".into() }))
 }
 
+/// Public: release notes, newest first (uploaded by the release script).
+pub async fn changelog() -> Response {
+    match tokio::fs::read(client_dir().join("changelog.json")).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// Public: download the current client build (streamed).
 pub async fn download_client() -> Response {
     stream_file(

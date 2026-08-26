@@ -1,0 +1,73 @@
+[
+  {
+    "version": "0.9.0",
+    "date": "2026-08-26",
+    "changes": [
+      "This screen! After every update you'll see what changed",
+      "Browse recent version history any time from Settings → App → What's new"
+    ]
+  },
+  {
+    "version": "0.8.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Push-to-talk: pick a key in Settings → Voice — works even while you're in a game",
+      "Deafen button in the voice panel (silences everyone + mutes you)",
+      "Real settings menu: gear button in the bottom-left, tabs for Voice and App",
+      "Notification sounds can be turned off in Settings → App"
+    ]
+  },
+  {
+    "version": "0.7.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Direct messages! Click someone in the members list → Message",
+      "DMs are private end to end — server enforced, admins can't peek",
+      "Every DM pings you like an @mention"
+    ]
+  },
+  {
+    "version": "0.6.x",
+    "date": "2026-08-26",
+    "changes": [
+      "Roles: admin & member, with ADMIN badges — admins can delete messages/channels, promote, and ban",
+      "Update downloads stream with a progress bar and no longer stall"
+    ]
+  },
+  {
+    "version": "0.5.x",
+    "date": "2026-08-25",
+    "changes": [
+      "RNNoise ML noise suppression (keyboard clatter begone) — toggle in voice settings",
+      "Mic volume, output volume, and a live mic meter",
+      "Update splash screen; updating mid-call now leaves voice cleanly"
+    ]
+  },
+  {
+    "version": "0.4.x",
+    "date": "2026-08-25",
+    "changes": [
+      "Proper SVG icons everywhere instead of emoji buttons",
+      "Bare URLs are clickable; right-click copy/paste works",
+      "webm/mp4 links play inline like GIFs",
+      "Dark scrollbars"
+    ]
+  },
+  {
+    "version": "0.3.x",
+    "date": "2026-08-25",
+    "changes": [
+      "Pasted/dropped files show a preview before sending (Enter to send, Esc to cancel)",
+      "Per-friend volume sliders and instant speaking rings in voice"
+    ]
+  },
+  {
+    "version": "0.2.0",
+    "date": "2026-08-25",
+    "changes": [
+      "The auto-updater itself — this is why you never reinstall manually anymore",
+      "Custom stickers: upload once, spam forever",
+      "Nightly server backups"
+    ]
+  }
+]

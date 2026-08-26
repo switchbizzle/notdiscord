@@ -65,6 +65,9 @@ pub struct Settings {
     /// Play the notification sound on pings.
     #[serde(default = "yes")]
     pub notification_sounds: bool,
+    /// Last client version whose changelog the user has seen.
+    #[serde(default)]
+    pub last_seen_version: Option<String>,
 }
 
 fn vad() -> String {
@@ -261,6 +264,15 @@ pub async fn delete_channel(session: &Session, channel_id: i64) -> Result<(), St
         .map_err(|e| format!("cannot reach server: {e}"))?;
     let _: serde_json::Value = handle(resp).await?;
     Ok(())
+}
+
+pub async fn changelog(session: &Session) -> Result<Vec<shared::ChangelogEntry>, String> {
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/changelog", session.base_url))
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
 }
 
 pub async fn client_version(session: &Session) -> Result<ClientVersionInfo, String> {

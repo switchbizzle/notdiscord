@@ -165,6 +165,15 @@ pub struct CreateStickerRequest {
     pub url: String,
 }
 
+/// One release's entry in GET /api/changelog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangelogEntry {
+    pub version: String,
+    #[serde(default)]
+    pub date: String,
+    pub changes: Vec<String>,
+}
+
 /// Response from GET /api/client/version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientVersionInfo {

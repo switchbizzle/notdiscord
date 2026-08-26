@@ -114,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/stickers", get(routes::list_stickers).post(routes::create_sticker))
         .route("/api/stickers/{id}", axum::routing::delete(routes::delete_sticker))
         .route("/api/client/version", get(routes::client_version))
+        .route("/api/changelog", get(routes::changelog))
         .route("/download", get(routes::download_client))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))
