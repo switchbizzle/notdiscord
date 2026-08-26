@@ -731,7 +731,7 @@ pub async fn uploads_size() -> i64 {
     total
 }
 
-async fn storage_cap_bytes(state: &SharedState) -> i64 {
+pub(crate) async fn storage_cap_bytes(state: &SharedState) -> i64 {
     let gb: i64 = meta_value_opt(state, "storage_cap_gb")
         .await
         .ok()

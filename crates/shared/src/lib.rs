@@ -282,6 +282,26 @@ pub struct StorageCapSetting {
     pub cap_gb: i64,
 }
 
+/// A server-fetched card for a link posted in chat (GET /api/preview?url=…).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkPreview {
+    pub url: String,
+    pub title: String,
+    pub description: String,
+    /// Server-relative path to the cached thumbnail (`/files/…`). The client
+    /// never fetches the remote image itself, so nobody's IP leaks to the site.
+    #[serde(default)]
+    pub image: Option<String>,
+    pub site_name: String,
+    /// Inline player URL for hosts we know how to embed (SoundCloud, YouTube,
+    /// Spotify, Vimeo), if any.
+    #[serde(default)]
+    pub embed: Option<String>,
+    /// Player height in pixels; only meaningful when `embed` is set.
+    #[serde(default)]
+    pub embed_height: i64,
+}
+
 /// One release's entry in GET /api/changelog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangelogEntry {

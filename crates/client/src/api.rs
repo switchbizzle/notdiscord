@@ -187,6 +187,26 @@ pub async fn set_storage_cap(session: &Session, cap_gb: i64) -> Result<shared::S
     handle(resp).await
 }
 
+/// The server's card for a link, or None when it hasn't got one. Failures are
+/// silent: a missing preview just means no card, never an error in the UI.
+pub async fn link_preview(session: &Session, url: &str) -> Option<shared::LinkPreview> {
+    let resp = send_retry(http()
+        .get(format!("{}/api/preview", session.base_url))
+        .query(&[("url", url)])
+        .bearer_auth(&session.token))
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let mut preview: shared::LinkPreview = resp.json().await.ok()?;
+    // Thumbnails come back server-relative.
+    if let Some(image) = preview.image.take() {
+        preview.image = Some(format!("{}{image}", session.base_url));
+    }
+    Some(preview)
+}
+
 pub async fn change_password(session: &Session, current: String, new: String) -> Result<(), String> {
     let resp = send_retry(http()
         .post(format!("{}/api/password", session.base_url))

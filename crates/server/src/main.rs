@@ -1,4 +1,5 @@
 mod auth;
+mod preview;
 mod routes;
 mod ws;
 
@@ -212,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
             post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/api/gifs", get(routes::gifs))
+        .route("/api/preview", get(preview::preview))
         .route("/api/voice/token", get(routes::voice_token))
         .route("/api/stickers", get(routes::list_stickers).post(routes::create_sticker))
         .route("/api/stickers/{id}", axum::routing::delete(routes::delete_sticker))

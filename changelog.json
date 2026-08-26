@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.26.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Link previews! Post a link and you get a card with the title, blurb, and artwork",
+      "SoundCloud, YouTube, Spotify and Vimeo links get a play button — the track plays right in the chat window",
+      "The server fetches previews, not your client, so linking somewhere never hands that site your IP"
+    ]
+  },
+  {
     "version": "0.25.0",
     "date": "2026-08-26",
     "changes": [

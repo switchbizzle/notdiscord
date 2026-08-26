@@ -2829,6 +2829,129 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<String>, Strin
     }
 }
 
+/// Links in a message worth asking the server for a card about: bare web URLs
+/// that aren't already rendered inline as an image, video, or attachment.
+fn preview_urls(text: &str) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        if !word.starts_with("http://") && !word.starts_with("https://") {
+            continue;
+        }
+        // Trailing sentence punctuation isn't part of the link.
+        let url = word
+            .trim_end_matches(|c| matches!(c, '.' | ',' | ')' | '!' | '?' | ';' | ':' | '\''))
+            .to_owned();
+        if url.contains("/files/") || urls.contains(&url) {
+            continue;
+        }
+        urls.push(url);
+        // Two cards is plenty; a wall of them buries the conversation.
+        if urls.len() == 2 {
+            break;
+        }
+    }
+    urls
+}
+
+/// Cards fetched this session. The server caches them too — this just keeps
+/// scrolling back through history off the network entirely.
+fn preview_cache() -> &'static std::sync::Mutex<HashMap<String, Option<shared::LinkPreview>>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<shared::LinkPreview>>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// An OpenGraph card under a message. Everything shown here was fetched by the
+/// server, so linking somewhere never exposes anyone's IP to that site — and
+/// for hosts we can embed, the play button swaps in a real player.
+#[component]
+fn LinkCard(url: String) -> Element {
+    let session = use_context::<Signal<api::Session>>();
+    let mut card = use_signal(|| None::<shared::LinkPreview>);
+    let mut playing = use_signal(|| false);
+
+    use_future({
+        let url = url.clone();
+        move || {
+            let url = url.clone();
+            async move {
+                let cached = preview_cache().lock().ok().and_then(|c| c.get(&url).cloned());
+                let preview = match cached {
+                    Some(hit) => hit,
+                    None => {
+                        let fetched = api::link_preview(&session(), &url).await;
+                        if let Ok(mut cache) = preview_cache().lock() {
+                            cache.insert(url.clone(), fetched.clone());
+                        }
+                        fetched
+                    }
+                };
+                card.set(preview);
+            }
+        }
+    });
+
+    let Some(preview) = card() else {
+        return rsx! {};
+    };
+    let open_url = url.clone();
+    let playable = preview.embed.clone();
+    let height = preview.embed_height.max(120);
+
+    rsx! {
+        div { class: "link-card",
+            if playing() {
+                if let Some(embed) = playable.clone() {
+                    iframe {
+                        class: "link-card-embed",
+                        src: "{embed}",
+                        style: "height: {height}px",
+                        allow: "autoplay; encrypted-media; clipboard-write; picture-in-picture; fullscreen",
+                    }
+                }
+            } else if let Some(image) = preview.image.clone() {
+                div { class: "link-card-media",
+                    img { class: "link-card-img", src: "{image}", loading: "lazy" }
+                    if playable.is_some() {
+                        button {
+                            class: "link-card-play",
+                            title: "Play here",
+                            onclick: move |_| playing.set(true),
+                            Icon { name: "play", size: 26 }
+                        }
+                    }
+                }
+            }
+            div { class: "link-card-body",
+                if !preview.site_name.is_empty() {
+                    div { class: "link-card-site", "{preview.site_name}" }
+                }
+                if !preview.title.is_empty() {
+                    div {
+                        class: "link-card-title",
+                        title: "{open_url}",
+                        onclick: move |_| {
+                            let _ = open::that(&open_url);
+                        },
+                        "{preview.title}"
+                    }
+                }
+                if !preview.description.is_empty() {
+                    div { class: "link-card-desc", "{preview.description}" }
+                }
+                if playable.is_some() && preview.image.is_none() && !playing() {
+                    button {
+                        class: "link-card-playrow",
+                        onclick: move |_| playing.set(true),
+                        Icon { name: "play", size: 14 }
+                        span { "Play here" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 const REACTION_EMOJIS: &[&str] = &[
     "👍", "👎", "😂", "❤️", "🔥", "😮", "😭", "🎉", "💀", "👀", "🤡", "🫡",
 ];
@@ -2846,8 +2969,8 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
-    let hue = avatar_hue(msg.author.id);
     let (images, videos, files, text) = extract_media(&msg.content);
+    let links = preview_urls(&text);
     let me_id = session().user.id;
     let own = msg.author.id == me_id;
     let msg_id = msg.id;
@@ -3003,6 +3126,9 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                             }
                         }
                     }
+                }
+                for link in links {
+                    LinkCard { key: "{link}", url: link }
                 }
                 if !reaction_groups.is_empty() {
                     div { class: "reactions",
