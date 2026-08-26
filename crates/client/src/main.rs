@@ -6,6 +6,7 @@ mod md;
 use std::collections::{HashMap, HashSet};
 
 use dioxus::desktop::tao::window::UserAttentionType;
+use dioxus::html::HasFileData;
 use dioxus::desktop::{use_window, Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
 use futures_util::{SinkExt, StreamExt};
@@ -170,6 +171,7 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut draft = use_signal(String::new);
     let mut new_channel = use_signal(String::new);
     let mut uploading = use_signal(|| false);
+    let mut drag_over = use_signal(|| false);
     let mut gif_open = use_signal(|| false);
     let mut gif_query = use_signal(String::new);
     let mut gif_results = use_signal(Vec::<GifResult>::new);
@@ -368,6 +370,28 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
         });
     };
 
+    let upload_files = move |files: Vec<dioxus::html::FileData>| {
+        let Some(channel) = selected() else { return };
+        spawn(async move {
+            for file in files.into_iter().take(5) {
+                if file.size() > 50 * 1024 * 1024 {
+                    status.set("file too large (max 50 MB)".into());
+                    continue;
+                }
+                let Ok(bytes) = file.read_bytes().await else {
+                    status.set("could not read dropped file".into());
+                    continue;
+                };
+                uploading.set(true);
+                match api::upload(&session(), &file.name(), bytes.to_vec()).await {
+                    Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url }),
+                    Err(e) => status.set(e),
+                }
+                uploading.set(false);
+            }
+        });
+    };
+
     let search_gifs = move |query: String| {
         spawn(async move {
             gif_status.set("searching…".into());
@@ -418,7 +442,21 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     };
 
     rsx! {
-        div { class: "app",
+        div {
+            class: "app",
+            ondragover: move |e| {
+                e.prevent_default();
+                drag_over.set(true);
+            },
+            ondragleave: move |_| drag_over.set(false),
+            ondrop: move |e| {
+                e.prevent_default();
+                drag_over.set(false);
+                upload_files(e.files());
+            },
+            if drag_over() {
+                div { class: "drop-overlay", "Drop to upload to #{selected_name}" }
+            }
             div { class: "sidebar",
                 div { class: "sidebar-title", "NotDiscord" }
                 div { class: "channel-list",
