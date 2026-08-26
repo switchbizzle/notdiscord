@@ -7,6 +7,17 @@ html, body, #main {
     color: #dbdee1;
 }
 
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: #1a1b1e;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: #101113; background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
 button { font: inherit; cursor: pointer; border: none; color: inherit; }
 
 .icon { display: inline-flex; flex-shrink: 0; vertical-align: middle; }
