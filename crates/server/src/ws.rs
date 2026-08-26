@@ -213,7 +213,8 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             .execute(&state.db)
             .await?;
 
-            let mentioned_bot = user.id != state.bot.id && crate::bot::is_mention(&content);
+            let bot = state.bot_user();
+            let mentioned_bot = user.id != bot.id && crate::bot::is_mention(&content, &bot.username);
             let message = Message {
                 id: result.last_insert_rowid(),
                 channel_id,

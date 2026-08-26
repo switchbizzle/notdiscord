@@ -496,6 +496,7 @@ fn MainView(session: api::Session) -> Element {
     let mut persona_loaded = use_signal(|| false);
     let mut persona_draft = use_signal(String::new);
     let mut persona_message = use_signal(String::new);
+    let mut bot_name_draft = use_signal(String::new);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -1252,8 +1253,9 @@ fn MainView(session: api::Session) -> Element {
                                                 invite_loaded.set(true);
                                                 invite_message.set(String::new());
                                             }
-                                            if let Ok(setting) = api::get_bot_persona(&session()).await {
-                                                persona_draft.set(setting.persona);
+                                            if let Ok(settings) = api::get_bot_settings(&session()).await {
+                                                persona_draft.set(settings.persona);
+                                                bot_name_draft.set(settings.name);
                                                 persona_loaded.set(true);
                                                 persona_message.set(String::new());
                                             }
@@ -1452,7 +1454,61 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                                 if persona_loaded() {
-                                    label { "NotBot personality" }
+                                    label { "Bot name & avatar" }
+                                    div { class: "invite-row",
+                                        input {
+                                            class: "invite-input",
+                                            value: "{bot_name_draft}",
+                                            oninput: move |e| bot_name_draft.set(e.value()),
+                                        }
+                                        button {
+                                            class: "profile-btn",
+                                            title: "Pick an avatar image for the bot",
+                                            onclick: move |_| {
+                                                spawn(async move {
+                                                    let Some(file) = rfd::AsyncFileDialog::new()
+                                                        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                                        .pick_file()
+                                                        .await
+                                                    else {
+                                                        return;
+                                                    };
+                                                    let bytes = file.read().await;
+                                                    if bytes.len() > 8 * 1024 * 1024 {
+                                                        persona_message.set("avatar too large (max 8 MB)".into());
+                                                        return;
+                                                    }
+                                                    let uploaded = match api::upload(&session(), &file.file_name(), bytes).await {
+                                                        Ok(url) => url,
+                                                        Err(e) => return persona_message.set(e),
+                                                    };
+                                                    let update = shared::BotSettingsUpdate { avatar: Some(uploaded), ..Default::default() };
+                                                    match api::set_bot_settings(&session(), update).await {
+                                                        Ok(_) => persona_message.set("avatar updated".into()),
+                                                        Err(e) => persona_message.set(e),
+                                                    }
+                                                });
+                                            },
+                                            "Avatar"
+                                        }
+                                        button {
+                                            class: "profile-btn primary",
+                                            onclick: move |_| {
+                                                spawn(async move {
+                                                    let update = shared::BotSettingsUpdate { name: Some(bot_name_draft()), ..Default::default() };
+                                                    match api::set_bot_settings(&session(), update).await {
+                                                        Ok(settings) => {
+                                                            bot_name_draft.set(settings.name.clone());
+                                                            persona_message.set(format!("the bot now answers to @{}", settings.name));
+                                                        }
+                                                        Err(e) => persona_message.set(e),
+                                                    }
+                                                });
+                                            },
+                                            "Rename"
+                                        }
+                                    }
+                                    label { "Bot personality" }
                                     textarea {
                                         class: "persona-edit",
                                         rows: "5",
@@ -1467,9 +1523,10 @@ fn MainView(session: api::Session) -> Element {
                                             onclick: move |_| {
                                                 spawn(async move {
                                                     // Empty resets server-side to the default.
-                                                    match api::set_bot_persona(&session(), String::new()).await {
-                                                        Ok(setting) => {
-                                                            persona_draft.set(setting.persona);
+                                                    let update = shared::BotSettingsUpdate { persona: Some(String::new()), ..Default::default() };
+                                                    match api::set_bot_settings(&session(), update).await {
+                                                        Ok(settings) => {
+                                                            persona_draft.set(settings.persona);
                                                             persona_message.set("reset to the default personality".into());
                                                         }
                                                         Err(e) => persona_message.set(e),
@@ -1482,10 +1539,11 @@ fn MainView(session: api::Session) -> Element {
                                             class: "profile-btn primary",
                                             onclick: move |_| {
                                                 spawn(async move {
-                                                    match api::set_bot_persona(&session(), persona_draft()).await {
-                                                        Ok(setting) => {
-                                                            persona_draft.set(setting.persona);
-                                                            persona_message.set("saved — NotBot will act like this from its next reply".into());
+                                                    let update = shared::BotSettingsUpdate { persona: Some(persona_draft()), ..Default::default() };
+                                                    match api::set_bot_settings(&session(), update).await {
+                                                        Ok(settings) => {
+                                                            persona_draft.set(settings.persona);
+                                                            persona_message.set("saved — the bot will act like this from its next reply".into());
                                                         }
                                                         Err(e) => persona_message.set(e),
                                                     }
@@ -1495,7 +1553,7 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     }
                                     if persona_message().is_empty() {
-                                        div { class: "settings-hint", "how @NotBot talks — rewrite it however the crew votes" }
+                                        div { class: "settings-hint", "how the bot talks — rewrite it however the crew votes" }
                                     } else {
                                         div { class: "settings-hint pw-good", "{persona_message}" }
                                     }

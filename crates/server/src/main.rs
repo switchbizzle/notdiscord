@@ -29,8 +29,14 @@ pub struct AppState {
     pub presence: Mutex<HashMap<i64, u32>>,
     /// user id -> (voice channel id, user, sharing screen, camera on) for everyone in voice.
     pub voice: Mutex<HashMap<i64, (i64, shared::User, bool, bool)>>,
-    /// The resident bot's user account.
-    pub bot: shared::User,
+    /// The resident bot's user account (admins can rename it / set an avatar).
+    pub bot: Mutex<shared::User>,
+}
+
+impl AppState {
+    pub fn bot_user(&self) -> shared::User {
+        self.bot.lock().unwrap().clone()
+    }
 }
 
 impl AppState {
@@ -184,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
         events,
         presence: Mutex::new(HashMap::new()),
         voice: Mutex::new(HashMap::new()),
-        bot: bot_user,
+        bot: Mutex::new(bot_user),
     });
 
     // NotBot announces new client releases in chat.
@@ -235,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
         .route("/api/server/storage", get(routes::get_storage).post(routes::set_storage_cap))
         .route("/api/server/invite", get(routes::get_invite).post(routes::set_invite))
-        .route("/api/server/bot", get(routes::get_bot_persona).post(routes::set_bot_persona))
+        .route("/api/server/bot", get(routes::get_bot_settings).post(routes::set_bot_settings))
         .route("/api/server/icon", post(routes::set_server_icon))
         .route("/api/tags", get(routes::list_tags).post(routes::create_tag))
         .route("/api/tags/{id}", axum::routing::delete(routes::delete_tag))

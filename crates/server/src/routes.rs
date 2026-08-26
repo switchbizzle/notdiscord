@@ -183,7 +183,7 @@ pub async fn list_users(
             let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) };
             let banned: i64 = r.get(4);
             // The bot never sleeps.
-            let is_online = online.contains(&user.id) || user.id == state.bot.id;
+            let is_online = online.contains(&user.id) || user.id == state.bot_user().id;
             let tag_ids = tag_map.remove(&user.id).unwrap_or_default();
             UserStatus { user, online: is_online, banned: banned != 0, tag_ids }
         })
@@ -761,16 +761,21 @@ pub async fn upload(
         ));
     }
 
-    let name = sanitize_filename(&q.name);
+    let url = save_bytes_to_uploads(&q.name, &body).await.map_err(internal)?;
+    Ok(Json(UploadResponse { url }))
+}
+
+/// Store bytes in the uploads area; returns the server-relative /files/ URL.
+pub(crate) async fn save_bytes_to_uploads(name: &str, bytes: &[u8]) -> anyhow::Result<String> {
+    let name = sanitize_filename(name);
     let mut id = [0u8; 16];
-    getrandom::fill(&mut id).expect("os rng");
+    getrandom::fill(&mut id).map_err(|e| anyhow::anyhow!("os rng: {e}"))?;
     let id = hex::encode(id);
 
     let dir = crate::uploads_dir().join(&id);
-    tokio::fs::create_dir_all(&dir).await.map_err(internal)?;
-    tokio::fs::write(dir.join(&name), &body).await.map_err(internal)?;
-
-    Ok(Json(UploadResponse { url: format!("/files/{id}/{name}") }))
+    tokio::fs::create_dir_all(&dir).await?;
+    tokio::fs::write(dir.join(&name), bytes).await?;
+    Ok(format!("/files/{id}/{name}"))
 }
 
 #[derive(Deserialize)]
@@ -1095,38 +1100,90 @@ pub async fn set_invite(
     Ok(Json(shared::InviteSetting { code }))
 }
 
-pub async fn get_bot_persona(
+pub async fn get_bot_settings(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
-) -> ApiResult<Json<shared::BotPersonaSetting>> {
+) -> ApiResult<Json<shared::BotSettings>> {
     if user.role != "admin" {
         return Err(err(StatusCode::FORBIDDEN, "admins only"));
     }
-    Ok(Json(shared::BotPersonaSetting { persona: crate::bot::persona(&state.db).await }))
+    let bot = state.bot_user();
+    Ok(Json(shared::BotSettings {
+        persona: crate::bot::persona(&state.db).await,
+        name: bot.username,
+        avatar: bot.avatar,
+    }))
 }
 
-pub async fn set_bot_persona(
+pub async fn set_bot_settings(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
-    Json(req): Json<shared::BotPersonaSetting>,
-) -> ApiResult<Json<shared::BotPersonaSetting>> {
+    Json(req): Json<shared::BotSettingsUpdate>,
+) -> ApiResult<Json<shared::BotSettings>> {
     if user.role != "admin" {
         return Err(err(StatusCode::FORBIDDEN, "admins only"));
     }
-    let persona = req.persona.trim().to_owned();
-    if persona.len() > 4000 {
-        return Err(err(StatusCode::BAD_REQUEST, "personality must be at most 4000 characters"));
+
+    if let Some(persona) = &req.persona {
+        let persona = persona.trim();
+        if persona.len() > 4000 {
+            return Err(err(StatusCode::BAD_REQUEST, "personality must be at most 4000 characters"));
+        }
+        // Empty resets to the built-in default.
+        sqlx::query(
+            "INSERT INTO server_meta (key, value) VALUES ('bot_persona', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(persona)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
     }
-    // Empty resets to the built-in default.
-    sqlx::query(
-        "INSERT INTO server_meta (key, value) VALUES ('bot_persona', ?) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(&persona)
-    .execute(&state.db)
-    .await
-    .map_err(internal)?;
-    Ok(Json(shared::BotPersonaSetting { persona: crate::bot::persona(&state.db).await }))
+
+    let mut identity_changed = false;
+    let bot_id = state.bot_user().id;
+
+    if let Some(name) = &req.name {
+        let name = name.trim();
+        if name.len() < 2 || name.len() > 32 {
+            return Err(err(StatusCode::BAD_REQUEST, "bot name must be 2-32 characters"));
+        }
+        let result = sqlx::query("UPDATE users SET username = ? WHERE id = ?")
+            .bind(name)
+            .bind(bot_id)
+            .execute(&state.db)
+            .await;
+        match result {
+            Ok(_) => identity_changed = true,
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                return Err(err(StatusCode::CONFLICT, "someone already has that name"));
+            }
+            Err(e) => return Err(internal(e)),
+        }
+    }
+
+    if let Some(avatar) = &req.avatar {
+        let ok = avatar.len() < 500
+            && (avatar.starts_with("http://") || avatar.starts_with("https://") || avatar.starts_with("/files/"));
+        if !ok {
+            return Err(err(StatusCode::BAD_REQUEST, "invalid avatar url"));
+        }
+        sqlx::query("UPDATE users SET avatar = ? WHERE id = ?")
+            .bind(avatar)
+            .bind(bot_id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+        identity_changed = true;
+    }
+
+    if identity_changed {
+        let updated = load_user(&state, bot_id).await?;
+        *state.bot.lock().unwrap() = updated.clone();
+        state.broadcast(ServerEvent::UserUpdated { user: updated });
+    }
+
+    get_bot_settings(State(state), AuthUser(user)).await
 }
 
 /// Public: release notes, newest first (uploaded by the release script).

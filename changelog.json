@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.32.0",
+    "date": "2026-08-26",
+    "changes": [
+      "The bot can draw! Ask it to draw/generate anything and it posts a real image (~4¢ a picture on the server's OpenRouter key)",
+      "The bot can see: post an image and ask about it",
+      "The bot can search the web for current stuff — news, charts, versions, scores",
+      "Admins can now rename the bot and give it an avatar (Settings → Server)"
+    ]
+  },
+  {
     "version": "0.31.0",
     "date": "2026-08-26",
     "changes": [

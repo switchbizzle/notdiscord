@@ -276,11 +276,24 @@ pub struct InviteSetting {
     pub code: String,
 }
 
-/// The bot's personality — the editable part of its system prompt
-/// (GET/POST /api/server/bot, admin only).
+/// The bot's identity and personality (GET /api/server/bot, admin only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BotPersonaSetting {
+pub struct BotSettings {
     pub persona: String,
+    pub name: String,
+    #[serde(default)]
+    pub avatar: Option<String>,
+}
+
+/// Partial update for POST /api/server/bot — only Some fields change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BotSettingsUpdate {
+    #[serde(default)]
+    pub persona: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 /// Upload storage usage and cap (GET /api/server/storage).

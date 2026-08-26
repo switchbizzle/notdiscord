@@ -51,49 +51,89 @@ fn model() -> String {
         .unwrap_or_else(|| "google/gemini-2.5-flash-lite".into())
 }
 
-/// Find or create the bot account. Its password hash is unusable garbage, so
-/// nobody can ever log in as it.
+fn image_model() -> String {
+    std::env::var("NOTDISCORD_BOT_IMAGE_MODEL")
+        .ok()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "google/gemini-2.5-flash-image".into())
+}
+
+/// The instance's public base URL (e.g. https://chat.example.com), needed to
+/// post absolute links to generated images. Optional; drawing is disabled
+/// without it.
+fn public_url() -> Option<String> {
+    std::env::var("NOTDISCORD_PUBLIC_URL")
+        .ok()
+        .map(|u| u.trim().trim_end_matches('/').to_owned())
+        .filter(|u| !u.is_empty())
+}
+
+/// Find or create the bot account. Tracked by id in server_meta (it can be
+/// renamed); its password hash is unusable garbage, so nobody can ever log
+/// in as it.
 pub async fn ensure_bot_user(db: &sqlx::SqlitePool) -> anyhow::Result<User> {
-    if let Some(row) =
+    let load = |row: sqlx::sqlite::SqliteRow| User {
+        id: row.get(0),
+        username: row.get(1),
+        avatar: row.get(2),
+        role: row.get(3),
+    };
+
+    let saved_id: Option<i64> = sqlx::query_scalar("SELECT value FROM server_meta WHERE key = 'bot_user_id'")
+        .fetch_optional(db)
+        .await?
+        .and_then(|v: String| v.parse().ok());
+    if let Some(id) = saved_id {
+        if let Some(row) = sqlx::query("SELECT id, username, avatar, role FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(db)
+            .await?
+        {
+            return Ok(load(row));
+        }
+    }
+
+    // Older installs tracked the bot by name only.
+    let user = if let Some(row) =
         sqlx::query("SELECT id, username, avatar, role FROM users WHERE username = ?")
             .bind(BOT_NAME)
             .fetch_optional(db)
             .await?
     {
-        return Ok(User {
-            id: row.get(0),
-            username: row.get(1),
-            avatar: row.get(2),
-            role: row.get(3),
-        });
-    }
-    let result = sqlx::query(
-        "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, '!bot', 'member', ?)",
+        load(row)
+    } else {
+        let result = sqlx::query(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, '!bot', 'member', ?)",
+        )
+        .bind(BOT_NAME)
+        .bind(now_ms())
+        .execute(db)
+        .await?;
+        tracing::info!("created bot user {BOT_NAME}");
+        User { id: result.last_insert_rowid(), username: BOT_NAME.into(), avatar: None, role: "member".into() }
+    };
+    sqlx::query(
+        "INSERT INTO server_meta (key, value) VALUES ('bot_user_id', ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
-    .bind(BOT_NAME)
-    .bind(now_ms())
+    .bind(user.id.to_string())
     .execute(db)
     .await?;
-    tracing::info!("created bot user {BOT_NAME}");
-    Ok(User {
-        id: result.last_insert_rowid(),
-        username: BOT_NAME.into(),
-        avatar: None,
-        role: "member".into(),
-    })
+    Ok(user)
 }
 
 /// Post a message as the bot (DM-scoped when the channel is a DM). Long
 /// replies are split into <=4000-char messages to fit the normal limit.
 pub async fn post_message(state: &SharedState, channel_id: i64, content: &str) -> anyhow::Result<()> {
     let recipients = dm_recipients(&state.db, channel_id).await?;
+    let bot = state.bot_user();
     for chunk in split_chunks(content.trim(), 4000) {
         let created_at = now_ms();
         let result = sqlx::query(
             "INSERT INTO messages (channel_id, author_id, content, created_at) VALUES (?, ?, ?, ?)",
         )
         .bind(channel_id)
-        .bind(state.bot.id)
+        .bind(bot.id)
         .bind(&chunk)
         .bind(created_at)
         .execute(&state.db)
@@ -102,7 +142,7 @@ pub async fn post_message(state: &SharedState, channel_id: i64, content: &str) -
         let message = Message {
             id: result.last_insert_rowid(),
             channel_id,
-            author: state.bot.clone(),
+            author: bot.clone(),
             content: chunk,
             created_at,
             edited_at: None,
@@ -137,9 +177,9 @@ fn split_chunks(text: &str, max: usize) -> Vec<String> {
     out
 }
 
-/// Does this message text address the bot?
-pub fn is_mention(content: &str) -> bool {
-    content.to_lowercase().contains(&format!("@{}", BOT_NAME.to_lowercase()))
+/// Does this message text address the bot (by its current name)?
+pub fn is_mention(content: &str, bot_name: &str) -> bool {
+    content.to_lowercase().contains(&format!("@{}", bot_name.to_lowercase()))
 }
 
 // ---------- Release announcements ----------
@@ -316,30 +356,26 @@ fn join_transcript(entries: &[(i64, String)]) -> String {
     entries.iter().map(|(_, line)| line.as_str()).collect()
 }
 
-async fn call_openrouter(key: &str, system: String, user: String, max_tokens: u32) -> anyhow::Result<String> {
-    let body = serde_json::json!({
-        "model": model(),
-        "max_tokens": max_tokens,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user },
-        ],
-    });
+/// Raw chat-completions call; returns the whole response JSON.
+async fn call_raw(key: &str, body: serde_json::Value) -> anyhow::Result<serde_json::Value> {
     let response: serde_json::Value = reqwest::Client::new()
         .post("https://openrouter.ai/api/v1/chat/completions")
         .bearer_auth(key)
         .header("HTTP-Referer", "https://notdiscord.switchbhost.com")
         .header("X-Title", "NotDiscord")
         .json(&body)
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(120))
         .send()
         .await?
         .json()
         .await?;
-
     if let Some(err) = response["error"]["message"].as_str() {
         anyhow::bail!("openrouter: {err}");
     }
+    Ok(response)
+}
+
+fn response_text(response: &serde_json::Value) -> anyhow::Result<String> {
     let text = response["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_default()
@@ -349,6 +385,22 @@ async fn call_openrouter(key: &str, system: String, user: String, max_tokens: u3
         anyhow::bail!("openrouter returned an empty reply: {response}");
     }
     Ok(text)
+}
+
+async fn call_openrouter(key: &str, system: String, user: String, max_tokens: u32) -> anyhow::Result<String> {
+    let response = call_raw(
+        key,
+        serde_json::json!({
+            "model": model(),
+            "max_tokens": max_tokens,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ],
+        }),
+    )
+    .await?;
+    response_text(&response)
 }
 
 async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<String> {
@@ -379,8 +431,16 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
             memory.notes
         )
     };
-    let system = format!(
-        "You are {BOT_NAME}, the resident bot of \"{server_name}\", a small self-hosted \
+    let draw_ability = if public_url().is_some() {
+        "Call generate_image when they ask you to draw, generate, or edit a picture."
+    } else {
+        ""
+    };
+    let bot_name = state.bot_user().username;
+    // The base prompt is reused by the web-search follow-up; the ability
+    // markers are only in the first call (otherwise the model re-emits them).
+    let base_system = format!(
+        "You are {bot_name}, the resident bot of \"{server_name}\", a small self-hosted \
          chat server (NotDiscord — a from-scratch Discord clone in Rust) used by a group of \
          friends. You were summoned with an @mention; reply to the person who mentioned you.\n\
          Your personality (set by the server admins — stay in it):\n{}\n\
@@ -392,24 +452,195 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
         persona(&state.db).await,
         recent_changelog_text().await,
     );
+    let system = format!(
+        "{base_system}\n\
+         Tools: your training data is stale — call web_search for anything that may have \
+         changed since then (latest versions, news, charts, scores, prices, schedules, \
+         'today'/'now'). {draw_ability}\
+         Recent images posted in the chat may be attached to this request — you can see them."
+    );
 
-    let reply = call_openrouter(
-        &key,
-        system,
-        format!(
-            "Chat transcript (oldest first):\n{transcript}\n\
-             Write {BOT_NAME}'s reply to the latest @{BOT_NAME} mention. \
-             Output only the reply text."
-        ),
-        700,
-    )
-    .await?;
+    // Vision: hand the model the newest few images posted in the channel.
+    let image_urls = recent_image_urls(&entries, 3);
+    let user_text = format!(
+        "Chat transcript (oldest first):\n{transcript}\n\
+         Write {bot_name}'s reply to the latest @{bot_name} mention. \
+         Output only the reply text."
+    );
+    let mut content_parts = vec![serde_json::json!({ "type": "text", "text": user_text.clone() })];
+    for url in &image_urls {
+        content_parts.push(serde_json::json!({ "type": "image_url", "image_url": { "url": url } }));
+    }
+
+    let mut tools = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the live web. Use for anything that may have changed since your training data: latest versions, news, charts, scores, prices, schedules.",
+            "parameters": {
+                "type": "object",
+                "properties": { "query": { "type": "string", "description": "the search query" } },
+                "required": ["query"],
+            },
+        },
+    })];
+    if public_url().is_some() {
+        tools.push(serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "generate_image",
+                "description": "Generate an image and post it in the chat. Use when asked to draw, generate, or edit a picture.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "prompt": { "type": "string", "description": "detailed English image prompt" } },
+                    "required": ["prompt"],
+                },
+            },
+        }));
+    }
+
+    let request = |parts: Vec<serde_json::Value>| {
+        serde_json::json!({
+            "model": model(),
+            "max_tokens": 700,
+            "tools": tools,
+            "messages": [
+                { "role": "system", "content": system.clone() },
+                { "role": "user", "content": parts },
+            ],
+        })
+    };
+    let response = match call_raw(&key, request(content_parts)).await {
+        Ok(response) => response,
+        // A dead or unfetchable image shouldn't kill the reply — retry blind.
+        Err(_) if !image_urls.is_empty() => {
+            let text_only = vec![serde_json::json!({ "type": "text", "text": user_text })];
+            call_raw(&key, request(text_only)).await?
+        }
+        Err(e) => return Err(e),
+    };
 
     // Housekeeping: fold older transcript into the notes once the raw part
     // is heavy. Runs after the reply is generated, off the hot path.
     maybe_compact(state.clone(), channel_id);
 
-    Ok(reply)
+    // Tool calls take priority over any text. Small models sometimes invent
+    // tool names ("run"), so dispatch by arguments when the name is unknown —
+    // a tool call must never fall through to the empty-text error path.
+    let tool_call = &response["choices"][0]["message"]["tool_calls"][0]["function"];
+    if let Some(name) = tool_call["name"].as_str() {
+        let args: serde_json::Value =
+            serde_json::from_str(tool_call["arguments"].as_str().unwrap_or("{}")).unwrap_or_default();
+        let prompt = args["prompt"].as_str().unwrap_or_default();
+        let query = args["query"].as_str().unwrap_or_default();
+        if name == "generate_image" || (!prompt.is_empty() && name != "web_search") {
+            let prompt = if prompt.is_empty() { query } else { prompt };
+            return draw_image(state, &key, prompt).await;
+        }
+        let query = if query.is_empty() { "the user's latest question" } else { query };
+        return web_answer(&key, base_system, &transcript, &bot_name, query).await;
+    }
+
+    response_text(&response)
+}
+
+/// Bare image URLs in the newest messages, newest last, capped at `max`.
+fn recent_image_urls(entries: &[(i64, String)], max: usize) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    for (_, line) in entries.iter().rev() {
+        for word in line.split_whitespace() {
+            let lower = word.to_lowercase();
+            let is_image = (word.starts_with("http://") || word.starts_with("https://"))
+                && ["png", "jpg", "jpeg", "gif", "webp"].iter().any(|e| lower.ends_with(&format!(".{e}")));
+            // OpenRouter can't fetch private hosts; don't hand it those.
+            let is_local = lower.contains("//127.") || lower.contains("//localhost") || lower.contains("//192.168.") || lower.contains("//10.");
+            if is_image && !is_local {
+                urls.push(word.to_owned());
+            }
+        }
+        if urls.len() >= max {
+            break;
+        }
+    }
+    urls.truncate(max);
+    urls.reverse();
+    urls
+}
+
+/// Generate an image, store it with the normal uploads, and hand back a chat
+/// message embedding it.
+async fn draw_image(state: &SharedState, key: &str, prompt: &str) -> anyhow::Result<String> {
+    let Some(base) = public_url() else {
+        return Ok("I'd love to draw that, but the server doesn't know its public URL yet \
+                   (set NOTDISCORD_PUBLIC_URL) so I can't post images (◞‸◟)"
+            .into());
+    };
+
+    let response = call_raw(
+        key,
+        serde_json::json!({
+            "model": image_model(),
+            "modalities": ["image", "text"],
+            "messages": [{ "role": "user", "content": prompt }],
+        }),
+    )
+    .await?;
+
+    let data_url = response["choices"][0]["message"]["images"][0]["image_url"]["url"]
+        .as_str()
+        .unwrap_or_default();
+    let Some((header, b64)) = data_url.split_once(",") else {
+        anyhow::bail!("image model returned no image: {response}");
+    };
+    let ext = if header.contains("jpeg") { "jpg" } else { "png" };
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim())?;
+
+    if crate::routes::uploads_size().await + bytes.len() as i64
+        > crate::routes::storage_cap_bytes(state).await
+    {
+        return Ok("I drew it, but the server storage is full so I can't post it 😭".into());
+    }
+    let path = crate::routes::save_bytes_to_uploads(&format!("notbot.{ext}"), &bytes).await?;
+
+    // Any text the image model added becomes a short caption.
+    let caption: String = response["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(200)
+        .collect();
+    Ok(format!("{base}{path}\n{caption}").trim().to_owned())
+}
+
+/// Re-run the question with OpenRouter's web-search plugin enabled.
+async fn web_answer(
+    key: &str,
+    system: String,
+    transcript: &str,
+    bot_name: &str,
+    query: &str,
+) -> anyhow::Result<String> {
+    let response = call_raw(
+        key,
+        serde_json::json!({
+            "model": model(),
+            "max_tokens": 700,
+            "plugins": [{ "id": "web", "max_results": 5 }],
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": format!(
+                    "Chat transcript (oldest first):\n{transcript}\n\
+                     You searched the web for: {query}\n\
+                     Results are attached. Write {bot_name}'s reply to the latest \
+                     @{bot_name} mention using them. Output only the reply text."
+                ) },
+            ],
+        }),
+    )
+    .await?;
+    response_text(&response)
 }
 
 /// If the raw-transcript backlog exceeds the threshold, summarize everything
