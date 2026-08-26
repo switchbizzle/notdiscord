@@ -61,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/login", post(routes::login))
         .route("/api/me", get(routes::me))
         .route("/api/users", get(routes::list_users))
+        .route("/api/users/{id}/profile", get(routes::get_profile))
+        .route("/api/profile", post(routes::update_profile))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
         .route(

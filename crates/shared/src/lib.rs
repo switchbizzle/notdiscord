@@ -9,6 +9,25 @@ use serde::{Deserialize, Serialize};
 pub struct User {
     pub id: i64,
     pub username: String,
+    /// URL of the user's avatar image, if set.
+    #[serde(default)]
+    pub avatar: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    pub user: User,
+    pub bio: String,
+    pub created_at: i64,
+}
+
+/// Fields are applied only when Some; None leaves the current value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProfileRequest {
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +153,8 @@ pub enum ServerEvent {
     MessageCreated { message: Message },
     ChannelCreated { channel: Channel },
     PresenceChanged { user: User, online: bool },
+    /// A user's profile (avatar/name) changed.
+    UserUpdated { user: User },
     Typing { channel_id: i64, user: User },
     ReactionAdded { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },

@@ -1,7 +1,7 @@
 //! REST calls to the NotDiscord server.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, RegisterRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
+use shared::{ApiError, AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, Profile, RegisterRequest, UpdateProfileRequest, UploadResponse, User, UserStatus, VoiceTokenResponse};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
@@ -149,6 +149,21 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
         path.push_str(&format!("&before={before}"));
     }
     get(session, path).await
+}
+
+pub async fn profile(session: &Session, user_id: i64) -> Result<Profile, String> {
+    get(session, format!("users/{user_id}/profile")).await
+}
+
+pub async fn update_profile(session: &Session, req: UpdateProfileRequest) -> Result<Profile, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/profile", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach server: {e}"))?;
+    handle(resp).await
 }
 
 pub async fn voice_token(session: &Session, channel_id: i64) -> Result<VoiceTokenResponse, String> {

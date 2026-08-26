@@ -14,7 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use shared::{Channel, ClientEvent, GifResult, Message, ServerEvent, UserStatus};
+use shared::{Channel, ClientEvent, GifResult, Message, Profile, ServerEvent, UpdateProfileRequest, User, UserStatus};
 
 fn main() {
     let window = WindowBuilder::new()
@@ -156,9 +156,10 @@ const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 
 #[component]
 fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -> Element {
-    let session = use_signal(move || session);
+    let mut session = use_signal(move || session);
     use_context_provider(|| session);
     let mut lightbox = use_context_provider(|| Signal::new(None::<String>));
+    let mut react_target = use_context_provider(|| Signal::new(None::<i64>));
     let mut channels = use_signal(Vec::<Channel>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
@@ -181,6 +182,9 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
     let mut status = use_signal(|| "connecting…".to_string());
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status));
+    let mut profile_card = use_signal(|| None::<Profile>);
+    let mut bio_draft = use_signal(String::new);
+    let mut editing_bio = use_signal(|| false);
     let mut audio_settings_open = use_signal(|| false);
     let mut audio_settings = use_signal(api::load_settings);
     let mut input_devices = use_signal(Vec::<String>::new);
@@ -328,6 +332,26 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                             ServerEvent::ChannelCreated { channel } => {
                                 if !channels().iter().any(|c| c.id == channel.id) {
                                     channels.write().push(channel);
+                                }
+                            }
+                            ServerEvent::UserUpdated { user } => {
+                                {
+                                    let mut list = members.write();
+                                    if let Some(m) = list.iter_mut().find(|m| m.user.id == user.id) {
+                                        m.user = user.clone();
+                                    }
+                                }
+                                {
+                                    let mut msgs = messages.write();
+                                    for m in msgs.iter_mut().filter(|m| m.author.id == user.id) {
+                                        m.author = user.clone();
+                                    }
+                                }
+                                if user.id == session().user.id {
+                                    let mut s = session();
+                                    s.user = user;
+                                    api::save_session(&s);
+                                    session.set(s);
                                 }
                             }
                             ServerEvent::PresenceChanged { user, online } => {
@@ -518,6 +542,95 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
             if drag_over() {
                 div { class: "drop-overlay", "Drop to upload to #{selected_name}" }
             }
+            if let Some(profile) = profile_card() {
+                div {
+                    class: "profile-overlay",
+                    onclick: move |_| {
+                        profile_card.set(None);
+                        editing_bio.set(false);
+                    },
+                    div {
+                        class: "profile-card",
+                        onclick: move |e| e.stop_propagation(),
+                        UserAvatar { user: profile.user.clone(), class: "profile-avatar" }
+                        div { class: "profile-name",
+                            style: "color: hsl({avatar_hue(profile.user.id)}, 65%, 68%)",
+                            "{profile.user.username}"
+                        }
+                        div { class: "profile-joined", "Member since {format_date(profile.created_at)}" }
+                        if editing_bio() {
+                            textarea {
+                                class: "profile-bio-edit",
+                                rows: "3",
+                                value: "{bio_draft}",
+                                oninput: move |e| bio_draft.set(e.value()),
+                            }
+                            button {
+                                class: "profile-btn primary",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let req = UpdateProfileRequest { avatar: None, bio: Some(bio_draft()) };
+                                        match api::update_profile(&session(), req).await {
+                                            Ok(p) => {
+                                                profile_card.set(Some(p));
+                                                editing_bio.set(false);
+                                            }
+                                            Err(e) => status.set(e),
+                                        }
+                                    });
+                                },
+                                "Save"
+                            }
+                        } else {
+                            if !profile.bio.is_empty() {
+                                div { class: "profile-bio", "{profile.bio}" }
+                            }
+                            if profile.user.id == session().user.id {
+                                div { class: "profile-actions",
+                                    button {
+                                        class: "profile-btn",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                let Some(file) = rfd::AsyncFileDialog::new()
+                                                    .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                                    .pick_file()
+                                                    .await
+                                                else {
+                                                    return;
+                                                };
+                                                let bytes = file.read().await;
+                                                if bytes.len() > 8 * 1024 * 1024 {
+                                                    status.set("avatar too large (max 8 MB)".into());
+                                                    return;
+                                                }
+                                                match api::upload(&session(), &file.file_name(), bytes).await {
+                                                    Ok(url) => {
+                                                        let req = UpdateProfileRequest { avatar: Some(url), bio: None };
+                                                        match api::update_profile(&session(), req).await {
+                                                            Ok(p) => profile_card.set(Some(p)),
+                                                            Err(e) => status.set(e),
+                                                        }
+                                                    }
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        },
+                                        "Change picture"
+                                    }
+                                    button {
+                                        class: "profile-btn",
+                                        onclick: move |_| {
+                                            bio_draft.set(profile_card().map(|p| p.bio).unwrap_or_default());
+                                            editing_bio.set(true);
+                                        },
+                                        "Edit bio"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(url) = lightbox() {
                 div {
                     class: "lightbox",
@@ -689,10 +802,13 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 div {
                                     key: "{p.identity}",
                                     class: if p.speaking { "voice-user speaking" } else { "voice-user" },
-                                    span {
-                                        class: "voice-avatar",
-                                        style: "background: hsl({voice_hue(&p.identity)}, 55%, 42%)",
-                                        {initial(&p.name)}
+                                    {
+                                        let uid = p.identity.strip_prefix("user-").and_then(|s| s.parse::<i64>().ok());
+                                        let user = uid
+                                            .and_then(|id| members().into_iter().find(|m| m.user.id == id))
+                                            .map(|m| m.user)
+                                            .unwrap_or(User { id: uid.unwrap_or(0), username: p.name.clone(), avatar: None });
+                                        rsx! { UserAvatar { user, class: "voice-avatar" } }
                                     }
                                     span { class: "voice-name", "{p.name}" }
                                     if p.is_me && voice_status().muted {
@@ -750,9 +866,21 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     },
                 }
                 div { class: "me",
-                    div { class: "me-info",
-                        span { class: "me-name", "{session().user.username}" }
-                        span { class: "me-status", "{status}" }
+                    div {
+                        class: "me-info",
+                        onclick: move |_| {
+                            spawn(async move {
+                                match api::profile(&session(), session().user.id).await {
+                                    Ok(p) => profile_card.set(Some(p)),
+                                    Err(e) => status.set(e),
+                                }
+                            });
+                        },
+                        UserAvatar { user: session().user.clone(), class: "member-avatar" }
+                        div { class: "me-text",
+                            span { class: "me-name", "{session().user.username}" }
+                            span { class: "me-status", "{status}" }
+                        }
                     }
                     button { class: "logout", title: "Log out", onclick: logout, "⏻" }
                 }
@@ -808,6 +936,29 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                     },
                                 }
                             }
+                        }
+                    }
+                }
+                if let Some(target) = react_target() {
+                    div { class: "react-palette",
+                        span { class: "react-palette-label", "React:" }
+                        for emoji in REACTION_EMOJIS {
+                            button {
+                                key: "{emoji}",
+                                onclick: move |_| {
+                                    ws.send(ClientEvent::ToggleReaction {
+                                        message_id: target,
+                                        emoji: emoji.to_string(),
+                                    });
+                                    react_target.set(None);
+                                },
+                                "{emoji}"
+                            }
+                        }
+                        button {
+                            class: "react-palette-close",
+                            onclick: move |_| react_target.set(None),
+                            "✕"
                         }
                     }
                 }
@@ -881,11 +1032,18 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                     div {
                         key: "{member.user.id}",
                         class: if member.online { "member online" } else { "member" },
-                        span {
-                            class: "member-avatar",
-                            style: "background: hsl({avatar_hue(member.user.id)}, 55%, 42%)",
-                            {initial(&member.user.username)}
-                        }
+                        onclick: {
+                            let user_id = member.user.id;
+                            move |_| {
+                                spawn(async move {
+                                    match api::profile(&session(), user_id).await {
+                                        Ok(p) => profile_card.set(Some(p)),
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            }
+                        },
+                        UserAvatar { user: member.user.clone(), class: "member-avatar" }
                         span { class: "member-name", "{member.user.username}" }
                         span { class: "member-dot" }
                     }
@@ -945,7 +1103,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut lightbox = use_context::<Signal<Option<String>>>();
-    let mut palette_open = use_signal(|| false);
+    let mut react_target = use_context::<Signal<Option<i64>>>();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
@@ -973,7 +1131,9 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
             div { class: "msg-actions",
                 button {
                     title: "React",
-                    onclick: move |_| palette_open.set(!palette_open()),
+                    onclick: move |_| {
+                        react_target.set(if react_target() == Some(msg_id) { None } else { Some(msg_id) });
+                    },
                     "🙂"
                 }
                 if own {
@@ -992,31 +1152,10 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                     }
                 }
             }
-            if palette_open() {
-                div { class: "emoji-palette",
-                    for emoji in REACTION_EMOJIS {
-                        button {
-                            key: "{emoji}",
-                            onclick: move |_| {
-                                ws.send(ClientEvent::ToggleReaction {
-                                    message_id: msg_id,
-                                    emoji: emoji.to_string(),
-                                });
-                                palette_open.set(false);
-                            },
-                            "{emoji}"
-                        }
-                    }
-                }
-            }
             if compact {
                 div { class: "msg-gutter" }
             } else {
-                div {
-                    class: "avatar",
-                    style: "background: hsl({hue}, 55%, 42%)",
-                    {initial(&msg.author.username)}
-                }
+                UserAvatar { user: msg.author.clone(), class: "avatar" }
             }
             div { class: "msg-content",
                 if !compact {
@@ -1112,14 +1251,22 @@ fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
 }
 
-/// Voice identities are "user-{id}"; reuse the same avatar color.
-fn voice_hue(identity: &str) -> i64 {
-    identity
-        .strip_prefix("user-")
-        .and_then(|id| id.parse::<i64>().ok())
-        .map(avatar_hue)
-        .unwrap_or(200)
+/// Avatar image if the user has one, else a colored initial circle.
+/// `class` supplies the size (avatar / member-avatar / voice-avatar / profile-avatar).
+#[component]
+fn UserAvatar(user: User, class: String) -> Element {
+    match user.avatar.clone() {
+        Some(url) => rsx! { img { class: "{class} avatar-img", src: "{url}" } },
+        None => rsx! {
+            span {
+                class: "{class}",
+                style: "background: hsl({avatar_hue(user.id)}, 55%, 42%)",
+                {initial(&user.username)}
+            }
+        },
+    }
 }
+
 
 #[cfg(windows)]
 fn play_notification_sound() {
@@ -1135,6 +1282,12 @@ fn play_notification_sound() {}
 
 fn initial(username: &str) -> String {
     username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+}
+
+fn format_date(unix_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(unix_ms)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%b %-d, %Y").to_string())
+        .unwrap_or_default()
 }
 
 fn format_time(unix_ms: i64) -> String {

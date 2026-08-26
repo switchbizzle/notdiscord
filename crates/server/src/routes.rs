@@ -7,8 +7,9 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use shared::{
-    AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message,
-    RegisterRequest, ServerEvent, UploadResponse, User, UserStatus, VoiceTokenResponse,
+    AuthResponse, Channel, CreateChannelRequest, GifResult, LoginRequest, Message, Profile,
+    RegisterRequest, ServerEvent, UpdateProfileRequest, UploadResponse, User, UserStatus,
+    VoiceTokenResponse,
 };
 
 use crate::auth::{self, err, internal, ApiResult, AuthUser};
@@ -50,14 +51,14 @@ pub async fn register(
     };
 
     let token = create_session(&state, user_id).await?;
-    Ok(Json(AuthResponse { token, user: User { id: user_id, username } }))
+    Ok(Json(AuthResponse { token, user: User { id: user_id, username, avatar: None } }))
 }
 
 pub async fn login(
     State(state): State<SharedState>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
-    let row = sqlx::query("SELECT id, username, password_hash FROM users WHERE username = ?")
+    let row = sqlx::query("SELECT id, username, password_hash, avatar FROM users WHERE username = ?")
         .bind(req.username.trim())
         .fetch_optional(&state.db)
         .await
@@ -67,13 +68,14 @@ pub async fn login(
         return Err(err(StatusCode::UNAUTHORIZED, "invalid username or password"));
     };
     let (id, username, hash): (i64, String, String) = (row.get(0), row.get(1), row.get(2));
+    let avatar: Option<String> = row.get(3);
 
     if !auth::verify_password(req.password, hash).await {
         return Err(err(StatusCode::UNAUTHORIZED, "invalid username or password"));
     }
 
     let token = create_session(&state, id).await?;
-    Ok(Json(AuthResponse { token, user: User { id, username } }))
+    Ok(Json(AuthResponse { token, user: User { id, username, avatar } }))
 }
 
 async fn create_session(state: &SharedState, user_id: i64) -> ApiResult<String> {
@@ -96,7 +98,7 @@ pub async fn list_users(
     State(state): State<SharedState>,
     _user: AuthUser,
 ) -> ApiResult<Json<Vec<UserStatus>>> {
-    let rows = sqlx::query("SELECT id, username FROM users ORDER BY username COLLATE NOCASE")
+    let rows = sqlx::query("SELECT id, username, avatar FROM users ORDER BY username COLLATE NOCASE")
         .fetch_all(&state.db)
         .await
         .map_err(internal)?;
@@ -105,12 +107,67 @@ pub async fn list_users(
     let users = rows
         .into_iter()
         .map(|r| {
-            let user = User { id: r.get(0), username: r.get(1) };
+            let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2) };
             let is_online = online.contains(&user.id);
             UserStatus { user, online: is_online }
         })
         .collect();
     Ok(Json(users))
+}
+
+pub async fn get_profile(
+    State(state): State<SharedState>,
+    _user: AuthUser,
+    Path(user_id): Path<i64>,
+) -> ApiResult<Json<Profile>> {
+    let row = sqlx::query("SELECT id, username, avatar, bio, created_at FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    let Some(row) = row else {
+        return Err(err(StatusCode::NOT_FOUND, "no such user"));
+    };
+    Ok(Json(Profile {
+        user: User { id: row.get(0), username: row.get(1), avatar: row.get(2) },
+        bio: row.get(3),
+        created_at: row.get(4),
+    }))
+}
+
+pub async fn update_profile(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<UpdateProfileRequest>,
+) -> ApiResult<Json<Profile>> {
+    if let Some(avatar) = &req.avatar {
+        let ok = avatar.len() < 500
+            && (avatar.starts_with("http://") || avatar.starts_with("https://") || avatar.starts_with("/files/"));
+        if !ok {
+            return Err(err(StatusCode::BAD_REQUEST, "invalid avatar url"));
+        }
+        sqlx::query("UPDATE users SET avatar = ? WHERE id = ?")
+            .bind(avatar)
+            .bind(user.id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    }
+    if let Some(bio) = &req.bio {
+        if bio.len() > 500 {
+            return Err(err(StatusCode::BAD_REQUEST, "bio too long (max 500 chars)"));
+        }
+        sqlx::query("UPDATE users SET bio = ? WHERE id = ?")
+            .bind(bio.trim())
+            .bind(user.id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    }
+
+    let updated = get_profile(State(state.clone()), AuthUser(user.clone()), Path(user.id)).await?;
+    let _ = state.events.send(ServerEvent::UserUpdated { user: updated.0.user.clone() });
+    Ok(updated)
 }
 
 pub async fn list_channels(
@@ -422,7 +479,7 @@ pub async fn channel_messages(
     let before = q.before.unwrap_or(i64::MAX);
 
     let rows = sqlx::query(
-        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username \
+        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username, u.avatar \
          FROM messages m JOIN users u ON u.id = m.author_id \
          WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?",
     )
@@ -442,7 +499,7 @@ pub async fn channel_messages(
             content: r.get(2),
             created_at: r.get(3),
             edited_at: r.get(4),
-            author: User { id: r.get(5), username: r.get(6) },
+            author: User { id: r.get(5), username: r.get(6), avatar: r.get(7) },
             reactions: Vec::new(),
         })
         .collect();

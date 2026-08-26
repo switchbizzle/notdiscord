@@ -221,7 +221,114 @@ input:focus { border-color: #5865f2; }
     background: #232428;
     font-size: 13px;
 }
-.me-info { display: flex; flex-direction: column; min-width: 0; }
+.me-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    cursor: pointer;
+    border-radius: 5px;
+    padding: 2px 4px;
+}
+.me-info:hover { background: #2e3035; }
+.me-text { display: flex; flex-direction: column; min-width: 0; }
+.member { cursor: pointer; }
+.member:hover { background: #35373c; }
+
+.avatar-img { object-fit: cover; }
+
+/* ---------- Profile card ---------- */
+
+.profile-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.profile-card {
+    background: #232428;
+    border-radius: 12px;
+    padding: 24px;
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+.profile-avatar {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-weight: 700;
+    font-size: 32px;
+    user-select: none;
+}
+.profile-name { font-size: 20px; font-weight: 700; }
+.profile-joined { color: #949ba4; font-size: 12px; }
+.profile-bio {
+    color: #dbdee1;
+    font-size: 14px;
+    text-align: center;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-top: 4px;
+}
+.profile-bio-edit {
+    width: 100%;
+    background: #1e1f22;
+    color: #dbdee1;
+    border: 1px solid #111214;
+    border-radius: 6px;
+    padding: 8px;
+    font: inherit;
+    font-size: 13px;
+    resize: vertical;
+}
+.profile-actions { display: flex; gap: 8px; margin-top: 8px; }
+.profile-btn {
+    background: #313338;
+    color: #fff;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+.profile-btn:hover { background: #404249; }
+.profile-btn.primary { background: #5865f2; }
+
+/* ---------- Reaction palette (above compose) ---------- */
+
+.react-palette {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin: 0 16px 6px;
+    background: #2b2d31;
+    border: 1px solid #232428;
+    border-radius: 10px;
+    padding: 6px 10px;
+}
+.react-palette-label { color: #949ba4; font-size: 12px; margin-right: 6px; }
+.react-palette button {
+    background: transparent;
+    font-size: 18px;
+    padding: 4px 7px;
+    border-radius: 6px;
+}
+.react-palette button:hover { background: #404249; }
+.react-palette-close {
+    margin-left: auto;
+    color: #949ba4;
+    font-size: 13px !important;
+}
 .me-name { font-weight: 600; color: #fff; }
 .me-status { color: #949ba4; font-size: 11px; }
 .logout {

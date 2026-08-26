@@ -74,7 +74,7 @@ impl FromRequestParts<SharedState> for AuthUser {
         };
 
         let row = sqlx::query(
-            "SELECT users.id, users.username FROM sessions \
+            "SELECT users.id, users.username, users.avatar FROM sessions \
              JOIN users ON users.id = sessions.user_id WHERE sessions.token = ?",
         )
         .bind(&token)
@@ -83,7 +83,7 @@ impl FromRequestParts<SharedState> for AuthUser {
         .map_err(internal)?;
 
         match row {
-            Some(row) => Ok(AuthUser(User { id: row.get(0), username: row.get(1) })),
+            Some(row) => Ok(AuthUser(User { id: row.get(0), username: row.get(1), avatar: row.get(2) })),
             None => Err(err(StatusCode::UNAUTHORIZED, "invalid or expired token")),
         }
     }
