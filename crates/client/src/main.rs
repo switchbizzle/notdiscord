@@ -40,6 +40,50 @@ fn main() {
         .launch(App);
 }
 
+/// A destructive action awaiting user confirmation.
+#[derive(Clone, PartialEq)]
+enum ConfirmAction {
+    DeleteChannel { id: i64, name: String },
+    SetBan { user_id: i64, username: String, banned: bool },
+    SetRole { user_id: i64, username: String, make_admin: bool },
+    DeleteTag { id: i64, name: String },
+    DeleteSticker { id: i64, name: String },
+}
+
+impl ConfirmAction {
+    fn description(&self) -> String {
+        match self {
+            Self::DeleteChannel { name, .. } => {
+                format!("Delete #{name}? All of its messages will be permanently deleted.")
+            }
+            Self::SetBan { username, banned: true, .. } => {
+                format!("Ban {username}? They'll be logged out immediately and can't log back in.")
+            }
+            Self::SetBan { username, banned: false, .. } => format!("Unban {username}?"),
+            Self::SetRole { username, make_admin: true, .. } => {
+                format!("Make {username} an admin? They'll be able to delete anyone's messages, delete channels, and ban members.")
+            }
+            Self::SetRole { username, make_admin: false, .. } => {
+                format!("Remove {username}'s admin role?")
+            }
+            Self::DeleteTag { name, .. } => format!("Delete the \"{name}\" tag from everyone?"),
+            Self::DeleteSticker { name, .. } => format!("Delete the \"{name}\" sticker for everyone?"),
+        }
+    }
+
+    fn confirm_label(&self) -> &'static str {
+        match self {
+            Self::DeleteChannel { .. } => "Delete channel",
+            Self::SetBan { banned: true, .. } => "Ban",
+            Self::SetBan { banned: false, .. } => "Unban",
+            Self::SetRole { make_admin: true, .. } => "Make admin",
+            Self::SetRole { make_admin: false, .. } => "Remove admin",
+            Self::DeleteTag { .. } => "Delete tag",
+            Self::DeleteSticker { .. } => "Delete sticker",
+        }
+    }
+}
+
 /// A file staged in the compose area, awaiting user confirmation to send.
 #[derive(Clone, PartialEq)]
 struct PendingFile {
@@ -340,7 +384,7 @@ fn MainView(session: api::Session) -> Element {
     let mut has_more = use_signal(|| false);
     let mut loading_older = use_signal(|| false);
     let mut unread = use_signal(HashSet::<i64>::new);
-    let mut armed_delete = use_signal(|| None::<i64>);
+    let mut confirm = use_signal(|| None::<ConfirmAction>);
     let mut voice_rosters = use_signal(HashMap::<i64, Vec<User>>::new);
     let window = use_window();
 
@@ -396,6 +440,34 @@ fn MainView(session: api::Session) -> Element {
         output_devices.set(voice::list_output_devices());
         settings_tab.set(tab);
         settings_open.set(true);
+    };
+
+    // Executes a confirmed destructive action.
+    let run_confirm = move |action: ConfirmAction| {
+        spawn(async move {
+            let result = match &action {
+                ConfirmAction::DeleteChannel { id, .. } => api::delete_channel(&session(), *id).await,
+                ConfirmAction::SetBan { user_id, banned, .. } => {
+                    api::set_ban(&session(), *user_id, *banned).await.map(|_| ())
+                }
+                ConfirmAction::SetRole { user_id, make_admin, .. } => {
+                    let role = if *make_admin { "admin" } else { "member" };
+                    api::set_role(&session(), *user_id, role).await.map(|_| ())
+                }
+                ConfirmAction::DeleteTag { id, .. } => api::delete_tag(&session(), *id).await,
+                ConfirmAction::DeleteSticker { id, .. } => api::delete_sticker(&session(), *id).await,
+            };
+            if let Err(e) = result {
+                status.set(e);
+            } else if let ConfirmAction::SetBan { user_id, .. } | ConfirmAction::SetRole { user_id, .. } = &action {
+                // Refresh the open profile card so badges/buttons update.
+                if profile_card.peek().as_ref().map(|p| p.user.id) == Some(*user_id) {
+                    if let Ok(p) = api::profile(&session(), *user_id).await {
+                        profile_card.set(Some(p));
+                    }
+                }
+            }
+        });
     };
 
     // Rejoin the current voice channel (used after an audio device change).
@@ -1307,6 +1379,36 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
             }
+            if let Some(action) = confirm() {
+                div {
+                    class: "settings-overlay confirm-overlay",
+                    onclick: move |_| confirm.set(None),
+                    div {
+                        class: "confirm-modal",
+                        onclick: move |e| e.stop_propagation(),
+                        div { class: "confirm-title", "Are you sure?" }
+                        div { class: "confirm-body", {action.description()} }
+                        div { class: "confirm-buttons",
+                            button {
+                                class: "profile-btn",
+                                onclick: move |_| confirm.set(None),
+                                "Cancel"
+                            }
+                            button {
+                                class: "profile-btn danger",
+                                onclick: {
+                                    let action = action.clone();
+                                    move |_| {
+                                        confirm.set(None);
+                                        run_confirm(action.clone());
+                                    }
+                                },
+                                {action.confirm_label()}
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(profile) = profile_card() {
                 div {
                     class: "profile-overlay",
@@ -1428,12 +1530,12 @@ fn MainView(session: api::Session) -> Element {
                                                 title: "Delete this tag everywhere",
                                                 onclick: {
                                                     let tag_id = tag.id;
+                                                    let tag_name = tag.name.clone();
                                                     move |_| {
-                                                        spawn(async move {
-                                                            if let Err(e) = api::delete_tag(&session(), tag_id).await {
-                                                                status.set(e);
-                                                            }
-                                                        });
+                                                        confirm.set(Some(ConfirmAction::DeleteTag {
+                                                            id: tag_id,
+                                                            name: tag_name.clone(),
+                                                        }));
                                                     }
                                                 },
                                                 "✕"
@@ -1478,19 +1580,14 @@ fn MainView(session: api::Session) -> Element {
                                         class: "profile-btn",
                                         onclick: {
                                             let target = profile.user.id;
+                                            let username = profile.user.username.clone();
                                             let make_admin = profile.user.role != "admin";
                                             move |_| {
-                                                spawn(async move {
-                                                    let role = if make_admin { "admin" } else { "member" };
-                                                    match api::set_role(&session(), target, role).await {
-                                                        Ok(_) => {
-                                                            if let Ok(p) = api::profile(&session(), target).await {
-                                                                profile_card.set(Some(p));
-                                                            }
-                                                        }
-                                                        Err(e) => status.set(e),
-                                                    }
-                                                });
+                                                confirm.set(Some(ConfirmAction::SetRole {
+                                                    user_id: target,
+                                                    username: username.clone(),
+                                                    make_admin,
+                                                }));
                                             }
                                         },
                                         if profile.user.role == "admin" { "Remove admin" } else { "Make admin" }
@@ -1499,18 +1596,14 @@ fn MainView(session: api::Session) -> Element {
                                         class: "profile-btn danger",
                                         onclick: {
                                             let target = profile.user.id;
+                                            let username = profile.user.username.clone();
                                             let ban = !profile.banned;
                                             move |_| {
-                                                spawn(async move {
-                                                    match api::set_ban(&session(), target, ban).await {
-                                                        Ok(_) => {
-                                                            if let Ok(p) = api::profile(&session(), target).await {
-                                                                profile_card.set(Some(p));
-                                                            }
-                                                        }
-                                                        Err(e) => status.set(e),
-                                                    }
-                                                });
+                                                confirm.set(Some(ConfirmAction::SetBan {
+                                                    user_id: target,
+                                                    username: username.clone(),
+                                                    banned: ban,
+                                                }));
                                             }
                                         },
                                         if profile.banned { "Unban" } else { "Ban" }
@@ -1630,22 +1723,14 @@ fn MainView(session: api::Session) -> Element {
                             span { class: "chan-name", "# {channel.name}" }
                             if session().user.role == "admin" {
                                 span {
-                                    class: if armed_delete() == Some(channel.id) { "chan-del armed" } else { "chan-del" },
-                                    title: if armed_delete() == Some(channel.id) { "Click again to permanently delete" } else { "Delete channel" },
+                                    class: "chan-del",
+                                    title: "Delete channel",
                                     onclick: {
                                         let id = channel.id;
+                                        let name = channel.name.clone();
                                         move |e: MouseEvent| {
                                             e.stop_propagation();
-                                            if armed_delete() == Some(id) {
-                                                armed_delete.set(None);
-                                                spawn(async move {
-                                                    if let Err(e) = api::delete_channel(&session(), id).await {
-                                                        status.set(e);
-                                                    }
-                                                });
-                                            } else {
-                                                armed_delete.set(Some(id));
-                                            }
+                                            confirm.set(Some(ConfirmAction::DeleteChannel { id, name: name.clone() }));
                                         }
                                     },
                                     "✕"
@@ -1719,7 +1804,21 @@ fn MainView(session: api::Session) -> Element {
                                 });
                             },
                             Icon { name: "volume", size: 15 }
-                            span { class: "voice-channel-name", "{channel.name}" }
+                            span { class: "voice-channel-name chan-name", "{channel.name}" }
+                            if session().user.role == "admin" {
+                                span {
+                                    class: "chan-del",
+                                    title: "Delete voice channel",
+                                    onclick: {
+                                        let name = channel.name.clone();
+                                        move |e: MouseEvent| {
+                                            e.stop_propagation();
+                                            confirm.set(Some(ConfirmAction::DeleteChannel { id: ch_id, name: name.clone() }));
+                                        }
+                                    },
+                                    "✕"
+                                }
+                            }
                         }
                         if let Some(occupants) = voice_rosters().get(&ch_id).cloned() {
                             div { class: "voice-occupants",
@@ -2024,12 +2123,12 @@ fn MainView(session: api::Session) -> Element {
                                             title: "Delete sticker",
                                             onclick: {
                                                 let id = sticker.id;
+                                                let name = sticker.name.clone();
                                                 move |_| {
-                                                    spawn(async move {
-                                                        if let Err(e) = api::delete_sticker(&session(), id).await {
-                                                            status.set(e);
-                                                        }
-                                                    });
+                                                    confirm.set(Some(ConfirmAction::DeleteSticker {
+                                                        id,
+                                                        name: name.clone(),
+                                                    }));
                                                 }
                                             },
                                             "✕"

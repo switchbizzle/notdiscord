@@ -999,7 +999,20 @@ input:focus { border-color: #5865f2; }
 }
 .channel:hover .chan-del { display: inline; }
 .chan-del:hover { color: #f23f43; }
-.chan-del.armed { display: inline; color: #fff; background: #f23f43; }
+.confirm-overlay { z-index: 250; }
+.confirm-modal {
+    background: #232428;
+    border-radius: 12px;
+    padding: 22px;
+    width: 360px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+.confirm-title { color: #fff; font-size: 17px; font-weight: 700; }
+.confirm-body { color: #dbdee1; font-size: 14px; line-height: 1.5; }
+.confirm-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 .member-dot {
     width: 8px;

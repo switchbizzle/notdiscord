@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.17.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Destructive actions now ask for confirmation: deleting channels, bans, admin changes, tag/sticker deletion",
+      "Voice channels can now be deleted too (admins, with confirmation)"
+    ]
+  },
+  {
     "version": "0.16.2",
     "date": "2026-08-26",
     "changes": [
