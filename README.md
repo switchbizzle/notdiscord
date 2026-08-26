@@ -60,7 +60,7 @@ server becomes the admin. Open a second client to see real-time delivery.
 | `NOTDISCORD_DB` | `notdiscord.db` | SQLite database path |
 | `NOTDISCORD_UPLOADS` | `uploads` | Upload storage directory |
 | `NOTDISCORD_CLIENT_DIR` | `client` | Client build served at `/download` (optional) |
-| `NOTDISCORD_INVITE` | *(unset)* | Invite code required to register |
+| `NOTDISCORD_INVITE` | *(unset)* | Invite code seed for the first boot; after that admins manage it in Settings → Server |
 | `NOTDISCORD_GIPHY_KEY` | *(unset)* | GIPHY API key for GIF search (optional) |
 | `LIVEKIT_URL` | *(unset)* | LiveKit websocket URL, e.g. `wss://livekit.example.com` |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | *(unset)* | LiveKit credentials (voice/video off without them) |

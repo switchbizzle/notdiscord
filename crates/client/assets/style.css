@@ -1389,6 +1389,20 @@ input:focus { border-color: #5865f2; }
 }
 .msg-file-dl { color: #949ba4; font-size: 12px; flex-shrink: 0; }
 
+/* ---------- Invite code (Settings → Server) ---------- */
+
+.invite-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.invite-row .invite-input {
+    flex: 1;
+    min-width: 0;
+    font-family: Consolas, monospace;
+}
+.invite-row .profile-btn { flex-shrink: 0; padding: 8px 10px; }
+
 /* ---------- Link previews ---------- */
 
 .link-card {

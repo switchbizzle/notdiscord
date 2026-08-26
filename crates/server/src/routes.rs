@@ -21,9 +21,12 @@ pub async fn register(
     State(state): State<SharedState>,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
-    if let Ok(required) = std::env::var("NOTDISCORD_INVITE") {
+    // The invite code lives in server_meta (seeded from NOTDISCORD_INVITE on
+    // first boot); empty = open registration.
+    let required = meta_value_opt(&state, "invite_code").await?.unwrap_or_default();
+    if !required.is_empty() {
         let supplied = req.invite.as_deref().map(str::trim).unwrap_or_default();
-        if !required.is_empty() && supplied != required {
+        if supplied != required {
             return Err(err(StatusCode::FORBIDDEN, "invalid invite code"));
         }
     }
@@ -1052,6 +1055,43 @@ pub async fn set_storage_cap(
         .await
         .map_err(internal)?;
     Ok(Json(shared::StorageInfo { used_bytes: uploads_size().await, cap_gb: req.cap_gb }))
+}
+
+pub async fn get_invite(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<shared::InviteSetting>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let code = meta_value_opt(&state, "invite_code").await?.unwrap_or_default();
+    Ok(Json(shared::InviteSetting { code }))
+}
+
+pub async fn set_invite(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::InviteSetting>,
+) -> ApiResult<Json<shared::InviteSetting>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let code = req.code.trim().to_owned();
+    if code.len() > 64 {
+        return Err(err(StatusCode::BAD_REQUEST, "invite code must be at most 64 characters"));
+    }
+    if code.chars().any(char::is_whitespace) {
+        return Err(err(StatusCode::BAD_REQUEST, "invite code can't contain spaces"));
+    }
+    sqlx::query(
+        "INSERT INTO server_meta (key, value) VALUES ('invite_code', ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(&code)
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+    Ok(Json(shared::InviteSetting { code }))
 }
 
 /// Public: release notes, newest first (uploaded by the release script).

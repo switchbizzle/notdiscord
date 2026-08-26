@@ -174,6 +174,19 @@ pub async fn rename_server(session: &Session, name: String) -> Result<shared::Se
     handle(resp).await
 }
 
+pub async fn get_invite(session: &Session) -> Result<shared::InviteSetting, String> {
+    get(session, "server/invite".into()).await
+}
+
+pub async fn set_invite(session: &Session, code: String) -> Result<shared::InviteSetting, String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/server/invite", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::InviteSetting { code }))
+        .await?;
+    handle(resp).await
+}
+
 pub async fn get_storage(session: &Session) -> Result<shared::StorageInfo, String> {
     get(session, "server/storage".into()).await
 }

@@ -269,6 +269,13 @@ pub struct RetentionSetting {
     pub days: i64,
 }
 
+/// The invite code newcomers need to register (GET/POST /api/server/invite,
+/// admin only). Empty = registration is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InviteSetting {
+    pub code: String,
+}
+
 /// Upload storage usage and cap (GET /api/server/storage).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageInfo {

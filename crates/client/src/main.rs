@@ -464,6 +464,10 @@ fn MainView(session: api::Session) -> Element {
     // Populated when the user must choose which monitor to share.
     let mut share_picker = use_signal(|| None::<Vec<share::MonitorChoice>>);
     let mut storage_info = use_signal(|| None::<shared::StorageInfo>);
+    // None until the Server tab loads it; the draft is what's in the box.
+    let mut invite_loaded = use_signal(|| false);
+    let mut invite_draft = use_signal(String::new);
+    let mut invite_message = use_signal(String::new);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -1215,6 +1219,11 @@ fn MainView(session: api::Session) -> Element {
                                             if let Ok(info) = api::get_storage(&session()).await {
                                                 storage_info.set(Some(info));
                                             }
+                                            if let Ok(setting) = api::get_invite(&session()).await {
+                                                invite_draft.set(setting.code);
+                                                invite_loaded.set(true);
+                                                invite_message.set(String::new());
+                                            }
                                         });
                                     },
                                     "Server"
@@ -1353,6 +1362,61 @@ fn MainView(session: api::Session) -> Element {
                                         option { value: "200", selected: info.cap_gb == 200, "200 GB" }
                                     }
                                     div { class: "settings-hint", "uploads are refused once the cap is reached" }
+                                }
+                                if invite_loaded() {
+                                    label { "Invite code" }
+                                    div { class: "invite-row",
+                                        input {
+                                            class: "invite-input",
+                                            spellcheck: "false",
+                                            placeholder: "empty = anyone can join",
+                                            value: "{invite_draft}",
+                                            oninput: move |e| invite_draft.set(e.value()),
+                                        }
+                                        button {
+                                            class: "profile-btn",
+                                            title: "Copy the invite code",
+                                            disabled: invite_draft().trim().is_empty(),
+                                            onclick: move |_| {
+                                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                                    if clipboard.set_text(invite_draft().trim().to_owned()).is_ok() {
+                                                        invite_message.set("copied".into());
+                                                    }
+                                                }
+                                            },
+                                            "Copy"
+                                        }
+                                        button {
+                                            class: "profile-btn",
+                                            title: "Generate a fresh code",
+                                            onclick: move |_| invite_draft.set(random_invite_code()),
+                                            "Shuffle"
+                                        }
+                                        button {
+                                            class: "profile-btn primary",
+                                            onclick: move |_| {
+                                                spawn(async move {
+                                                    match api::set_invite(&session(), invite_draft().trim().to_owned()).await {
+                                                        Ok(setting) => {
+                                                            invite_message.set(if setting.code.is_empty() {
+                                                                "saved — registration is now open to anyone".into()
+                                                            } else {
+                                                                "saved — newcomers need the new code".into()
+                                                            });
+                                                            invite_draft.set(setting.code);
+                                                        }
+                                                        Err(e) => invite_message.set(e),
+                                                    }
+                                                });
+                                            },
+                                            "Save code"
+                                        }
+                                    }
+                                    if invite_message().is_empty() {
+                                        div { class: "settings-hint", "newcomers must type this code to sign up; people already in stay in" }
+                                    } else {
+                                        div { class: "settings-hint pw-good", "{invite_message}" }
+                                    }
                                 }
                                 button {
                                     class: "profile-btn",
@@ -3151,6 +3215,28 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
             }
         }
     }
+}
+
+/// A memorable word-word-NN invite code in the house style.
+fn random_invite_code() -> String {
+    const A: &[&str] = &[
+        "scoopity", "wiggly", "snazzy", "crunchy", "sneaky", "bouncy", "spicy", "wobbly",
+        "zesty", "grumpy", "shiny", "fuzzy", "salty", "chunky", "peppy", "quirky",
+    ];
+    const B: &[&str] = &[
+        "doopity", "walrus", "pickle", "goblin", "noodle", "biscuit", "penguin", "waffle",
+        "gremlin", "burrito", "mango", "raccoon", "nugget", "pretzel", "yeti", "llama",
+    ];
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    format!(
+        "{}-{}-{}",
+        A[nanos % A.len()],
+        B[(nanos / 31) % B.len()],
+        10 + (nanos / 977) % 90,
+    )
 }
 
 fn avatar_hue(user_id: i64) -> i64 {
