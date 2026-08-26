@@ -44,6 +44,9 @@ pub struct Settings {
     pub input_device: Option<String>,
     #[serde(default)]
     pub output_device: Option<String>,
+    /// Per-participant playback volume (1.0 = 100%), keyed by voice identity.
+    #[serde(default)]
+    pub volumes: std::collections::HashMap<String, f32>,
 }
 
 fn settings_path() -> Option<std::path::PathBuf> {

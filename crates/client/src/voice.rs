@@ -6,6 +6,7 @@
 //! (i.e. when the `ActiveCall` owning it is dropped).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +26,7 @@ pub struct VoiceParticipant {
     pub identity: String,
     pub name: String,
     pub speaking: bool,
+    pub is_me: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -34,6 +36,8 @@ pub struct VoiceStatus {
     pub connecting: bool,
     pub muted: bool,
     pub participants: Vec<VoiceParticipant>,
+    /// Playback volume per identity (1.0 = 100%).
+    pub volumes: HashMap<String, f32>,
     pub error: String,
 }
 
@@ -41,6 +45,7 @@ pub enum VoiceCmd {
     Join { channel_id: i64, channel_name: String, url: String, token: String },
     Leave,
     ToggleMute,
+    SetVolume { identity: String, volume: f32 },
 }
 
 /// Thread-safe signal: voice status is updated from tokio worker tasks.
@@ -133,7 +138,22 @@ struct ActiveCall {
     /// Dropping these ends the audio device threads.
     _mic_stop: std_mpsc::Sender<()>,
     playback_stops: Arc<Mutex<HashMap<String, std_mpsc::Sender<()>>>>,
+    /// Per-identity playback gain, read lock-free by audio callbacks.
+    gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>>,
     event_task: tokio::task::JoinHandle<()>,
+}
+
+fn gain_handle(
+    gains: &Arc<Mutex<HashMap<String, Arc<AtomicU32>>>>,
+    identity: &str,
+    initial: f32,
+) -> Arc<AtomicU32> {
+    gains
+        .lock()
+        .unwrap()
+        .entry(identity.to_owned())
+        .or_insert_with(|| Arc::new(AtomicU32::new(initial.to_bits())))
+        .clone()
 }
 
 impl Drop for ActiveCall {
@@ -188,6 +208,16 @@ pub async fn voice_task(mut rx: UnboundedReceiver<VoiceCmd>, mut status: VoiceSt
                     }
                     status.write().muted = muted;
                 }
+            }
+            VoiceCmd::SetVolume { identity, volume } => {
+                let volume = volume.clamp(0.0, 2.0);
+                if let Some(active) = &call {
+                    gain_handle(&active.gains, &identity, volume).store(volume.to_bits(), Ordering::Relaxed);
+                }
+                status.write().volumes.insert(identity.clone(), volume);
+                let mut settings = crate::api::load_settings();
+                settings.volumes.insert(identity, volume);
+                crate::api::save_settings(&settings);
             }
         }
     }
@@ -253,14 +283,40 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
         }
     });
 
-    // Pump captured samples into the LiveKit source in 10ms frames.
+    // Pump captured samples into the LiveKit source in 10ms frames, and drive
+    // the local speaking indicator straight from the mic level (instant,
+    // unlike the server's active-speaker events).
     let samples_per_frame = (sample_rate / 100 * channels) as usize;
+    let mut pump_status = status;
     tokio::spawn(async move {
+        const SPEAK_THRESHOLD_RMS: f64 = 500.0; // of i16 full scale ≈ -36 dB
+        const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
         let mut buffer: Vec<i16> = Vec::with_capacity(samples_per_frame * 4);
+        let mut speaking = false;
+        let mut last_voice = std::time::Instant::now() - SPEAK_HOLD;
+
         while let Some(chunk) = frame_rx.recv().await {
             buffer.extend_from_slice(&chunk);
             while buffer.len() >= samples_per_frame {
                 let data: Vec<i16> = buffer.drain(..samples_per_frame).collect();
+
+                let rms = (data.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
+                    / data.len() as f64)
+                    .sqrt();
+                let now = std::time::Instant::now();
+                if rms > SPEAK_THRESHOLD_RMS {
+                    last_voice = now;
+                }
+                let muted = pump_status.peek().muted;
+                let now_speaking = !muted && now.duration_since(last_voice) < SPEAK_HOLD;
+                if now_speaking != speaking {
+                    speaking = now_speaking;
+                    let mut s = pump_status.write();
+                    if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
+                        me.speaking = speaking;
+                    }
+                }
+
                 let frame = AudioFrame {
                     data: data.into(),
                     sample_rate,
@@ -275,9 +331,16 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
     });
 
     // ---- Room events: participants, remote audio playback ----
+    {
+        let mut s = status;
+        s.write().volumes = settings.volumes.clone();
+    }
     let playback_stops: Arc<Mutex<HashMap<String, std_mpsc::Sender<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>> = Arc::new(Mutex::new(HashMap::new()));
     let stops = playback_stops.clone();
+    let gains_for_events = gains.clone();
+    let saved_volumes = settings.volumes.clone();
     let room_handle = room.clone();
     let output_device = settings.output_device.clone();
     let event_task = tokio::spawn(async move {
@@ -288,10 +351,12 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
                 RoomEvent::TrackSubscribed { track, participant, .. } => {
                     if let RemoteTrack::Audio(audio) = track {
                         let sid = audio.sid().to_string();
-                        let stop = spawn_playback(audio, output_device.clone(), status);
+                        let identity = participant.identity().to_string();
+                        let initial = *saved_volumes.get(&identity).unwrap_or(&1.0);
+                        let gain = gain_handle(&gains_for_events, &identity, initial);
+                        let stop = spawn_playback(audio, output_device.clone(), status, gain);
                         stops.lock().unwrap().insert(sid, stop);
                     }
-                    let _ = participant;
                     refresh_participants(&room_handle, status);
                 }
                 RoomEvent::TrackUnsubscribed { track, .. } => {
@@ -308,7 +373,8 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
                         speakers.iter().map(|p| p.identity().to_string()).collect();
                     let mut s = status;
                     let mut st = s.write();
-                    for p in st.participants.iter_mut() {
+                    // Local speaking is driven by the mic-level detector.
+                    for p in st.participants.iter_mut().filter(|p| !p.is_me) {
                         p.speaking = speaking.contains(&p.identity);
                     }
                 }
@@ -322,26 +388,38 @@ async fn connect(url: &str, token: &str, status: VoiceStatusSignal) -> anyhow::R
         }
     });
 
-    Ok(ActiveCall { room, mic_publication, _mic_stop: mic_stop_tx, playback_stops, event_task })
+    Ok(ActiveCall { room, mic_publication, _mic_stop: mic_stop_tx, playback_stops, gains, event_task })
 }
 
 fn refresh_participants(room: &Room, status: VoiceStatusSignal) {
+    let mut s = status;
+    // Preserve current speaking flags so a roster refresh doesn't blink them off.
+    let previous: HashMap<String, bool> = s
+        .peek()
+        .participants
+        .iter()
+        .map(|p| (p.identity.clone(), p.speaking))
+        .collect();
+
     let mut list: Vec<VoiceParticipant> = Vec::new();
     let me = room.local_participant();
+    let me_identity = me.identity().to_string();
     list.push(VoiceParticipant {
-        identity: me.identity().to_string(),
+        speaking: *previous.get(&me_identity).unwrap_or(&false),
+        identity: me_identity,
         name: me.name().to_string(),
-        speaking: false,
+        is_me: true,
     });
     for (_, p) in room.remote_participants() {
+        let identity = p.identity().to_string();
         list.push(VoiceParticipant {
-            identity: p.identity().to_string(),
+            speaking: *previous.get(&identity).unwrap_or(&false),
+            identity,
             name: p.name().to_string(),
-            speaking: false,
+            is_me: false,
         });
     }
     list.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut s = status;
     s.write().participants = list;
 }
 
@@ -351,6 +429,7 @@ fn spawn_playback(
     track: livekit::track::RemoteAudioTrack,
     output_device: Option<String>,
     mut status: VoiceStatusSignal,
+    gain: Arc<AtomicU32>,
 ) -> std_mpsc::Sender<()> {
     let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
 
@@ -390,9 +469,11 @@ fn spawn_playback(
         let stream = device.build_output_stream(
             config,
             move |out: &mut [f32], _: &_| {
+                let g = f32::from_bits(gain.load(Ordering::Relaxed));
                 let mut buf = cb_buffer.lock().unwrap();
                 for sample in out.iter_mut() {
-                    *sample = buf.pop_front().map(|s| s as f32 / 32768.0).unwrap_or(0.0);
+                    let s = buf.pop_front().map(|s| s as f32 / 32768.0).unwrap_or(0.0);
+                    *sample = (s * g).clamp(-1.0, 1.0);
                 }
             },
             move |e| {

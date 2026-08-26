@@ -689,7 +689,36 @@ fn MainView(session: api::Session, session_slot: Signal<Option<api::Session>>) -
                                 div {
                                     key: "{p.identity}",
                                     class: if p.speaking { "voice-user speaking" } else { "voice-user" },
-                                    "{p.name}"
+                                    span {
+                                        class: "voice-avatar",
+                                        style: "background: hsl({voice_hue(&p.identity)}, 55%, 42%)",
+                                        {initial(&p.name)}
+                                    }
+                                    span { class: "voice-name", "{p.name}" }
+                                    if p.is_me && voice_status().muted {
+                                        span { class: "voice-mic-off", "🔇" }
+                                    }
+                                    if !p.is_me {
+                                        input {
+                                            r#type: "range",
+                                            class: "volume-slider",
+                                            min: "0",
+                                            max: "200",
+                                            title: "Volume for {p.name}",
+                                            value: "{(voice_status().volumes.get(&p.identity).copied().unwrap_or(1.0) * 100.0) as i32}",
+                                            oninput: {
+                                                let identity = p.identity.clone();
+                                                move |e| {
+                                                    if let Ok(v) = e.value().parse::<f32>() {
+                                                        voice.send(voice::VoiceCmd::SetVolume {
+                                                            identity: identity.clone(),
+                                                            volume: v / 100.0,
+                                                        });
+                                                    }
+                                                }
+                                            },
+                                        }
+                                    }
                                 }
                             }
                             div { class: "voice-controls",
@@ -1081,6 +1110,15 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
 
 fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
+}
+
+/// Voice identities are "user-{id}"; reuse the same avatar color.
+fn voice_hue(identity: &str) -> i64 {
+    identity
+        .strip_prefix("user-")
+        .and_then(|id| id.parse::<i64>().ok())
+        .map(avatar_hue)
+        .unwrap_or(200)
 }
 
 #[cfg(windows)]
