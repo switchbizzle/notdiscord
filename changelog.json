@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.36.1",
+    "date": "2026-08-26",
+    "changes": [
+      "Fixed disappearing from the voice channel list while still in the call — a brief connection blip used to make you invisible to everyone until you rejoined"
+    ]
+  },
+  {
     "version": "0.36.0",
     "date": "2026-08-26",
     "changes": [

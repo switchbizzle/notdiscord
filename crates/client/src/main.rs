@@ -731,6 +731,22 @@ fn MainView(session: api::Session) -> Element {
             };
             status.set("online".into());
 
+            // Voice presence is connection-scoped on the server: it drops us
+            // from the roster when the socket dies. Re-announce on every
+            // connect, or a reconnect leaves us invisible in everyone's
+            // sidebar while we're still sitting in the call.
+            {
+                let voice_now = voice_status.peek();
+                let channel_id = voice_now.channel_id.filter(|_| !voice_now.connecting);
+                let (sharing, camera) = (voice_now.sharing_self, voice_now.camera_self);
+                drop(voice_now);
+                if channel_id.is_some() {
+                    let announce = ClientEvent::VoiceState { channel_id, sharing, camera };
+                    let text = serde_json::to_string(&announce).expect("serialize event");
+                    let _ = socket.send(WsMsg::Text(text.into())).await;
+                }
+            }
+
             // Refresh state that may have drifted while disconnected.
             if let Ok(users) = api::users(&session()).await {
                 members.set(users);
