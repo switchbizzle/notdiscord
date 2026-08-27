@@ -164,6 +164,35 @@ pub struct ChangePasswordRequest {
     pub new: String,
 }
 
+/// The caller's own email state (never another user's).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailStatus {
+    pub email: Option<String>,
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailVerifyRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub username: String,
+    pub code: String,
+    pub new_password: String,
+}
+
 /// Why a password isn't acceptable, or None if it is. Shared so the client
 /// can show the problem live and the server can enforce the same rules.
 pub fn password_problem(password: &str, username: &str) -> Option<&'static str> {

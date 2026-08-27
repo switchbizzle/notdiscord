@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.45.0",
+    "date": "2026-08-27",
+    "changes": [
+      "📧 Add an email to your account (Settings → Account): we send a 6-digit code, you type it back, done. Your email is private — nobody on the server can see it",
+      "🔑 Forgot your password? The login screen can now email a reset code to your verified address — no more asking an admin to poke the database",
+      "The music tab's queue rail is now exactly as wide as the members list, so swapping Chat ↔ Music doesn't shift the middle panel around (Jon's ask)",
+      "Server settings moved off the channel title and onto the server name at the top left, where they belong (also Jon's ask). The channel title is just a title again"
+    ]
+  },
+  {
     "version": "0.44.0",
     "date": "2026-08-27",
     "changes": [

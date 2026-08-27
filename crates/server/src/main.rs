@@ -1,5 +1,6 @@
 mod auth;
 mod bot;
+mod mail;
 mod music;
 mod preview;
 mod routes;
@@ -231,6 +232,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/login", post(routes::login))
         .route("/api/me", get(routes::me))
         .route("/api/password", post(routes::change_password))
+        .route("/api/password/forgot", post(routes::forgot_password))
+        .route("/api/password/reset", post(routes::reset_password))
+        .route("/api/email", get(routes::email_status).post(routes::email_request))
+        .route("/api/email/verify", post(routes::email_verify))
         .route("/api/users", get(routes::list_users))
         .route("/api/users/{id}/profile", get(routes::get_profile))
         .route("/api/users/{id}/role", post(routes::set_role))

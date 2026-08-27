@@ -478,6 +478,63 @@ pub async fn register(base_url: &str, username: String, password: String, invite
     Ok(session_from_auth(base_url, auth).await)
 }
 
+/// Success is 204 with no body; failures carry a JSON error message.
+async fn expect_no_content(resp: reqwest::Response, fallback: &str) -> Result<(), String> {
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        match resp.json::<ApiError>().await {
+            Ok(e) => Err(e.error),
+            Err(_) => Err(fallback.into()),
+        }
+    }
+}
+
+pub async fn email_status(session: &Session) -> Result<shared::EmailStatus, String> {
+    get(session, "email".into()).await
+}
+
+pub async fn email_request(session: &Session, email: String) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/email", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::EmailRequest { email }))
+        .await?;
+    expect_no_content(resp, "could not send the code").await
+}
+
+pub async fn email_verify(session: &Session, code: String) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/email/verify", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::EmailVerifyRequest { code }))
+        .await?;
+    expect_no_content(resp, "could not verify the code").await
+}
+
+pub async fn forgot_password(base_url: &str, username: String) -> Result<(), String> {
+    let base = normalize_base(base_url);
+    let resp = send_retry(http()
+        .post(format!("{base}/api/password/forgot"))
+        .json(&shared::ForgotPasswordRequest { username }))
+        .await?;
+    expect_no_content(resp, "could not request a reset code").await
+}
+
+pub async fn reset_password(
+    base_url: &str,
+    username: String,
+    code: String,
+    new_password: String,
+) -> Result<(), String> {
+    let base = normalize_base(base_url);
+    let resp = send_retry(http()
+        .post(format!("{base}/api/password/reset"))
+        .json(&shared::ResetPasswordRequest { username, code, new_password }))
+        .await?;
+    expect_no_content(resp, "could not reset the password").await
+}
+
 async fn get<T: serde::de::DeserializeOwned>(session: &Session, path: String) -> Result<T, String> {
     let resp = send_retry(http()
         .get(format!("{}/api/{path}", session.base_url))

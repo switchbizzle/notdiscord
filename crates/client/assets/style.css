@@ -67,6 +67,12 @@ input:focus { border-color: #5865f2; }
     margin-top: 8px;
 }
 .login-error { color: #fa777c; font-size: 13px; margin-top: 8px; }
+.login-notice { color: #23a55a; font-size: 13px; margin-top: 8px; }
+.login-forgot { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+/* Input + button on one line (email/code entry in settings). */
+.settings-row { display: flex; gap: 8px; align-items: center; margin: 4px 0 8px; }
+.settings-row input { flex: 1 1 auto; min-width: 0; }
+.settings-row .profile-btn { flex: 0 0 auto; }
 
 .login-buttons { display: flex; gap: 8px; margin-top: 16px; }
 .login-buttons button {
@@ -140,13 +146,21 @@ input:focus { border-color: #5865f2; }
     flex-direction: column;
 }
 
-.sidebar-title {
+/* A button since v0.45: clicking the server tile opens server settings. */
+button.sidebar-title {
+    display: block;
+    width: 100%;
+    background: none;
+    text-align: left;
+    font: inherit;
     padding: 16px;
     font-weight: 700;
     color: #fff;
     border-bottom: 1px solid #1f2124;
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
+    border-radius: 0;
 }
+button.sidebar-title:hover { background: #35373c; }
 
 .channel-list {
     flex: 1;
@@ -1641,7 +1655,9 @@ ul.md-list { list-style-type: disc; }
 /* While the Music tab is open the rail carries the queue instead of the
    member list, which buys the chat back the height the queue used to take. */
 .members.rail-queue {
-    width: 300px;
+    /* Exactly the members rail's outer width, so swapping Chat <-> Music
+       never shifts the middle panel. */
+    width: 200px;
     padding: 0;
     overflow: hidden;
     display: flex;
@@ -2212,18 +2228,6 @@ ul.md-list { list-style-type: disc; }
 .srv-meter-fill.hot { background: #f23f43; }
 
 /* The channel title is a button now, but should still read as a title. */
-button.channel-header-label {
-    background: none;
-    text-align: left;
-    font: inherit;
-    font-weight: 700;
-    color: #f2f3f5;
-    padding: 4px 8px;
-    margin-left: -8px;
-    border-radius: 5px;
-}
-button.channel-header-label:hover { background: #3a3c42; }
-
 /* ---------- Video tab (the call, in the middle panel) ---------- */
 
 .video-tab {

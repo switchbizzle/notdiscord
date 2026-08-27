@@ -168,6 +168,228 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Codes expire after 15 minutes; 5 wrong guesses burns one.
+const CODE_TTL_MS: i64 = 15 * 60 * 1000;
+const CODE_MAX_ATTEMPTS: i64 = 5;
+/// Minimum gap between sending codes to the same user+purpose.
+const CODE_RESEND_MS: i64 = 60 * 1000;
+
+pub async fn email_status(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<shared::EmailStatus>> {
+    let row = sqlx::query("SELECT email, email_verified FROM users WHERE id = ?")
+        .bind(user.id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let email: Option<String> = row.get(0);
+    let verified: i64 = row.get(1);
+    Ok(Json(shared::EmailStatus { email, verified: verified != 0 }))
+}
+
+/// Stores a fresh code for (user, purpose) and emails it, rate-limited.
+async fn issue_code(
+    state: &SharedState,
+    user_id: i64,
+    email: &str,
+    purpose: &str,
+    subject: &str,
+    body: impl Fn(&str) -> String,
+) -> ApiResult<()> {
+    let last: Option<i64> =
+        sqlx::query_scalar("SELECT created_at FROM mail_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
+            .bind(purpose)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal)?;
+    if last.is_some_and(|t| now_ms() - t < CODE_RESEND_MS) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "wait a minute before requesting another code"));
+    }
+    let code = crate::mail::new_code();
+    sqlx::query(
+        "INSERT OR REPLACE INTO mail_codes (user_id, email, code, purpose, expires_at, attempts, created_at) \
+         VALUES (?, ?, ?, ?, ?, 0, ?)",
+    )
+    .bind(user_id)
+    .bind(email)
+    .bind(&code)
+    .bind(purpose)
+    .bind(now_ms() + CODE_TTL_MS)
+    .bind(now_ms())
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+
+    crate::mail::send(email, subject, &body(&code)).await.map_err(|e| {
+        tracing::warn!("mail send failed for user {user_id}: {e:#}");
+        err(StatusCode::BAD_GATEWAY, "could not send the email — try again in a bit")
+    })
+}
+
+pub async fn email_request(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::EmailRequest>,
+) -> ApiResult<StatusCode> {
+    if !crate::mail::configured() {
+        return Err(err(StatusCode::SERVICE_UNAVAILABLE, "email is not set up on this server"));
+    }
+    let email = req.email.trim().to_lowercase();
+    if !crate::mail::valid_address(&email) {
+        return Err(err(StatusCode::BAD_REQUEST, "that doesn't look like an email address"));
+    }
+    issue_code(&state, user.id, &email, "verify", "Your NotDiscord verification code", |code| {
+        format!(
+            "Hey {},\n\nYour verification code is: {code}\n\nEnter it in Settings -> Account \
+             within 15 minutes. If you didn't request this, ignore it.\n",
+            user.username
+        )
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Loads and checks the pending code for (user, purpose). On success the
+/// code row is deleted and the email it was sent to is returned.
+async fn consume_code(
+    state: &SharedState,
+    user_id: i64,
+    purpose: &str,
+    supplied: &str,
+) -> ApiResult<String> {
+    let row = sqlx::query(
+        "SELECT email, code, expires_at, attempts FROM mail_codes WHERE user_id = ? AND purpose = ?",
+    )
+    .bind(user_id)
+    .bind(purpose)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| err(StatusCode::BAD_REQUEST, "no code pending — request one first"))?;
+
+    let email: String = row.get(0);
+    let code: String = row.get(1);
+    let expires_at: i64 = row.get(2);
+    let attempts: i64 = row.get(3);
+
+    let burn = |reason| async move {
+        sqlx::query("DELETE FROM mail_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
+            .bind(purpose)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+        Err(err(StatusCode::BAD_REQUEST, reason))
+    };
+    if now_ms() > expires_at {
+        return burn("that code has expired — request a new one").await;
+    }
+    if attempts >= CODE_MAX_ATTEMPTS {
+        return burn("too many wrong guesses — request a new code").await;
+    }
+    if supplied.trim() != code {
+        sqlx::query("UPDATE mail_codes SET attempts = attempts + 1 WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
+            .bind(purpose)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+        return Err(err(StatusCode::UNAUTHORIZED, "wrong code"));
+    }
+    sqlx::query("DELETE FROM mail_codes WHERE user_id = ? AND purpose = ?")
+        .bind(user_id)
+        .bind(purpose)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(email)
+}
+
+pub async fn email_verify(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::EmailVerifyRequest>,
+) -> ApiResult<StatusCode> {
+    let email = consume_code(&state, user.id, "verify", &req.code).await?;
+    sqlx::query("UPDATE users SET email = ?, email_verified = 1 WHERE id = ?")
+        .bind(&email)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Unauthenticated: always answers 204 so it can't be used to probe which
+/// usernames exist or have email set up.
+pub async fn forgot_password(
+    State(state): State<SharedState>,
+    Json(req): Json<shared::ForgotPasswordRequest>,
+) -> ApiResult<StatusCode> {
+    if !crate::mail::configured() {
+        return Err(err(StatusCode::SERVICE_UNAVAILABLE, "email is not set up on this server"));
+    }
+    let row = sqlx::query(
+        "SELECT id, username, email FROM users WHERE username = ? AND email_verified = 1 AND banned = 0",
+    )
+    .bind(req.username.trim())
+    .fetch_optional(&state.db)
+    .await
+    .map_err(internal)?;
+    if let Some(row) = row {
+        let (user_id, username): (i64, String) = (row.get(0), row.get(1));
+        let email: String = row.get(2);
+        // Swallow rate-limit/send errors too — same reason.
+        let _ = issue_code(&state, user_id, &email, "reset", "Your NotDiscord password reset code", |code| {
+            format!(
+                "Hey {username},\n\nYour password reset code is: {code}\n\nEnter it on the \
+                 login screen within 15 minutes. If you didn't ask to reset your password, \
+                 you can ignore this — your account is fine.\n"
+            )
+        })
+        .await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn reset_password(
+    State(state): State<SharedState>,
+    Json(req): Json<shared::ResetPasswordRequest>,
+) -> ApiResult<StatusCode> {
+    let username = req.username.trim().to_owned();
+    // Password rules first: a rejected password must not burn the code.
+    if let Some(problem) = shared::password_problem(&req.new_password, &username) {
+        return Err(err(StatusCode::BAD_REQUEST, problem));
+    }
+    let user_id: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM users WHERE username = ? AND email_verified = 1 AND banned = 0")
+            .bind(&username)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal)?;
+    // Same message as a wrong code, so this can't probe usernames either.
+    let Some(user_id) = user_id else {
+        return Err(err(StatusCode::UNAUTHORIZED, "wrong code"));
+    };
+    consume_code(&state, user_id, "reset", &req.code).await?;
+    let hash = auth::hash_password(req.new_password).await.map_err(internal)?;
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(&hash)
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    // Whoever held the old password loses every session.
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn list_users(
     State(state): State<SharedState>,
     _user: AuthUser,

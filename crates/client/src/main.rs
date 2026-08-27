@@ -381,6 +381,12 @@ fn LoginView(adding: Signal<bool>) -> Element {
     let mut invite = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
+    // Forgot-password flow: closed -> code emailed -> new password set.
+    let mut forgot = use_signal(|| false);
+    let mut reset_sent = use_signal(|| false);
+    let mut reset_code = use_signal(String::new);
+    let mut reset_pw = use_signal(String::new);
+    let mut notice = use_signal(String::new);
 
     let submit = move |register: bool| {
         if busy() {
@@ -439,6 +445,9 @@ fn LoginView(adding: Signal<bool>) -> Element {
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
                 }
+                if !notice().is_empty() {
+                    div { class: "login-notice", "{notice}" }
+                }
                 div { class: "login-buttons",
                     button {
                         class: "primary",
@@ -450,6 +459,95 @@ fn LoginView(adding: Signal<bool>) -> Element {
                         disabled: busy(),
                         onclick: move |_| submit(true),
                         "Register"
+                    }
+                }
+                if !forgot() {
+                    button {
+                        class: "login-cancel",
+                        onclick: move |_| {
+                            forgot.set(true);
+                            error.set(String::new());
+                            notice.set(String::new());
+                        },
+                        "forgot password?"
+                    }
+                } else {
+                    div { class: "login-forgot",
+                        if !reset_sent() {
+                            div { class: "settings-hint",
+                                "enter your username above, and a reset code goes to your verified email"
+                            }
+                            button {
+                                disabled: busy() || username().trim().is_empty(),
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        busy.set(true);
+                                        error.set(String::new());
+                                        match api::forgot_password(&base_url(), username().trim().to_string()).await {
+                                            Ok(()) => {
+                                                reset_sent.set(true);
+                                                notice.set("if that account has a verified email, a code is on its way".into());
+                                            }
+                                            Err(e) => error.set(e),
+                                        }
+                                        busy.set(false);
+                                    });
+                                },
+                                "Email me a code"
+                            }
+                        } else {
+                            label { "Reset code" }
+                            input {
+                                spellcheck: "false",
+                                value: "{reset_code}",
+                                oninput: move |e| reset_code.set(e.value()),
+                            }
+                            label { "New password" }
+                            input {
+                                r#type: "password",
+                                value: "{reset_pw}",
+                                oninput: move |e| reset_pw.set(e.value()),
+                            }
+                            button {
+                                class: "primary",
+                                disabled: busy() || reset_code().trim().is_empty() || reset_pw().is_empty(),
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        busy.set(true);
+                                        error.set(String::new());
+                                        let result = api::reset_password(
+                                            &base_url(),
+                                            username().trim().to_string(),
+                                            reset_code().trim().to_string(),
+                                            reset_pw(),
+                                        )
+                                        .await;
+                                        match result {
+                                            Ok(()) => {
+                                                forgot.set(false);
+                                                reset_sent.set(false);
+                                                reset_code.set(String::new());
+                                                reset_pw.set(String::new());
+                                                password.set(String::new());
+                                                notice.set("password changed — log in with the new one".into());
+                                            }
+                                            Err(e) => error.set(e),
+                                        }
+                                        busy.set(false);
+                                    });
+                                },
+                                "Reset password"
+                            }
+                        }
+                        button {
+                            class: "login-cancel",
+                            onclick: move |_| {
+                                forgot.set(false);
+                                reset_sent.set(false);
+                                notice.set(String::new());
+                            },
+                            "back to sign in"
+                        }
                     }
                 }
                 if adding() && !servers().servers.is_empty() {
@@ -673,6 +771,12 @@ fn MainView(session: api::Session) -> Element {
     let mut pw_new = use_signal(String::new);
     let mut pw_confirm = use_signal(String::new);
     let mut pw_message = use_signal(|| (String::new(), false));
+    // Email verification state on the Account tab. None = not fetched yet.
+    let mut email_state = use_signal(|| None::<shared::EmailStatus>);
+    let mut email_input = use_signal(String::new);
+    let mut email_code = use_signal(String::new);
+    let mut email_sent = use_signal(|| false);
+    let mut email_message = use_signal(|| (String::new(), false));
     // Populated when the user must choose which monitor to share.
     let mut share_picker = use_signal(|| None::<Vec<share::MonitorChoice>>);
     let mut storage_info = use_signal(|| None::<shared::StorageInfo>);
@@ -1604,7 +1708,16 @@ fn MainView(session: api::Session) -> Element {
                                     pw_new.set(String::new());
                                     pw_confirm.set(String::new());
                                     pw_message.set((String::new(), false));
+                                    email_input.set(String::new());
+                                    email_code.set(String::new());
+                                    email_sent.set(false);
+                                    email_message.set((String::new(), false));
                                     settings_tab.set("account");
+                                    spawn(async move {
+                                        if let Ok(status) = api::email_status(&session()).await {
+                                            email_state.set(Some(status));
+                                        }
+                                    });
                                 },
                                 "Account"
                             }
@@ -1618,6 +1731,88 @@ fn MainView(session: api::Session) -> Element {
                             if settings_tab() == "account" {
                                 label { "Logged in as" }
                                 div { class: "settings-value", "{session().user.username}" }
+                                label { "Email" }
+                                match email_state() {
+                                    Some(shared::EmailStatus { email: Some(email), verified: true }) => rsx! {
+                                        div { class: "settings-value", "{email} — verified ✓" }
+                                    },
+                                    Some(shared::EmailStatus { email: Some(email), verified: false }) => rsx! {
+                                        div { class: "settings-value", "{email} — not verified" }
+                                    },
+                                    Some(_) => rsx! {
+                                        div { class: "settings-hint", "no email yet — add one to enable password reset" }
+                                    },
+                                    None => rsx! {
+                                        div { class: "settings-hint", "…" }
+                                    },
+                                }
+                                div { class: "settings-row",
+                                    input {
+                                        placeholder: "you@example.com",
+                                        spellcheck: "false",
+                                        value: "{email_input}",
+                                        oncontextmenu: move |e: Event<MouseData>| {
+                                            menu::open(ctx_menu, &e, menu::text_field_items())
+                                        },
+                                        oninput: move |e| email_input.set(e.value()),
+                                    }
+                                    button {
+                                        class: "profile-btn",
+                                        disabled: email_input().trim().is_empty(),
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                match api::email_request(&session(), email_input().trim().to_string()).await {
+                                                    Ok(()) => {
+                                                        email_sent.set(true);
+                                                        email_message.set(("code sent — check your inbox (and spam)".into(), true));
+                                                    }
+                                                    Err(e) => email_message.set((e, false)),
+                                                }
+                                            });
+                                        },
+                                        "Send code"
+                                    }
+                                }
+                                if email_sent() {
+                                    div { class: "settings-row",
+                                        input {
+                                            placeholder: "6-digit code",
+                                            spellcheck: "false",
+                                            value: "{email_code}",
+                                            oninput: move |e| email_code.set(e.value()),
+                                        }
+                                        button {
+                                            class: "profile-btn primary",
+                                            disabled: email_code().trim().is_empty(),
+                                            onclick: move |_| {
+                                                spawn(async move {
+                                                    match api::email_verify(&session(), email_code().trim().to_string()).await {
+                                                        Ok(()) => {
+                                                            email_sent.set(false);
+                                                            email_code.set(String::new());
+                                                            email_input.set(String::new());
+                                                            email_message.set(("email verified".into(), true));
+                                                            if let Ok(status) = api::email_status(&session()).await {
+                                                                email_state.set(Some(status));
+                                                            }
+                                                        }
+                                                        Err(e) => email_message.set((e, false)),
+                                                    }
+                                                });
+                                            },
+                                            "Verify"
+                                        }
+                                    }
+                                }
+                                if !email_message().0.is_empty() {
+                                    div {
+                                        class: if email_message().1 { "settings-hint pw-good" } else { "settings-hint pw-bad" },
+                                        "{email_message().0}"
+                                    }
+                                }
+                                div { class: "settings-hint",
+                                    "a verified email lets you reset a forgotten password from the login screen"
+                                }
                                 label { "Current password" }
                                 input {
                                     r#type: "password",
@@ -2892,7 +3087,14 @@ fn MainView(session: api::Session) -> Element {
                 }
             }
             div { class: "sidebar",
-                div { class: "sidebar-title", "{session().server_name}" }
+                // Jon's ask: server settings live on the server tile, not on
+                // the channel title.
+                button {
+                    class: "sidebar-title",
+                    title: "Server settings",
+                    onclick: move |_| open_server_settings("overview"),
+                    "{session().server_name}"
+                }
                 div { class: "channel-list",
                     for channel in channels().into_iter().filter(|c| c.kind == "text") {
                         button {
@@ -3351,16 +3553,7 @@ fn MainView(session: api::Session) -> Element {
             }
             div { class: "main",
                 div { class: "channel-header",
-                    button {
-                        class: "channel-header-label",
-                        title: "Server settings",
-                        // DMs have no settings of their own — open the server.
-                        onclick: move |_| {
-                            let dm = selected().is_some_and(|c| c.kind == "dm");
-                            open_server_settings(if dm { "overview" } else { "channel" });
-                        },
-                        "{selected_label}"
-                    }
+                    div { class: "channel-header-label", "{selected_label}" }
                     if selected().is_some_and(|c| c.kind == "dm") {
                         button {
                             class: "call-btn",
