@@ -2963,11 +2963,7 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
                 if music_open() {
-                    MusicTab {
-                        music,
-                        picked: music_picked,
-                        volume: music_volume,
-                    }
+                    MusicPlayer { music, volume: music_volume }
                 }
                 div { class: if music_open() { "messages music-chat" } else { "messages" },
                     // column-reverse container keeps the view pinned to the
@@ -3586,6 +3582,13 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
             }
+            // The rail carries the queue while the Music tab is open, and the
+            // member list the rest of the time.
+            if music_open() {
+                div { class: "members rail-queue",
+                    MusicQueue { music, picked: music_picked }
+                }
+            } else {
             div { class: "members",
                 div { class: "members-title", "Members" }
                 for member in members() {
@@ -3636,6 +3639,7 @@ fn MainView(session: api::Session) -> Element {
                         span { class: "member-dot" }
                     }
                 }
+            }
             }
         }
     }
@@ -3906,16 +3910,12 @@ fn fmt_secs(secs: f64) -> String {
 /// The music tab: the shared player, plus a queue everyone can edit. State
 /// comes from the server once a second so every screen agrees.
 #[component]
-fn MusicTab(
-    music: Signal<shared::MusicState>,
-    picked: Signal<HashSet<u64>>,
-    volume: Signal<i64>,
-) -> Element {
+fn MusicPlayer(music: Signal<shared::MusicState>, volume: Signal<i64>) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let voice = use_coroutine_handle::<voice::VoiceCmd>();
-    let ctx_menu = use_context::<menu::MenuSignal>();
 
     // Poll while the tab is open; closing it unmounts this and stops the loop.
+    // The queue in the rail reads the same signal, so one poll feeds both.
     use_future(move || async move {
         loop {
             if let Ok(state) = api::music_state(&session()).await {
@@ -3933,25 +3933,10 @@ fn MusicTab(
             }
         });
     };
-    let mut edit_queue = move |req: shared::MusicQueueRequest| {
-        spawn(async move {
-            let _ = api::music_queue(&session(), req).await;
-            if let Ok(state) = api::music_state(&session()).await {
-                music.set(state);
-            }
-        });
-    };
-
     let state = music();
-    let selected_count = picked().len();
     let toggle_title: &str = if state.paused { "Resume" } else { "Pause" };
     let toggle_icon: &'static str = if state.paused { "play" } else { "pause" };
     let state_label: &str = if state.paused { "paused" } else { "now playing" };
-    let remove_label = if selected_count > 0 {
-        format!("Remove {selected_count} selected")
-    } else {
-        "Remove selected".to_string()
-    };
     let progress = match (&state.now_playing, state.position) {
         (Some(track), pos) => match track.duration {
             Some(len) if len > 0.0 => ((pos / len) * 100.0).clamp(0.0, 100.0),
@@ -4045,6 +4030,37 @@ fn MusicTab(
                 }
             }
 
+        }
+    }
+}
+
+/// The queue, which lives in the right-hand rail while the Music tab is open:
+/// the members list steps aside for it, and the chat underneath the player
+/// gets the height back.
+#[component]
+fn MusicQueue(music: Signal<shared::MusicState>, picked: Signal<HashSet<u64>>) -> Element {
+    let session = use_context::<Signal<api::Session>>();
+    let ctx_menu = use_context::<menu::MenuSignal>();
+
+    let mut edit_queue = move |req: shared::MusicQueueRequest| {
+        spawn(async move {
+            let _ = api::music_queue(&session(), req).await;
+            if let Ok(state) = api::music_state(&session()).await {
+                music.set(state);
+            }
+        });
+    };
+
+    let state = music();
+    let selected_count = picked().len();
+    let remove_label = if selected_count > 0 {
+        format!("Remove {selected_count}")
+    } else {
+        "Remove".to_string()
+    };
+
+    rsx! {
+        div { class: "queue-panel",
             div { class: "music-queue-head",
                 span { class: "music-queue-title", "Up next" }
                 span { class: "music-queue-count",

@@ -1654,6 +1654,52 @@ ul.md-list { list-style-type: disc; }
    the same height on both tabs and doesn't jump when you switch. */
 .messages.music-chat { flex: 1 1 auto; min-height: 0; }
 
+/* ---------- The queue in the right-hand rail ---------- */
+
+/* While the Music tab is open the rail carries the queue instead of the
+   member list, which buys the chat back the height the queue used to take. */
+.members.rail-queue {
+    width: 300px;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.queue-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+}
+.rail-queue .music-queue-head {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    padding: 12px 12px 8px;
+}
+.rail-queue .music-queue-head .grow { flex-basis: 100%; height: 0; }
+.rail-queue .music-queue { padding: 0 8px 10px; }
+/* Narrower than the middle panel, so the track number goes and the title
+   takes the room it frees. */
+.rail-queue .music-row {
+    grid-template-columns: 18px minmax(0, 1fr) auto auto;
+    gap: 8px;
+    padding: 6px;
+}
+.rail-queue .music-row-idx { display: none; }
+.rail-queue .music-row-title { font-size: 13px; }
+.rail-queue .music-move button { width: 20px; height: 20px; }
+
+/* The rail costs the middle panel 100px, so the player tightens up to match:
+   smaller art, a title that fits, and transport + volume back on one row. */
+.music-tab .music-art { width: 128px; height: 128px; }
+.music-tab .music-title { font-size: 18px; }
+.music-tab .music-artist { font-size: 13px; }
+.music-tab .music-scrub { margin-top: 10px; }
+.music-tab .music-controls { margin-top: 12px; gap: 7px; flex-wrap: nowrap; }
+.music-tab .music-vol { margin-left: 4px; min-width: 0; flex: 1; }
+.music-tab .music-vol input { width: auto; flex: 1; min-width: 60px; }
+.music-tab .music-now { padding: 14px 16px 12px; gap: 14px; }
+
 /* ---------- Unread badges + NEW divider ---------- */
 
 .unread-badge {
