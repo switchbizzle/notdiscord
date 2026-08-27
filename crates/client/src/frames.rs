@@ -128,10 +128,15 @@ pub fn publish_track(key: String, track: &RemoteVideoTrack) {
     });
 }
 
-/// Pump a locally-captured preview (your own camera) into `key`. These arrive
-/// in a shared slot rather than off the wire, so this polls instead.
-pub fn publish_shared(key: String, source: SharedFrame) {
+/// Pump a locally-captured preview (your own camera or screen) into `key`.
+/// These arrive in a shared slot rather than off the wire, so this polls.
+///
+/// Returns the slot's interest stamp, so whatever fills `source` can skip the
+/// work when nothing is looking — a 1440p screen share is far too expensive to
+/// copy for a preview nobody has open.
+pub fn publish_shared(key: String, source: SharedFrame) -> Arc<AtomicU64> {
     let slot = make_slot(&key);
+    let interest = slot.last_wanted.clone();
     tokio::spawn(async move {
         loop {
             if !slot.alive.load(Ordering::Relaxed) {
@@ -155,6 +160,21 @@ pub fn publish_shared(key: String, source: SharedFrame) {
             }
         }
     });
+    interest
+}
+
+/// Note that something wants `key` right now — for viewers that read a slot
+/// directly instead of going through the protocol (the call window).
+pub fn touch(key: &str) {
+    if let Some(slot) = registry().lock().unwrap().get(key) {
+        slot.last_wanted.store(now_ms(), Ordering::Relaxed);
+    }
+}
+
+/// Has `key` been asked for recently enough to be worth producing?
+pub fn is_wanted(stamp: &AtomicU64) -> bool {
+    let last = stamp.load(Ordering::Relaxed);
+    last != 0 && now_ms().saturating_sub(last) < WANTED_FOR_MS
 }
 
 /// RGBA -> JPEG, scaled down so a 1440p share doesn't cost 1440p of encoding.

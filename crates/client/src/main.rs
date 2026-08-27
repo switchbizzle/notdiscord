@@ -4408,12 +4408,14 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
             .and_then(|id| id.parse::<i64>().ok())
             .unwrap_or(0);
         if person.sharing {
-            tiles.push((
-                Some(format!("{}:screen", person.identity)),
-                format!("{} · screen", person.name),
-                person.speaking,
-                user_id,
-            ));
+            // Your own share is a copy of the capture, not a subscription —
+            // you never receive your own track back.
+            let key = if person.is_me {
+                "self:screen".to_string()
+            } else {
+                format!("{}:screen", person.identity)
+            };
+            tiles.push((Some(key), format!("{} · screen", person.name), person.speaking, user_id));
         }
         if person.camera {
             // Your own camera never comes back off the wire — it's the local

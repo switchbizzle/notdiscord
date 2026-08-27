@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.43.1",
+    "date": "2026-08-27",
+    "changes": [
+      "🖥️ Fixed: when you shared your screen, everyone could see it except you — your own tile just showed your avatar. You now get a tile of your own share like everybody else, in the call window and the Video tab"
+    ]
+  },
+  {
     "version": "0.43.0",
     "date": "2026-08-27",
     "changes": [

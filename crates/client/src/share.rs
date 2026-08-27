@@ -24,23 +24,43 @@ use windows_capture::settings::{
 
 // ---------- Capture (the sharer) ----------
 
+/// Where a copy of your own share goes so you can see it too. Your published
+/// track never comes back to you — you don't subscribe to yourself — so
+/// without this you're the one person in the call who can't see your screen.
+pub struct SelfShare {
+    pub slot: SharedFrame,
+    /// Stamped by whoever is looking. Copying a 1440p frame is far too
+    /// expensive to do for a preview nobody has open.
+    pub interest: Arc<std::sync::atomic::AtomicU64>,
+}
+
+pub struct CaptureFlags {
+    pub source: NativeVideoSource,
+    pub preview: Option<SelfShare>,
+}
+
 pub struct Capturer {
     source: NativeVideoSource,
+    preview: Option<SelfShare>,
     scratch: Vec<u8>,
     last: std::time::Instant,
+    last_preview: std::time::Instant,
 }
 
 type CapError = Box<dyn std::error::Error + Send + Sync>;
 
 impl GraphicsCaptureApiHandler for Capturer {
-    type Flags = NativeVideoSource;
+    type Flags = CaptureFlags;
     type Error = CapError;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(1);
         Ok(Self {
-            source: ctx.flags,
+            source: ctx.flags.source,
+            preview: ctx.flags.preview,
             scratch: Vec::new(),
-            last: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            last: long_ago,
+            last_preview: long_ago,
         })
     }
 
@@ -74,9 +94,43 @@ impl GraphicsCaptureApiHandler for Capturer {
             .unwrap_or(0);
         self.source.capture_frame(&video_frame);
 
+        // Tee a scaled-down copy for your own tile, but only while something
+        // is actually showing it, and at half the send rate.
+        if let Some(preview) = &self.preview {
+            if crate::frames::is_wanted(&preview.interest)
+                && self.last_preview.elapsed() >= std::time::Duration::from_millis(66)
+            {
+                self.last_preview = std::time::Instant::now();
+                tee_preview(data, width, height, &preview.slot);
+            }
+        }
+
         self.scratch = scratch;
         Ok(())
     }
+}
+
+/// RGBA capture buffer -> the 0RGB pixels the viewer draws, scaled to a tile.
+fn tee_preview(data: &[u8], width: u32, height: u32, slot: &SharedFrame) {
+    const MAX_EDGE: u32 = 960;
+    if width == 0 || height == 0 || data.len() < (width * height * 4) as usize {
+        return;
+    }
+    let scale = (MAX_EDGE as f32 / width.max(height) as f32).min(1.0);
+    let out_w = ((width as f32 * scale) as u32).max(1);
+    let out_h = ((height as f32 * scale) as u32).max(1);
+    let mut pixels = Vec::with_capacity((out_w * out_h) as usize);
+    for y in 0..out_h {
+        let src_y = (y as u64 * height as u64 / out_h as u64) as u32;
+        let row = (src_y * width) as usize * 4;
+        for x in 0..out_w {
+            let src_x = (x as u64 * width as u64 / out_w as u64) as u32;
+            let i = row + src_x as usize * 4;
+            let (r, g, b) = (data[i] as u32, data[i + 1] as u32, data[i + 2] as u32);
+            pixels.push((r << 16) | (g << 8) | b);
+        }
+    }
+    *slot.lock().unwrap() = Some((out_w, out_h, pixels));
 }
 
 pub type ShareControl = windows_capture::capture::CaptureControl<Capturer, CapError>;
@@ -110,7 +164,12 @@ pub fn list_monitors() -> Vec<MonitorChoice> {
 }
 
 /// Start capturing a monitor into `source` (primary when `monitor` is None).
-pub fn start_capture(source: NativeVideoSource, monitor: Option<usize>) -> Result<ShareControl, String> {
+/// `preview` also receives a scaled copy, so the sharer can see their own tile.
+pub fn start_capture(
+    source: NativeVideoSource,
+    monitor: Option<usize>,
+    preview: Option<SelfShare>,
+) -> Result<ShareControl, String> {
     let monitor = match monitor {
         Some(index) => Monitor::from_index(index).map_err(|e| format!("monitor {index} not found: {e}"))?,
         None => Monitor::primary().map_err(|e| format!("no primary monitor: {e}"))?,
@@ -123,7 +182,7 @@ pub fn start_capture(source: NativeVideoSource, monitor: Option<usize>) -> Resul
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
-        source,
+        CaptureFlags { source, preview },
     );
     Capturer::start_free_threaded(settings).map_err(|e| format!("screen capture failed: {e}"))
 }
@@ -170,6 +229,8 @@ pub struct CallState {
     pub tiles: Vec<Tile>,
     /// Your own camera, shown picture-in-picture.
     pub self_preview: Option<SharedFrame>,
+    /// A copy of your own screen share, so you get a tile like everyone else.
+    pub self_share: Option<(SharedFrame, Arc<std::sync::atomic::AtomicU64>)>,
     pub muted: bool,
     pub deafened: bool,
     pub camera_on: bool,

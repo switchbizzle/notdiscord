@@ -228,6 +228,7 @@ async fn stop_share(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
         let _ = control.stop();
         let _ = active.room.local_participant().unpublish_track(&sid).await;
     }
+    crate::frames::unpublish("self:screen");
     let mut s = status.write();
     s.sharing_self = false;
     if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
@@ -312,6 +313,7 @@ fn rebuild_call_tiles(
     let tracks = tracks.map(|t| t.lock().unwrap());
     let mut view = call_state.lock().unwrap();
     let self_preview = view.self_preview.clone();
+    let self_share = view.self_share.clone();
     let mut old: Vec<Tile> = std::mem::take(&mut view.tiles);
     let mut next: Vec<Tile> = Vec::new();
 
@@ -347,6 +349,21 @@ fn rebuild_call_tiles(
                     crate::share::pump_track(&track, frame.clone(), alive);
                     Some(TileKind::Video(frame))
                 });
+            }
+        }
+        // Your own share is a copy of the capture, not a subscription.
+        if participant.is_me && snapshot.sharing_self {
+            if let Some((slot, _)) = self_share.clone() {
+                has_video = true;
+                // Tells the capturer someone's looking, so it keeps teeing.
+                // Must go through frames so it's stamped on the same clock
+                // the capturer compares against.
+                crate::frames::touch("self:screen");
+                take_or_make(
+                    format!("{} · screen", participant.name),
+                    &participant.identity,
+                    &mut || Some(TileKind::Video(slot.clone())),
+                );
             }
         }
         if participant.is_me && snapshot.camera_self {
@@ -543,7 +560,19 @@ pub async fn voice_task(
                             )
                             .await
                         {
-                            Ok(publication) => match crate::share::start_capture(source, monitor) {
+                            Ok(publication) => {
+                                // You never subscribe to your own track, so a
+                                // copy of the capture is the only way you get
+                                // to see your own share.
+                                let slot: crate::share::SharedFrame = Default::default();
+                                let interest = crate::frames::publish_shared(
+                                    "self:screen".into(),
+                                    slot.clone(),
+                                );
+                                call_state.lock().unwrap().self_share =
+                                    Some((slot.clone(), interest.clone()));
+                                let preview = Some(crate::share::SelfShare { slot, interest });
+                                match crate::share::start_capture(source, monitor, preview) {
                                 Ok(control) => {
                                     active.share = Some((control, publication.sid()));
                                     let mut s = status.write();
@@ -555,9 +584,12 @@ pub async fn voice_task(
                                 Err(e) => {
                                     let sid = publication.sid();
                                     let _ = active.room.local_participant().unpublish_track(&sid).await;
+                                    crate::frames::unpublish("self:screen");
+                                    call_state.lock().unwrap().self_share = None;
                                     status.write().error = e;
                                 }
-                            },
+                                }
+                            }
                             Err(e) => status.write().error = format!("screen share failed: {e}"),
                         }
                     }
@@ -567,6 +599,7 @@ pub async fn voice_task(
                 if let Some(active) = call.as_mut() {
                     stop_share(active, status).await;
                 }
+                call_state.lock().unwrap().self_share = None;
             }
             VoiceCmd::WatchScreen { identity } => {
                 if let Some(active) = &call {

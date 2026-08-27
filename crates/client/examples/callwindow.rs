@@ -8,6 +8,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+// share.rs tees a copy of your own capture through the frame registry.
+#[path = "../src/frames.rs"]
+mod frames;
 #[path = "../src/share.rs"]
 mod share;
 
