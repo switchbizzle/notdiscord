@@ -111,9 +111,17 @@ fn music_bitrate() -> u64 {
         .unwrap_or(128_000)
 }
 
-/// A SoundCloud cookie file (Netscape format) unlocks whatever the logged-in
-/// account can hear — on a Go+ subscription that's the higher-bitrate
-/// renditions. Free accounts and no cookie both get the standard 128k.
+/// A SoundCloud cookie file (Netscape format), which is what the crew's old
+/// bot used and worth having.
+///
+/// Measured, because the mechanism isn't the obvious one: signing in does NOT
+/// add higher streaming renditions — 160k AAC is the public ceiling either
+/// way. What it adds, on tracks where the artist enabled downloads, is the
+/// `download` format: the artist's original file. On the Flume re-work of
+/// Seekae's "Test & Recognise" that's 13.2 MB against 5.8 MB for the best
+/// public rendition, so roughly 320k against 160k. yt-dlp's own "bestaudio"
+/// picks it without help. Tracks with downloads disabled see no difference,
+/// which is why a single track is a bad way to test this.
 fn cookie_args() -> Vec<String> {
     match std::env::var("SOUNDCLOUD_COOKIES") {
         Ok(path) if !path.is_empty() && std::path::Path::new(&path).exists() => {
@@ -444,20 +452,12 @@ fn slug_title(url: &str) -> String {
     words.join(" ")
 }
 
-/// Resolve one track page to (title, direct stream URL).
-struct Resolved {
-    title: String,
-    artist: String,
-    art: Option<String>,
-    duration: Option<f64>,
-    stream: String,
-}
-
-async fn resolve_stream(page_url: &str) -> anyhow::Result<Resolved> {
+/// One yt-dlp resolve, with or without the cookie file.
+async fn ytdlp_resolve(page_url: &str, cookies: Vec<String>) -> anyhow::Result<std::process::Output> {
     let cmd = ytdlp_cmd();
-    let output = Command::new(&cmd[0])
+    Ok(Command::new(&cmd[0])
         .args(&cmd[1..])
-        .args(cookie_args())
+        .args(cookies)
         .args([
             "-f", &audio_format(), "--no-warnings",
             "--print", "title",
@@ -472,7 +472,26 @@ async fn resolve_stream(page_url: &str) -> anyhow::Result<Resolved> {
         ])
         .stdin(Stdio::null())
         .output()
-        .await?;
+        .await?)
+}
+
+/// Resolve one track page to (title, direct stream URL).
+struct Resolved {
+    title: String,
+    artist: String,
+    art: Option<String>,
+    duration: Option<f64>,
+    stream: String,
+}
+
+async fn resolve_stream(page_url: &str) -> anyhow::Result<Resolved> {
+    let mut output = ytdlp_resolve(page_url, cookie_args()).await?;
+    // A cookie file that's gone stale must not take the music down with it:
+    // fall back to anonymous, which still plays, just at the public bitrate.
+    if !output.status.success() && !cookie_args().is_empty() {
+        tracing::warn!("resolving with the SoundCloud cookie failed; retrying signed out");
+        output = ytdlp_resolve(page_url, Vec::new()).await?;
+    }
     if !output.status.success() {
         anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("yt-dlp failed"));
     }
