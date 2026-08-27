@@ -544,7 +544,17 @@ pub async fn create_dm(
     let channel_id = match existing {
         Some(id) => id,
         None => {
-            let id = sqlx::query("INSERT INTO channels (name, kind, created_at) VALUES ('dm', 'dm', ?)")
+            // channels.name is UNIQUE, so every DM cannot be called "dm" —
+            // the first pair to talk would own the name and everyone else's
+            // DM would fail to insert. The pair's ids make it unique, and
+            // nothing displays it: DMs are labelled by who's in them.
+            let (low, high) = if user.id < req.user_id {
+                (user.id, req.user_id)
+            } else {
+                (req.user_id, user.id)
+            };
+            let id = sqlx::query("INSERT INTO channels (name, kind, created_at) VALUES (?, 'dm', ?)")
+                .bind(format!("dm:{low}:{high}"))
                 .bind(now_ms())
                 .execute(&state.db)
                 .await
@@ -682,12 +692,19 @@ pub async fn rename_channel(
         Some("dm") => return Err(err(StatusCode::BAD_REQUEST, "DMs can't be renamed")),
         Some(_) => {}
     }
-    sqlx::query("UPDATE channels SET name = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE channels SET name = ? WHERE id = ?")
         .bind(&name)
         .bind(channel_id)
         .execute(&state.db)
-        .await
-        .map_err(internal)?;
+        .await;
+    match result {
+        Ok(_) => {}
+        // channels.name is UNIQUE, so say so rather than returning a 500.
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(err(StatusCode::CONFLICT, "a channel with that name already exists"));
+        }
+        Err(e) => return Err(internal(e)),
+    }
     state.broadcast(ServerEvent::ChannelRenamed { channel_id, name: name.clone() });
     Ok(Json(serde_json::json!({ "ok": true, "name": name })))
 }

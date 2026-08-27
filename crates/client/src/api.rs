@@ -508,6 +508,20 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
     get(session, path).await
 }
 
+/// Queue a link without posting it to chat (the Music tab's composer).
+pub async fn music_play(session: &Session, channel_id: i64, url: String) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/music/play", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::MusicPlayRequest { channel_id, url }))
+        .await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err("could not queue that link".into())
+    }
+}
+
 pub async fn music_state(session: &Session) -> Result<shared::MusicState, String> {
     get(session, "music/state".into()).await
 }

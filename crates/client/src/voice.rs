@@ -240,6 +240,7 @@ async fn stop_camera(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
         handle.stop();
         let _ = active.room.local_participant().unpublish_track(&sid).await;
     }
+    crate::frames::unpublish("self:camera");
     let mut s = status.write();
     s.camera_self = false;
     if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
@@ -504,6 +505,8 @@ pub async fn voice_task(
                     play_voice_blip(false);
                 }
                 *live_tracks.lock().unwrap() = None;
+                // Nothing left to show in the Video tab.
+                crate::frames::clear();
                 {
                     let mut view = call_state.lock().unwrap();
                     for tile in &view.tiles {
@@ -609,6 +612,9 @@ pub async fn voice_task(
                                 let slot: crate::share::SharedFrame = Default::default();
                                 let alive = Arc::new(AtomicBool::new(true));
                                 call_state.lock().unwrap().self_preview = Some(slot.clone());
+                                // Your own tile in the Video tab comes from the
+                                // same preview slot, not off the wire.
+                                crate::frames::publish_shared("self:camera".into(), slot.clone());
                                 let _ = crate::share::open_call_window(call_state.clone(), action_tx.clone());
                                 let preview = Some((slot, alive));
                                 // Opening the webcam can take seconds; don't
@@ -998,9 +1004,19 @@ async fn connect(
                             let mut tracks = tracks_for_events.lock().unwrap();
                             match publication.source() {
                                 TrackSource::Screenshare => {
+                                    // Also feed the in-app Video tab. It only
+                                    // costs anything while someone's looking.
+                                    crate::frames::publish_track(
+                                        format!("{identity}:screen"),
+                                        &video,
+                                    );
                                     tracks.screen.insert(identity, video);
                                 }
                                 TrackSource::Camera => {
+                                    crate::frames::publish_track(
+                                        format!("{identity}:camera"),
+                                        &video,
+                                    );
                                     tracks.camera.insert(identity, video);
                                 }
                                 _ => {}
@@ -1019,9 +1035,11 @@ async fn connect(
                             let mut tracks = tracks_for_events.lock().unwrap();
                             match publication.source() {
                                 TrackSource::Screenshare => {
+                                    crate::frames::unpublish(&format!("{identity}:screen"));
                                     tracks.screen.remove(&identity);
                                 }
                                 TrackSource::Camera => {
+                                    crate::frames::unpublish(&format!("{identity}:camera"));
                                     tracks.camera.remove(&identity);
                                 }
                                 _ => {}

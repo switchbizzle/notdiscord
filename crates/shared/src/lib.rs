@@ -413,6 +413,14 @@ pub struct MusicState {
     pub bot_identity: String,
 }
 
+/// Body for POST /api/music/play — queue a link without posting it to chat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicPlayRequest {
+    /// Where the bot should announce what it queued.
+    pub channel_id: i64,
+    pub url: String,
+}
+
 /// Body for POST /api/music/control — "pause", "resume", "skip", "stop".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MusicControlRequest {

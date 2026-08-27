@@ -66,6 +66,26 @@ pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
 // ---------- REST API for the music tab ----------
 
 /// The player as the tab sees it. Polled ~1s while the tab is open.
+/// Queue a link straight from the Music tab.
+///
+/// The tab used to rewrite a pasted link into "/play <url>" and send it as a
+/// message, which put the command *and* a full link preview card in the
+/// channel for every track — Jon's "spam and noise". This queues it without
+/// posting anything; the bot's own one-line reply still lands in the channel,
+/// so people reading chat still see what turned up.
+pub async fn play_endpoint(
+    State(state): State<SharedState>,
+    crate::auth::AuthUser(user): crate::auth::AuthUser,
+    axum::Json(req): axum::Json<shared::MusicPlayRequest>,
+) -> StatusCode {
+    let url = req.url.trim().to_owned();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return StatusCode::BAD_REQUEST;
+    }
+    handle_command(state, user, req.channel_id, MusicCmd::Play(url));
+    StatusCode::ACCEPTED
+}
+
 pub async fn state_endpoint(
     State(state): State<SharedState>,
     _user: crate::auth::AuthUser,

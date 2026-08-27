@@ -2,6 +2,7 @@
 
 mod api;
 mod emoji;
+mod frames;
 mod icons;
 mod md;
 mod menu;
@@ -84,6 +85,30 @@ fn main() {
                 // none of which means anything here. `menu.rs` puts a menu
                 // that fits the clicked element in its place.
                 .with_disable_context_menu(true)
+                // Live video for the Video tab. The WebView can only show what
+                // it can fetch, so each stream is served as a JPEG at
+                // http://ndvideo.localhost/<identity>:<camera|screen>.
+                .with_custom_protocol("ndvideo", |_id, request| {
+                    use dioxus::desktop::wry::http::Response;
+                    let key = request.uri().path().trim_start_matches('/').to_owned();
+                    // The page is served from another origin, so <img> is fine
+                    // but anything scripted needs to be allowed explicitly.
+                    match frames::latest(&key) {
+                        Some(jpeg) => Response::builder()
+                            .status(200)
+                            .header("Content-Type", "image/jpeg")
+                            .header("Cache-Control", "no-store")
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(std::borrow::Cow::Owned(jpeg.to_vec()))
+                            .unwrap(),
+                        // Nothing decoded yet: the next tick will have one.
+                        None => Response::builder()
+                            .status(204)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(std::borrow::Cow::Borrowed(&[][..]))
+                            .unwrap(),
+                    }
+                })
                 // X hides to the system tray; the tray menu's Quit exits.
                 .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
         )
@@ -546,7 +571,8 @@ fn MainView(session: api::Session) -> Element {
     let mut emoji_query = use_signal(String::new);
     let mut slash_sel = use_signal(|| 0usize);
     // The music tab: shared player state, polled while it's open.
-    let mut music_open = use_signal(|| false);
+    // Which of Chat / Music / Video is showing in the middle panel.
+    let mut view_tab = use_signal(|| "chat");
     let mut music = use_signal(shared::MusicState::default);
     let mut music_picked = use_signal(HashSet::<u64>::new);
     let mut music_volume = use_signal(|| 100i64);
@@ -1169,13 +1195,22 @@ fn MainView(session: api::Session) -> Element {
         if content.is_empty() && files.is_empty() {
             return;
         }
-        // On the music tab, a bare link means "queue this" — Jon's spec.
-        if music_open()
+        // On the Music tab a bare link means "queue this" — and it's queued
+        // straight through the API rather than posted, so the channel doesn't
+        // collect a command and a link preview card for every track.
+        if view_tab() == "music"
             && !content.starts_with('/')
             && content.split_whitespace().count() == 1
             && (content.starts_with("http://") || content.starts_with("https://"))
         {
-            content = format!("/play {content}");
+            let (channel_id, url) = (channel.id, content.clone());
+            draft.set(String::new());
+            spawn(async move {
+                if let Err(e) = api::music_play(&session(), channel_id, url).await {
+                    status.set(e);
+                }
+            });
+            return;
         }
         let reply_target = replying_to().map(|m| m.id);
         replying_to.set(None);
@@ -3344,14 +3379,14 @@ fn MainView(session: api::Session) -> Element {
                     // panel and swaps the body between chat and the player.
                     div { class: "view-tabs",
                         button {
-                            class: if music_open() { "view-tab" } else { "view-tab active" },
-                            onclick: move |_| music_open.set(false),
+                            class: if view_tab() == "chat" { "view-tab active" } else { "view-tab" },
+                            onclick: move |_| view_tab.set("chat"),
                             "Chat"
                         }
                         button {
-                            class: if music_open() { "view-tab active" } else { "view-tab" },
+                            class: if view_tab() == "music" { "view-tab active" } else { "view-tab" },
                             onclick: move |_| {
-                                music_open.set(true);
+                                view_tab.set("music");
                                 spawn(async move {
                                     if let Ok(state) = api::music_state(&session()).await {
                                         music.set(state);
@@ -3363,12 +3398,30 @@ fn MainView(session: api::Session) -> Element {
                             }
                             "Music"
                         }
+                        button {
+                            class: if view_tab() == "video" { "view-tab active" } else { "view-tab" },
+                            onclick: move |_| view_tab.set("video"),
+                            // Lit while anyone in your call has a camera or a
+                            // share running.
+                            if voice_status().participants.iter().any(|p| p.sharing || p.camera) {
+                                span { class: "view-tab-dot" }
+                            }
+                            "Video"
+                        }
                     }
                 }
-                if music_open() {
+                if view_tab() == "music" {
                     MusicPlayer { music, volume: music_volume }
                 }
-                div { class: if music_open() { "messages music-chat" } else { "messages" },
+                if view_tab() == "video" {
+                    VideoTab { status: voice_status, members }
+                }
+                div {
+                    class: match view_tab() {
+                        "music" => "messages music-chat",
+                        "video" => "messages video-chat",
+                        _ => "messages",
+                    },
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
                     {
@@ -3987,7 +4040,7 @@ fn MainView(session: api::Session) -> Element {
             }
             // The rail carries the queue while the Music tab is open, and the
             // member list the rest of the time.
-            if music_open() {
+            if view_tab() == "music" {
                 div { class: "members rail-queue",
                     MusicQueue { music, picked: music_picked }
                 }
@@ -4308,6 +4361,177 @@ fn fmt_secs(secs: f64) -> String {
     }
     let total = secs as u64;
     format!("{}:{:02}", total / 60, total % 60)
+}
+
+/// The video tab: the call, in the middle panel where chat normally sits.
+///
+/// Everyone in the call gets a tile — a live screen share or camera where
+/// there is one, their avatar where there isn't — with the call controls
+/// underneath and chat still below that. Frames arrive as JPEGs from the
+/// `ndvideo` protocol rather than through dioxus, so a moving picture never
+/// touches the diffing loop.
+#[component]
+fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) -> Element {
+    let voice = use_coroutine_handle::<voice::VoiceCmd>();
+
+    // One interval swaps every tile's src. It clears itself once the tiles
+    // are gone, which is what stops it when you leave the tab.
+    use_future(move || async move {
+        dioxus::document::eval(
+            "(() => {
+               if (window.__ndvideo) clearInterval(window.__ndvideo);
+               window.__ndvideo = setInterval(() => {
+                 const tiles = document.querySelectorAll('img[data-vkey]');
+                 if (!tiles.length) {
+                   clearInterval(window.__ndvideo);
+                   window.__ndvideo = null;
+                   return;
+                 }
+                 const stamp = Date.now();
+                 tiles.forEach(img => {
+                   img.src = 'http://ndvideo.localhost/' + img.dataset.vkey + '?t=' + stamp;
+                 });
+               }, 70);
+             })()",
+        );
+    });
+
+    let snapshot = status();
+    let in_call = snapshot.channel_id.is_some();
+
+    // One tile per stream, plus one per person who isn't sending video.
+    let mut tiles: Vec<(Option<String>, String, bool, i64)> = Vec::new();
+    for person in &snapshot.participants {
+        let user_id = person
+            .identity
+            .strip_prefix("user-")
+            .and_then(|id| id.parse::<i64>().ok())
+            .unwrap_or(0);
+        if person.sharing {
+            tiles.push((
+                Some(format!("{}:screen", person.identity)),
+                format!("{} · screen", person.name),
+                person.speaking,
+                user_id,
+            ));
+        }
+        if person.camera {
+            // Your own camera never comes back off the wire — it's the local
+            // preview, published under its own key.
+            let key = if person.is_me {
+                "self:camera".to_string()
+            } else {
+                format!("{}:camera", person.identity)
+            };
+            tiles.push((Some(key), format!("{} · camera", person.name), person.speaking, user_id));
+        }
+        if !person.sharing && !person.camera {
+            tiles.push((None, person.name.clone(), person.speaking, user_id));
+        }
+    }
+
+    let mic_icon: &'static str = if snapshot.muted { "mic-off" } else { "mic" };
+    let deaf_icon: &'static str = if snapshot.deafened { "headphones-off" } else { "headphones" };
+    let wide = tiles.len() <= 2;
+
+    rsx! {
+        div { class: "video-tab",
+            if !in_call {
+                div { class: "video-empty",
+                    Icon { name: "camera", size: 26 }
+                    div { class: "video-empty-title", "You're not in a call" }
+                    div { class: "video-empty-sub",
+                        "Join a voice channel on the left, then turn on a camera or share a screen."
+                    }
+                }
+            } else if tiles.is_empty() {
+                div { class: "video-empty",
+                    div { class: "video-empty-title", "Connecting…" }
+                }
+            } else {
+                div { class: if wide { "video-grid wide" } else { "video-grid" },
+                    for (key, label, speaking, user_id) in tiles {
+                        {
+                            let initial = label
+                                .chars()
+                                .next()
+                                .map(|c| c.to_uppercase().to_string())
+                                .unwrap_or_else(|| "?".into());
+                            let tile_class = if speaking { "video-tile speaking" } else { "video-tile" };
+                            rsx! {
+                                div { key: "{label}", class: "{tile_class}",
+                                    match key {
+                                        Some(vkey) => rsx! {
+                                            img {
+                                                class: "video-frame",
+                                                "data-vkey": "{vkey}",
+                                                alt: "{label}",
+                                            }
+                                        },
+                                        None => rsx! {
+                                            div {
+                                                class: "video-avatar",
+                                                style: "background: hsl({avatar_hue(user_id)}, 55%, 42%)",
+                                                "{initial}"
+                                            }
+                                        },
+                                    }
+                                    span { class: "video-name", "{label}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if in_call {
+                div { class: "video-controls",
+                    button {
+                        class: if snapshot.muted { "video-btn danger" } else { "video-btn" },
+                        title: if snapshot.muted { "Unmute" } else { "Mute" },
+                        onclick: move |_| voice.send(voice::VoiceCmd::ToggleMute),
+                        Icon { name: mic_icon, size: 17 }
+                    }
+                    button {
+                        class: if snapshot.deafened { "video-btn danger" } else { "video-btn" },
+                        title: if snapshot.deafened { "Undeafen" } else { "Deafen" },
+                        onclick: move |_| voice.send(voice::VoiceCmd::ToggleDeafen),
+                        Icon { name: deaf_icon, size: 17 }
+                    }
+                    button {
+                        class: if snapshot.camera_self { "video-btn on" } else { "video-btn" },
+                        title: if snapshot.camera_self { "Turn the camera off" } else { "Turn the camera on" },
+                        onclick: move |_| {
+                            if status.peek().camera_self {
+                                voice.send(voice::VoiceCmd::StopCamera);
+                            } else {
+                                voice.send(voice::VoiceCmd::StartCamera);
+                            }
+                        },
+                        Icon { name: "camera", size: 17 }
+                    }
+                    button {
+                        class: if snapshot.sharing_self { "video-btn on" } else { "video-btn" },
+                        title: if snapshot.sharing_self { "Stop sharing" } else { "Share your screen" },
+                        onclick: move |_| {
+                            if status.peek().sharing_self {
+                                voice.send(voice::VoiceCmd::StopScreenShare);
+                            } else {
+                                voice.send(voice::VoiceCmd::StartScreenShare { monitor: None });
+                            }
+                        },
+                        Icon { name: "screen", size: 17 }
+                    }
+                    span { class: "grow" }
+                    button {
+                        class: "video-btn leave",
+                        title: "Leave the call",
+                        onclick: move |_| voice.send(voice::VoiceCmd::Leave),
+                        Icon { name: "phone-off", size: 17 }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The music tab: the shared player, plus a queue everyone can edit. State

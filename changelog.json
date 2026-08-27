@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.43.0",
+    "date": "2026-08-27",
+    "changes": [
+      "🐛 Fixed: you could only ever have ONE direct message on the whole server. Every DM after the first silently failed — clicking Message on someone's profile did nothing. DMs now work with everyone",
+      "📹 There's a Video tab next to Chat and Music (Jon's spec): everyone in the call gets a tile in the middle panel — screen shares and cameras live, everyone else as their avatar — with mute, deafen, camera, share and leave underneath, and chat still below it",
+      "Pasting a link on the Music tab no longer posts the command and a big preview card to the channel. It just queues, and the bot's one line is all you see"
+    ]
+  },
+  {
     "version": "0.42.0",
     "date": "2026-08-27",
     "changes": [

@@ -267,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/tags/{id}", axum::routing::delete(routes::delete_tag))
         .route("/api/tags/assign", post(routes::assign_tag))
         .route("/api/search", get(routes::search))
+        .route("/api/music/play", post(music::play_endpoint))
         .route("/api/music/state", get(music::state_endpoint))
         .route("/api/music/control", post(music::control_endpoint))
         .route("/api/music/queue", post(music::queue_endpoint))
