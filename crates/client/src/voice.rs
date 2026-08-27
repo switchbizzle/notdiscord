@@ -378,7 +378,9 @@ pub async fn voice_task(
                     match track {
                         Some(track) => {
                             let name = participant_name(status, &identity);
-                            crate::share::open_viewer(track, format!("{name}'s screen — NotDiscord"));
+                            if let Err(e) = crate::share::open_viewer(track, format!("{name}'s screen — NotDiscord")) {
+                                status.write().error = e;
+                            }
                         }
                         None => status.write().error = "that screen share is no longer available".into(),
                     }
@@ -447,7 +449,9 @@ pub async fn voice_task(
                     match track {
                         Some(track) => {
                             let name = participant_name(status, &identity);
-                            crate::share::open_viewer(track, format!("{name}'s camera — NotDiscord"));
+                            if let Err(e) = crate::share::open_viewer(track, format!("{name}'s camera — NotDiscord")) {
+                                status.write().error = e;
+                            }
                         }
                         None => status.write().error = "that camera is no longer available".into(),
                     }

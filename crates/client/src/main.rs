@@ -51,6 +51,10 @@ fn main() {
     // window and bow out instead.
     ensure_single_instance();
 
+    // Claim the tray/menu event slots before dioxus can (write-once OnceCells,
+    // first setter wins) — otherwise tray menu clicks go nowhere.
+    tray::claim_event_handlers();
+
     // Clean up binaries left behind by self-updates. Old versions staged as
     // NotDiscord.old.exe; current ones use unique names (NotDiscord.old-*.exe)
     // so a locked leftover can never block the next update.
@@ -188,8 +192,34 @@ fn App() -> Element {
         });
     }
 
-    // Tray menu (Open/Quit). Left-click-to-restore is dioxus built-in; menu
-    // events only reach us through this hook — see the note in tray.rs.
+    // Tray menu (Open/Quit) + icon clicks, drained from the queue our
+    // main()-registered handlers fill.
+    {
+        let tray_handle = tray_handle.clone();
+        let window = window.clone();
+        use_future(move || {
+            let tray_handle = tray_handle.clone();
+            let window = window.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    for action in tray::poll_events(&tray_handle) {
+                        match action {
+                            tray::TrayAction::Show => {
+                                window.window.set_visible(true);
+                                window.window.set_minimized(false);
+                                window.window.set_focus();
+                            }
+                            tray::TrayAction::Quit => quit_now("quitting from tray"),
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Belt and braces: dioxus forwards tray menu events too, in case its
+    // registration ever wins the race.
     {
         let tray_handle = tray_handle.clone();
         let window = window.clone();
@@ -201,7 +231,7 @@ fn App() -> Element {
                 window.window.set_minimized(false);
                 window.window.set_focus();
             } else if event.id() == &tray.quit_id {
-                std::process::exit(0);
+                quit_now("quitting from tray (dioxus path)");
             }
         });
     }
@@ -424,6 +454,9 @@ fn MainView(session: api::Session) -> Element {
     let mut tags = use_signal(Vec::<Tag>::new);
     use_context_provider(|| members);
     use_context_provider(|| tags);
+    // Server emojis, shared with the markdown renderer for :name: lookups.
+    let mut emojis = use_signal(Vec::<shared::CustomEmoji>::new);
+    use_context_provider(|| emojis);
     let mut has_more = use_signal(|| false);
     let mut loading_older = use_signal(|| false);
     // channel id -> (unread messages, how many ping you, last id you'd read).
@@ -638,6 +671,13 @@ fn MainView(session: api::Session) -> Element {
     use_future(move || async move {
         if let Ok(list) = api::tags(&session()).await {
             tags.set(list);
+        }
+    });
+
+    // Load server emojis.
+    use_future(move || async move {
+        if let Ok(list) = api::emojis(&session()).await {
+            emojis.set(list);
         }
     });
 
@@ -888,6 +928,11 @@ fn MainView(session: api::Session) -> Element {
                                 }
                                 if let Ok(users) = api::users(&session()).await {
                                     members.set(users);
+                                }
+                            }
+                            ServerEvent::EmojisChanged => {
+                                if let Ok(list) = api::emojis(&session()).await {
+                                    emojis.set(list);
                                 }
                             }
                             ServerEvent::ServerIconChanged { icon } => {
@@ -1894,6 +1939,12 @@ fn MainView(session: api::Session) -> Element {
                                     },
                                     "What's new"
                                 }
+                                div { class: "settings-hint", "closing the window keeps NotDiscord in the tray — this really exits" }
+                                button {
+                                    class: "profile-btn danger",
+                                    onclick: move |_| quit_now("quitting from settings"),
+                                    "Quit NotDiscord"
+                                }
                             }
                         }
                     }
@@ -2775,6 +2826,78 @@ fn MainView(session: api::Session) -> Element {
                             },
                         }
                         div { class: "emoji-scroll",
+                            // Server emojis first — they're the ones people want.
+                            {
+                                let query = emoji_query().trim().to_lowercase();
+                                let mine: Vec<shared::CustomEmoji> = emojis()
+                                    .into_iter()
+                                    .filter(|e| query.is_empty() || e.name.contains(&query))
+                                    .collect();
+                                rsx! {
+                                    div { class: "emoji-section",
+                                        div { class: "emoji-cat", "Server emojis" }
+                                        div { class: "emoji-grid",
+                                            for emoji in mine {
+                                                button {
+                                                    key: "c{emoji.id}",
+                                                    class: "emoji-cell custom",
+                                                    title: ":{emoji.name}:",
+                                                    onclick: {
+                                                        let name = emoji.name.clone();
+                                                        move |_| {
+                                                            draft.set(format!("{}:{name}: ", draft()));
+                                                            notify_typing();
+                                                        }
+                                                    },
+                                                    img { class: "custom-emoji", src: "{emoji.url}" }
+                                                }
+                                            }
+                                            button {
+                                                class: "emoji-cell emoji-add",
+                                                title: "Upload a new server emoji (named after the file)",
+                                                onclick: move |_| {
+                                                    spawn(async move {
+                                                        let Some(file) = rfd::AsyncFileDialog::new()
+                                                            .add_filter("Images", &["png", "gif", "jpg", "jpeg", "webp"])
+                                                            .pick_file()
+                                                            .await
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let filename = file.file_name();
+                                                        let bytes = file.read().await;
+                                                        if bytes.len() > 2 * 1024 * 1024 {
+                                                            status.set("emoji too large (max 2 MB)".into());
+                                                            return;
+                                                        }
+                                                        // Name comes from the file stem, tidied to :snake_case:.
+                                                        let stem = filename
+                                                            .rsplit_once('.')
+                                                            .map(|(s, _)| s.to_owned())
+                                                            .unwrap_or_else(|| filename.clone());
+                                                        let name: String = stem
+                                                            .to_lowercase()
+                                                            .chars()
+                                                            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                                                            .collect();
+                                                        match api::upload(&session(), &filename, bytes).await {
+                                                            Ok(url) => {
+                                                                // Arrives back via the EmojisChanged broadcast.
+                                                                match api::create_emoji(&session(), name.clone(), url).await {
+                                                                    Ok(_) => status.set(format!("added :{name}:")),
+                                                                    Err(e) => status.set(e),
+                                                                }
+                                                            }
+                                                            Err(e) => status.set(e),
+                                                        }
+                                                    });
+                                                },
+                                                "+"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if emoji_query().trim().is_empty() {
                                 // Full catalog, grouped.
                                 for (category, list) in emoji::CATALOG {
@@ -2918,6 +3041,24 @@ fn MainView(session: api::Session) -> Element {
                                     react_target.set(None);
                                 },
                                 "{emoji}"
+                            }
+                        }
+                        // React with the server's own emojis too.
+                        for custom in emojis() {
+                            button {
+                                key: "c{custom.id}",
+                                title: ":{custom.name}:",
+                                onclick: {
+                                    let token = format!(":{}:", custom.name);
+                                    move |_| {
+                                        ws.send(ClientEvent::ToggleReaction {
+                                            message_id: target,
+                                            emoji: token.clone(),
+                                        });
+                                        react_target.set(None);
+                                    }
+                                },
+                                img { class: "custom-emoji", src: "{custom.url}" }
                             }
                         }
                         button {
@@ -3483,6 +3624,31 @@ fn PlayerCard(data: String) -> Element {
     }
 }
 
+/// Really exit (closing the window only hides to the tray). Returns `()` so it
+/// can sit in an event handler.
+fn quit_now(reason: &str) {
+    api::debug_log(reason);
+    std::process::exit(0);
+}
+
+/// The image URL for a `:name:` token, when the server has that emoji.
+fn custom_emoji_url(emojis: &[shared::CustomEmoji], token: &str) -> Option<String> {
+    let name = token.strip_prefix(':')?.strip_suffix(':')?;
+    emojis.iter().find(|e| e.name == name).map(|e| e.url.clone())
+}
+
+/// True when a message is nothing but `:emoji:` tokens — those render big,
+/// the way Discord jumbos an emoji-only message.
+fn only_emojis(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.is_empty()
+        && trimmed.split_whitespace().all(|word| {
+            word.strip_prefix(':')
+                .and_then(|w| w.strip_suffix(':'))
+                .is_some_and(|name| shared::emoji_name_problem(name).is_none())
+        })
+}
+
 /// Commands offered by the `/` popup above the compose box.
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/play", "queue a SoundCloud track or playlist — /play <url>"),
@@ -3526,6 +3692,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let mut react_target = use_context::<Signal<Option<i64>>>();
     let members_ctx = use_context::<Signal<Vec<UserStatus>>>();
     let tags_ctx = use_context::<Signal<Vec<Tag>>>();
+    let emojis_ctx = use_context::<Signal<Vec<shared::CustomEmoji>>>();
     let mut replying_ctx = use_context::<Signal<Option<Message>>>();
     let mut jump_ctx = use_context::<Signal<Option<i64>>>();
     let mut editing = use_signal(|| false);
@@ -3647,7 +3814,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                 } else if let Some(data) = player.clone() {
                     PlayerCard { data }
                 } else if !text.is_empty() {
-                    div { class: "msg-body",
+                    div { class: if only_emojis(&text) { "msg-body jumbo" } else { "msg-body" },
                         md::Md { nodes: md::parse_markdown(&text) }
                         if msg.edited_at.is_some() {
                             span { class: "edited-tag", " (edited)" }
@@ -3712,7 +3879,13 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                                         emoji: emoji.clone(),
                                     })
                                 },
-                                "{emoji} {count}"
+                                // Server emojis show their image; unicode stays text.
+                                if let Some(url) = custom_emoji_url(&emojis_ctx(), &emoji) {
+                                    img { class: "custom-emoji", src: "{url}" }
+                                } else {
+                                    span { "{emoji}" }
+                                }
+                                span { " {count}" }
                             }
                         }
                     }

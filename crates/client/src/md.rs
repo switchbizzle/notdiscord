@@ -129,9 +129,12 @@ enum Seg {
     Plain(String),
     Mention(String),
     Url(String),
+    /// `:name:` — rendered as the server emoji's image when it exists.
+    Emoji(String),
 }
 
-/// Split text into plain runs, `@mention` tokens, and bare `http(s)://` URLs.
+/// Split text into plain runs, `@mention` tokens, bare `http(s)://` URLs, and
+/// `:emoji:` names.
 fn rich_segments(text: &str) -> Vec<Seg> {
     let mut segments: Vec<Seg> = Vec::new();
     let mut plain = String::new();
@@ -168,6 +171,23 @@ fn rich_segments(text: &str) -> Vec<Seg> {
             }
         }
 
+        // :emoji_name: detection.
+        if chars[i] == ':' {
+            let mut j = i + 1;
+            while j < chars.len()
+                && (chars[j].is_ascii_lowercase() || chars[j].is_ascii_digit() || chars[j] == '_')
+            {
+                j += 1;
+            }
+            // Needs a closing colon and at least two name characters.
+            if j < chars.len() && chars[j] == ':' && j >= i + 3 {
+                flush_plain(&mut plain, &mut segments);
+                segments.push(Seg::Emoji(chars[i + 1..j].iter().collect()));
+                i = j + 1;
+                continue;
+            }
+        }
+
         // @mention detection.
         if chars[i] == '@' && at_boundary {
             let mut j = i + 1;
@@ -189,6 +209,20 @@ fn rich_segments(text: &str) -> Vec<Seg> {
     segments
 }
 
+/// `:name:` renders as the server emoji's image, or stays literal text when
+/// no emoji by that name exists (so ordinary colon-y text is untouched).
+#[component]
+fn CustomEmoji(name: String) -> Element {
+    let emojis = use_context::<Signal<Vec<shared::CustomEmoji>>>();
+    let found = emojis().into_iter().find(|e| e.name == name);
+    match found {
+        Some(emoji) => rsx! {
+            img { class: "custom-emoji", src: "{emoji.url}", alt: ":{name}:", title: ":{name}:" }
+        },
+        None => rsx! { span { ":{name}:" } },
+    }
+}
+
 #[component]
 fn MdOne(node: MdNode) -> Element {
     match node {
@@ -197,6 +231,7 @@ fn MdOne(node: MdNode) -> Element {
                 match seg {
                     Seg::Plain(s) => rsx! { span { key: "{i}", "{s}" } },
                     Seg::Mention(s) => rsx! { span { key: "{i}", class: "mention", "{s}" } },
+                    Seg::Emoji(name) => rsx! { CustomEmoji { key: "{i}", name } },
                     Seg::Url(url) => {
                         let title = url.clone();
                         rsx! {

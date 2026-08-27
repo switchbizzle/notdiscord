@@ -1,18 +1,58 @@
 //! System tray: blurple dot icon (red badge when unread), left-click to
-//! restore the window (dioxus built-in), menu with Open/Quit. The window's X
-//! button hides to tray; Quit here is the real exit.
+//! restore the window, menu with Open/Quit. The window's X button hides to
+//! tray; Quit here is the real exit.
 //!
-//! Menu events arrive through dioxus's `use_tray_menu_event_handler` hook in
-//! main.rs. They CANNOT be received via `MenuEvent::set_event_handler`:
-//! dioxus-desktop claims that slot during launch, and muda/tray-icon handler
-//! slots are write-once OnceCells — our later set would be silently ignored
-//! (which is exactly why the old polling approach never got a single event).
+//! Menu delivery is the fiddly part. muda's and tray-icon's handler slots are
+//! write-once OnceCells, and dioxus-desktop claims both while launching —
+//! before any component mounts. So `claim_event_handlers()` must run from
+//! `main()` BEFORE the launch, which makes our handler the one muda calls and
+//! turns dioxus's later registration into the no-op instead. Events land in
+//! our own queue, which the UI drains.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc as std_mpsc;
+use std::sync::{Mutex, OnceLock};
 
-use tray_icon::menu::{Menu, MenuId, MenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+enum RawEvent {
+    Menu(MenuId),
+    LeftClick,
+}
+
+static QUEUE: OnceLock<Mutex<std_mpsc::Receiver<RawEvent>>> = OnceLock::new();
+
+/// Claim the process-wide muda/tray-icon handler slots. MUST be called from
+/// `main()` before dioxus launches, or dioxus wins the OnceCell race and our
+/// menu clicks vanish into its no-op handler.
+pub fn claim_event_handlers() {
+    let (tx, rx) = std_mpsc::channel::<RawEvent>();
+    if QUEUE.set(Mutex::new(rx)).is_err() {
+        return;
+    }
+    let menu_tx = Mutex::new(tx.clone());
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        crate::api::debug_log(&format!("tray menu event: {:?}", event.id));
+        if let Ok(tx) = menu_tx.lock() {
+            let _ = tx.send(RawEvent::Menu(event.id));
+        }
+    }));
+    let tray_tx = Mutex::new(tx);
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            if let Ok(tx) = tray_tx.lock() {
+                let _ = tx.send(RawEvent::LeftClick);
+            }
+        }
+    }));
+}
 
 pub struct Tray {
     icon: TrayIcon,
@@ -83,4 +123,34 @@ impl Tray {
     pub fn set_unread(&self, unread: bool) {
         let _ = self.icon.set_icon(Some(make_icon(unread)));
     }
+}
+
+/// What the UI should do about tray activity.
+pub enum TrayAction {
+    Show,
+    Quit,
+}
+
+/// Drain queued tray events. Called on a short timer by the UI.
+pub fn poll_events(tray: &TrayHandle) -> Vec<TrayAction> {
+    let mut actions = Vec::new();
+    let borrow = tray.borrow();
+    let Some(tray) = borrow.as_ref() else {
+        return actions;
+    };
+    let Some(queue) = QUEUE.get() else {
+        return actions;
+    };
+    let Ok(rx) = queue.lock() else {
+        return actions;
+    };
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            RawEvent::LeftClick => actions.push(TrayAction::Show),
+            RawEvent::Menu(id) if id == tray.open_id => actions.push(TrayAction::Show),
+            RawEvent::Menu(id) if id == tray.quit_id => actions.push(TrayAction::Quit),
+            RawEvent::Menu(_) => {}
+        }
+    }
+    actions
 }

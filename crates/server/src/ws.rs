@@ -257,7 +257,20 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             send_scoped(state, &recipients, ServerEvent::Typing { channel_id, user: user.clone() });
         }
         ClientEvent::ToggleReaction { message_id, emoji } => {
-            if emoji.is_empty() || emoji.chars().count() > 8 || emoji.chars().any(char::is_whitespace) {
+            // Either a unicode emoji, or :name: naming a real server emoji.
+            let valid = if let Some(name) = emoji.strip_prefix(':').and_then(|e| e.strip_suffix(':')) {
+                shared::emoji_name_problem(name).is_none()
+                    && sqlx::query_scalar::<_, i64>("SELECT 1 FROM custom_emojis WHERE name = ?")
+                        .bind(name)
+                        .fetch_optional(&state.db)
+                        .await?
+                        .is_some()
+            } else {
+                !emoji.is_empty()
+                    && emoji.chars().count() <= 8
+                    && !emoji.chars().any(char::is_whitespace)
+            };
+            if !valid {
                 return Ok(());
             }
             let Some(row) = sqlx::query("SELECT channel_id FROM messages WHERE id = ?")

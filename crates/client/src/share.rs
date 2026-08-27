@@ -130,59 +130,98 @@ pub fn start_capture(source: NativeVideoSource, monitor: Option<usize>) -> Resul
 
 // ---------- Viewer (everyone else) ----------
 
-type SharedFrame = Arc<Mutex<Option<(u32, u32, Vec<u32>)>>>;
+/// Latest decoded frame: (width, height, 0RGB pixels).
+pub type SharedFrame = Arc<Mutex<Option<(u32, u32, Vec<u32>)>>>;
 
-/// Open a native window playing `track`. Returns once the window/thread are
-/// spawned; everything shuts down when the window is closed or the track ends.
-pub fn open_viewer(track: RemoteVideoTrack, title: String) {
-    let latest: SharedFrame = Arc::new(Mutex::new(None));
-    let alive = Arc::new(AtomicBool::new(true));
-
-    {
-        let latest = latest.clone();
-        let alive = alive.clone();
-        let rtc = track.rtc_track();
-        tokio::spawn(async move {
-            use futures_util::StreamExt;
-            let mut stream = NativeVideoStream::new(rtc);
-            while let Some(frame) = stream.next().await {
-                if !alive.load(Ordering::Relaxed) {
-                    break;
-                }
-                let width = frame.buffer.width();
-                let height = frame.buffer.height();
-                if width == 0 || height == 0 {
-                    continue;
-                }
-                let mut dst = vec![0u8; (width * height * 4) as usize];
-                // libyuv "ARGB" writes BGRA bytes → little-endian u32 0xAARRGGBB,
-                // which is exactly softbuffer's 0RGB layout.
-                frame.buffer.to_argb(VideoFormatType::ARGB, &mut dst, width * 4, width as i32, height as i32);
-                let pixels: Vec<u32> = dst
-                    .chunks_exact(4)
-                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
-                *latest.lock().unwrap() = Some((width, height, pixels));
-            }
-        });
-    }
-
-    std::thread::spawn(move || run_viewer_window(title, latest, alive));
-}
-
-struct ViewerApp {
+/// A request for the viewer loop to open one more window.
+struct ViewerRequest {
     title: String,
     latest: SharedFrame,
     alive: Arc<AtomicBool>,
-    window: Option<Rc<winit::window::Window>>,
-    surface: Option<softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>>,
 }
 
-impl winit::application::ApplicationHandler for ViewerApp {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
+/// winit allows exactly ONE event loop per process for the whole run — the
+/// "already created" flag is never cleared outside web builds — so the viewer
+/// is a single long-lived loop that opens windows on demand. (Creating a
+/// second loop returned an error, which is why every Watch after the first
+/// used to do nothing at all.)
+static VIEWER: std::sync::OnceLock<Option<winit::event_loop::EventLoopProxy<ViewerRequest>>> =
+    std::sync::OnceLock::new();
+
+fn viewer_proxy() -> Option<&'static winit::event_loop::EventLoopProxy<ViewerRequest>> {
+    VIEWER
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || run_viewer_loop(tx));
+            // The loop hands its proxy back once it exists.
+            rx.recv_timeout(std::time::Duration::from_secs(5)).ok().flatten()
+        })
+        .as_ref()
+}
+
+/// Open a viewer window fed by frames the caller writes into the returned
+/// slot. `alive` goes false when the window closes.
+pub fn open_frame_viewer(title: String) -> Result<(SharedFrame, Arc<AtomicBool>), String> {
+    let latest: SharedFrame = Arc::new(Mutex::new(None));
+    let alive = Arc::new(AtomicBool::new(true));
+    let Some(proxy) = viewer_proxy() else {
+        return Err("could not start the video viewer".into());
+    };
+    proxy
+        .send_event(ViewerRequest { title, latest: latest.clone(), alive: alive.clone() })
+        .map_err(|_| "the video viewer stopped responding".to_string())?;
+    Ok((latest, alive))
+}
+
+/// Open a native window playing `track`. Everything for that window shuts down
+/// when it's closed or the track ends; the shared loop keeps running.
+pub fn open_viewer(track: RemoteVideoTrack, title: String) -> Result<(), String> {
+    let (latest, alive) = open_frame_viewer(title)?;
+    let rtc = track.rtc_track();
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        let mut stream = NativeVideoStream::new(rtc);
+        while let Some(frame) = stream.next().await {
+            if !alive.load(Ordering::Relaxed) {
+                break;
+            }
+            let width = frame.buffer.width();
+            let height = frame.buffer.height();
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let mut dst = vec![0u8; (width * height * 4) as usize];
+            // libyuv "ARGB" writes BGRA bytes → little-endian u32 0xAARRGGBB,
+            // which is exactly softbuffer's 0RGB layout.
+            frame.buffer.to_argb(VideoFormatType::ARGB, &mut dst, width * 4, width as i32, height as i32);
+            let pixels: Vec<u32> = dst
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            *latest.lock().unwrap() = Some((width, height, pixels));
         }
+    });
+    Ok(())
+}
+
+/// One open viewer window.
+struct ViewerWindow {
+    window: Rc<winit::window::Window>,
+    surface: softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>,
+    latest: SharedFrame,
+    alive: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct ViewerApp {
+    windows: std::collections::HashMap<winit::window::WindowId, ViewerWindow>,
+}
+
+impl winit::application::ApplicationHandler<ViewerRequest> for ViewerApp {
+    fn resumed(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
+
+    /// A Watch click: open another window on this same loop.
+    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, request: ViewerRequest) {
         // dioxus's tao already registered the Win32 class "Window Class" (both
         // libraries' default!) with ITS window procedure. Without a distinct
         // class name here, winit's registration silently no-ops and this window
@@ -190,62 +229,69 @@ impl winit::application::ApplicationHandler for ViewerApp {
         // the whole app and then crashing it.
         use winit::platform::windows::WindowAttributesExtWindows;
         let attrs = winit::window::Window::default_attributes()
-            .with_title(self.title.clone())
+            .with_title(request.title)
             .with_class_name("NotDiscordViewer")
             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 560.0));
-        let window = match event_loop.create_window(attrs) {
-            Ok(window) => Rc::new(window),
-            Err(_) => {
-                self.alive.store(false, Ordering::Relaxed);
-                event_loop.exit();
-                return;
-            }
+        let Ok(window) = event_loop.create_window(attrs) else {
+            request.alive.store(false, Ordering::Relaxed);
+            return;
         };
+        let window = Rc::new(window);
         let surface = softbuffer::Context::new(window.clone())
             .and_then(|context| softbuffer::Surface::new(&context, window.clone()));
         match surface {
             Ok(surface) => {
-                self.window = Some(window);
-                self.surface = Some(surface);
+                self.windows.insert(
+                    window.id(),
+                    ViewerWindow { window, surface, latest: request.latest, alive: request.alive },
+                );
             }
-            Err(_) => {
-                self.alive.store(false, Ordering::Relaxed);
-                event_loop.exit();
-            }
+            Err(_) => request.alive.store(false, Ordering::Relaxed),
         }
     }
 
     fn window_event(
         &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        _id: winit::window::WindowId,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
         match event {
             winit::event::WindowEvent::CloseRequested => {
-                self.alive.store(false, Ordering::Relaxed);
-                event_loop.exit();
+                // Close just this window; the loop lives on for the next Watch.
+                if let Some(viewer) = self.windows.remove(&id) {
+                    viewer.alive.store(false, Ordering::Relaxed);
+                }
             }
-            winit::event::WindowEvent::RedrawRequested => self.draw(),
+            winit::event::WindowEvent::RedrawRequested => {
+                if let Some(viewer) = self.windows.get_mut(&id) {
+                    viewer.draw();
+                }
+            }
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        // Idle cheaply when nothing is being watched.
+        if self.windows.is_empty() {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            return;
+        }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             std::time::Instant::now() + std::time::Duration::from_millis(33),
         ));
-        if let Some(window) = &self.window {
-            window.request_redraw();
+        // A track that ended closes its own window.
+        self.windows.retain(|_, viewer| viewer.alive.load(Ordering::Relaxed));
+        for viewer in self.windows.values() {
+            viewer.window.request_redraw();
         }
     }
 }
 
-impl ViewerApp {
+impl ViewerWindow {
     fn draw(&mut self) {
-        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
-            return;
-        };
+        let (window, surface) = (&self.window, &mut self.surface);
         let size = window.inner_size();
         let (Some(win_w), Some(win_h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
             return;
@@ -277,13 +323,21 @@ impl ViewerApp {
     }
 }
 
-fn run_viewer_window(title: String, latest: SharedFrame, alive: Arc<AtomicBool>) {
+/// The process's one and only viewer event loop. Hands its proxy back through
+/// `ready`, then runs until the app exits.
+fn run_viewer_loop(ready: std::sync::mpsc::Sender<Option<winit::event_loop::EventLoopProxy<ViewerRequest>>>) {
     use winit::platform::windows::EventLoopBuilderExtWindows;
-    let event_loop = match winit::event_loop::EventLoop::builder().with_any_thread(true).build() {
-        Ok(el) => el,
-        Err(_) => return,
+    let event_loop = match winit::event_loop::EventLoop::<ViewerRequest>::with_user_event()
+        .with_any_thread(true)
+        .build()
+    {
+        Ok(event_loop) => event_loop,
+        Err(_) => {
+            let _ = ready.send(None);
+            return;
+        }
     };
-    let mut app = ViewerApp { title, latest, alive: alive.clone(), window: None, surface: None };
+    let _ = ready.send(Some(event_loop.create_proxy()));
+    let mut app = ViewerApp::default();
     let _ = event_loop.run_app(&mut app);
-    alive.store(false, Ordering::Relaxed);
 }

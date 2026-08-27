@@ -1586,6 +1586,20 @@ input:focus { border-color: #5865f2; }
     cursor: pointer;
 }
 .emoji-cell:hover { background: #35373c; }
+.emoji-cell.custom { padding: 4px 0; }
+.emoji-add { color: #949ba4; font-size: 20px; }
+
+/* Server emojis, inline in messages and in the picker. */
+.custom-emoji {
+    height: 22px;
+    width: auto;
+    max-width: 88px;
+    vertical-align: -5px;
+    object-fit: contain;
+}
+/* A message that's nothing but emojis renders them big. */
+.msg-body.jumbo .custom-emoji { height: 44px; max-width: 160px; vertical-align: -10px; }
+.react-chip .custom-emoji { height: 16px; vertical-align: -3px; }
 
 /* ---------- Invite code (Settings → Server) ---------- */
 

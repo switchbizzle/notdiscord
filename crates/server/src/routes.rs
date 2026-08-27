@@ -865,6 +865,91 @@ pub async fn serve_file_legacy(Path(name): Path<String>, Query(q): Query<FileQue
     file_response(crate::uploads_dir().join(&name), &name, q.dl.is_some()).await
 }
 
+pub async fn list_emojis(
+    State(state): State<SharedState>,
+    _user: AuthUser,
+) -> ApiResult<Json<Vec<shared::CustomEmoji>>> {
+    let rows = sqlx::query(
+        "SELECT id, name, url, creator_id FROM custom_emojis ORDER BY name COLLATE NOCASE",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| shared::CustomEmoji {
+                id: r.get(0),
+                name: r.get(1),
+                url: r.get(2),
+                creator_id: r.get(3),
+            })
+            .collect(),
+    ))
+}
+
+pub async fn create_emoji(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::CreateEmojiRequest>,
+) -> ApiResult<Json<shared::CustomEmoji>> {
+    let name = req.name.trim().to_lowercase();
+    if let Some(problem) = shared::emoji_name_problem(&name) {
+        return Err(err(StatusCode::BAD_REQUEST, problem));
+    }
+    let ok = req.url.len() < 500
+        && (req.url.starts_with("http://") || req.url.starts_with("https://") || req.url.starts_with("/files/"));
+    if !ok {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid emoji url"));
+    }
+
+    let result = sqlx::query(
+        "INSERT INTO custom_emojis (name, url, creator_id, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&name)
+    .bind(&req.url)
+    .bind(user.id)
+    .bind(now_ms())
+    .execute(&state.db)
+    .await;
+
+    let id = match result {
+        Ok(r) => r.last_insert_rowid(),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(err(StatusCode::CONFLICT, "an emoji with that name already exists"));
+        }
+        Err(e) => return Err(internal(e)),
+    };
+
+    let emoji = shared::CustomEmoji { id, name, url: req.url, creator_id: user.id };
+    state.broadcast(ServerEvent::EmojisChanged);
+    Ok(Json(emoji))
+}
+
+pub async fn delete_emoji(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let creator: Option<i64> = sqlx::query_scalar("SELECT creator_id FROM custom_emojis WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    let Some(creator) = creator else {
+        return Err(err(StatusCode::NOT_FOUND, "no such emoji"));
+    };
+    if creator != user.id && user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "only the uploader or an admin can delete that"));
+    }
+    sqlx::query("DELETE FROM custom_emojis WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::EmojisChanged);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub async fn list_stickers(
     State(state): State<SharedState>,
     _user: AuthUser,

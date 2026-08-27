@@ -350,6 +350,33 @@ pub struct ClientVersionInfo {
     pub url: String,
 }
 
+/// A server emoji, written `:name:` in messages and reactions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmoji {
+    pub id: i64,
+    pub name: String,
+    pub url: String,
+    pub creator_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEmojiRequest {
+    pub name: String,
+    /// URL previously returned by /api/upload.
+    pub url: String,
+}
+
+/// Emoji names are `:snake_case:` — 2-32 of [a-z0-9_].
+pub fn emoji_name_problem(name: &str) -> Option<&'static str> {
+    if name.len() < 2 || name.len() > 32 {
+        return Some("emoji name must be 2-32 characters");
+    }
+    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return Some("emoji names use lowercase letters, numbers, and underscores");
+    }
+    None
+}
+
 /// Unread state for one channel (GET /api/unread).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnreadInfo {
@@ -449,6 +476,8 @@ pub enum ServerEvent {
     ServerIconChanged { icon: String },
     /// Tags or assignments changed; clients refetch /api/tags and /api/users.
     TagsChanged,
+    /// Server emojis changed; clients refetch /api/emojis.
+    EmojisChanged,
     /// Someone joined (Some) or left (None) a voice channel.
     VoiceStateChanged {
         user: User,

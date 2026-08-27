@@ -239,6 +239,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/gifs", get(routes::gifs))
         .route("/api/preview", get(preview::preview))
         .route("/api/voice/token", get(routes::voice_token))
+        .route("/api/emojis", get(routes::list_emojis).post(routes::create_emoji))
+        .route("/api/emojis/{id}", axum::routing::delete(routes::delete_emoji))
         .route("/api/stickers", get(routes::list_stickers).post(routes::create_sticker))
         .route("/api/stickers/{id}", axum::routing::delete(routes::delete_sticker))
         .route("/api/client/version", get(routes::client_version))

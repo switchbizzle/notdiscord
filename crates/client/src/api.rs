@@ -522,6 +522,36 @@ pub async fn mark_read(session: &Session, channel_id: i64, message_id: i64) {
         .await;
 }
 
+pub async fn emojis(session: &Session) -> Result<Vec<shared::CustomEmoji>, String> {
+    let mut list: Vec<shared::CustomEmoji> = get(session, "emojis".into()).await?;
+    // Server-relative paths would resolve against the webview's own origin,
+    // so anchor them to this server.
+    for emoji in &mut list {
+        if emoji.url.starts_with('/') {
+            emoji.url = format!("{}{}", session.base_url, emoji.url);
+        }
+    }
+    Ok(list)
+}
+
+pub async fn create_emoji(session: &Session, name: String, url: String) -> Result<shared::CustomEmoji, String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/emojis", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::CreateEmojiRequest { name, url }))
+        .await?;
+    handle(resp).await
+}
+
+pub async fn delete_emoji(session: &Session, emoji_id: i64) -> Result<(), String> {
+    let resp = send_retry(http()
+        .delete(format!("{}/api/emojis/{emoji_id}", session.base_url))
+        .bearer_auth(&session.token))
+        .await?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
+}
+
 pub async fn stickers(session: &Session) -> Result<Vec<Sticker>, String> {
     get(session, "stickers".into()).await
 }

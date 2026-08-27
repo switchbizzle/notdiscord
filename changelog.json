@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.36.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Custom emojis! Upload one from the emoji picker (+ button) and use it anywhere as :name: — in messages and as reactions",
+      "An emoji-only message renders them big",
+      "Fixed Watch doing nothing after you'd already watched something once — you can now watch a screen share and a camera at the same time, in separate windows",
+      "The tray Quit actually quits now (third time's the charm), and Settings → App has a Quit button that always works"
+    ]
+  },
+  {
     "version": "0.35.0",
     "date": "2026-08-26",
     "changes": [
