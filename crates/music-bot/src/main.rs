@@ -33,8 +33,23 @@ const FRAME_BYTES: usize = FRAME_SAMPLES_PER_CH * CHANNELS as usize * 2;
 
 #[derive(Clone, Debug, Serialize)]
 struct Track {
+    /// Stable id, so reordering and removing are unambiguous.
+    id: u64,
     url: String,
     title: String,
+    #[serde(default)]
+    artist: String,
+    /// Cover art URL, shown in the music tab.
+    #[serde(default)]
+    art: Option<String>,
+    /// Seconds, when yt-dlp knows.
+    #[serde(default)]
+    duration: Option<f64>,
+}
+
+fn next_track_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Control flags shared with the playback worker.
@@ -42,6 +57,8 @@ struct Controls {
     skip: AtomicBool,
     stop: AtomicBool,
     paused: AtomicBool,
+    /// Milliseconds into the current track.
+    position_ms: std::sync::atomic::AtomicU64,
 }
 
 struct Session {
@@ -98,6 +115,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/pause", post(pause))
         .route("/resume", post(resume))
         .route("/status", get(status))
+        .route("/queue/move", post(queue_move))
+        .route("/queue/remove", post(queue_remove))
+        .route("/queue/clear", post(queue_clear))
         .with_state(state);
 
     let addr = std::env::var("MUSIC_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".into());
@@ -154,6 +174,7 @@ async fn play(
                 skip: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
+                position_ms: std::sync::atomic::AtomicU64::new(0),
             });
             *guard = Some(Session {
                 room_name: req.room.clone(),
@@ -216,6 +237,9 @@ struct StatusResponse {
     active: bool,
     room: Option<String>,
     now_playing: Option<Track>,
+    /// Seconds into the current track.
+    position: f64,
+    queue: Vec<Track>,
     queue_len: usize,
     up_next: Vec<String>,
     paused: bool,
@@ -228,6 +252,8 @@ async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
             active: true,
             room: Some(s.room_name.clone()),
             now_playing: s.now_playing.clone(),
+            position: s.controls.position_ms.load(Ordering::Relaxed) as f64 / 1000.0,
+            queue: s.queue.iter().cloned().collect(),
             queue_len: s.queue.len(),
             up_next: s.queue.iter().take(5).map(|t| t.title.clone()).collect(),
             paused: s.controls.paused.load(Ordering::Relaxed),
@@ -236,11 +262,56 @@ async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
             active: false,
             room: None,
             now_playing: None,
+            position: 0.0,
+            queue: Vec::new(),
             queue_len: 0,
             up_next: Vec::new(),
             paused: false,
         },
     })
+}
+
+#[derive(Deserialize)]
+struct MoveRequest {
+    id: u64,
+    /// Negative moves earlier in the queue, positive later.
+    offset: i64,
+}
+
+/// Reorder one track. Used by the drag handles and the up/down badges.
+async fn queue_move(State(state): State<Shared>, Json(req): Json<MoveRequest>) -> StatusCode {
+    let mut guard = state.session.lock().unwrap();
+    let Some(session) = guard.as_mut() else { return StatusCode::NOT_FOUND };
+    let Some(from) = session.queue.iter().position(|t| t.id == req.id) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let to = (from as i64 + req.offset).clamp(0, session.queue.len() as i64 - 1) as usize;
+    if to == from {
+        return StatusCode::NO_CONTENT;
+    }
+    let Some(track) = session.queue.remove(from) else { return StatusCode::NOT_FOUND };
+    session.queue.insert(to, track);
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+struct RemoveRequest {
+    ids: Vec<u64>,
+}
+
+/// Drop one or many tracks — the multi-select delete.
+async fn queue_remove(State(state): State<Shared>, Json(req): Json<RemoveRequest>) -> StatusCode {
+    let mut guard = state.session.lock().unwrap();
+    let Some(session) = guard.as_mut() else { return StatusCode::NOT_FOUND };
+    session.queue.retain(|t| !req.ids.contains(&t.id));
+    StatusCode::NO_CONTENT
+}
+
+async fn queue_clear(State(state): State<Shared>) -> StatusCode {
+    let mut guard = state.session.lock().unwrap();
+    let Some(session) = guard.as_mut() else { return StatusCode::NOT_FOUND };
+    session.queue.clear();
+    StatusCode::NO_CONTENT
 }
 
 // ---------- Track resolution (yt-dlp) ----------
@@ -271,15 +342,41 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
                 .filter(|t| !t.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| slug_title(track_url));
-            tracks.push(Track { url: track_url.to_owned(), title });
+            tracks.push(Track {
+                id: next_track_id(),
+                url: track_url.to_owned(),
+                title,
+                artist: entry["uploader"].as_str().unwrap_or_default().to_owned(),
+                art: best_thumbnail(entry),
+                duration: entry["duration"].as_f64(),
+            });
         }
     } else {
         tracks.push(Track {
+            id: next_track_id(),
             url: info["webpage_url"].as_str().unwrap_or(url).to_owned(),
             title: info["title"].as_str().unwrap_or(url).to_owned(),
+            artist: info["uploader"].as_str().unwrap_or_default().to_owned(),
+            art: best_thumbnail(&info),
+            duration: info["duration"].as_f64(),
         });
     }
     Ok(tracks)
+}
+
+/// The biggest thumbnail that isn't enormous — cover art for the music tab.
+fn best_thumbnail(info: &serde_json::Value) -> Option<String> {
+    if let Some(url) = info["thumbnail"].as_str() {
+        return Some(url.to_owned());
+    }
+    let thumbs = info["thumbnails"].as_array()?;
+    thumbs
+        .iter()
+        .filter(|t| t["width"].as_f64().unwrap_or(0.0) <= 800.0)
+        .max_by_key(|t| t["width"].as_f64().unwrap_or(0.0) as i64)
+        .or_else(|| thumbs.last())
+        .and_then(|t| t["url"].as_str())
+        .map(str::to_owned)
 }
 
 /// Readable stand-in title from a track URL's slug, used until the real one
@@ -312,11 +409,27 @@ fn slug_title(url: &str) -> String {
 }
 
 /// Resolve one track page to (title, direct stream URL).
-async fn resolve_stream(page_url: &str) -> anyhow::Result<(String, String)> {
+struct Resolved {
+    title: String,
+    artist: String,
+    art: Option<String>,
+    duration: Option<f64>,
+    stream: String,
+}
+
+async fn resolve_stream(page_url: &str) -> anyhow::Result<Resolved> {
     let cmd = ytdlp_cmd();
     let output = Command::new(&cmd[0])
         .args(&cmd[1..])
-        .args(["-f", "bestaudio/best", "--no-warnings", "--print", "title", "--print", "urls", page_url])
+        .args([
+            "-f", "bestaudio/best", "--no-warnings",
+            "--print", "title",
+            "--print", "uploader",
+            "--print", "thumbnail",
+            "--print", "duration",
+            "--print", "urls",
+            page_url,
+        ])
         .stdin(Stdio::null())
         .output()
         .await?;
@@ -326,8 +439,13 @@ async fn resolve_stream(page_url: &str) -> anyhow::Result<(String, String)> {
     let text = String::from_utf8_lossy(&output.stdout);
     let mut lines = text.lines();
     let title = lines.next().unwrap_or(page_url).to_owned();
+    let artist = lines.next().unwrap_or_default().to_owned();
+    // yt-dlp prints "NA" for fields it doesn't have.
+    let na = |v: &str| (v != "NA" && !v.is_empty()).then(|| v.to_owned());
+    let art = lines.next().and_then(na);
+    let duration = lines.next().and_then(|d| d.parse::<f64>().ok());
     let stream = lines.next().ok_or_else(|| anyhow::anyhow!("no stream url"))?.to_owned();
-    Ok((title, stream))
+    Ok(Resolved { title, artist, art, duration, stream })
 }
 
 // ---------- Playback ----------
@@ -373,13 +491,22 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         // Resolve the stream (and the real title — flat playlist entries
         // often only carry URLs) before announcing.
         match resolve_stream(&track.url).await {
-            Ok((title, stream_url)) => {
+            Ok(resolved) => {
+                let playing = Track {
+                    id: track.id,
+                    url: track.url.clone(),
+                    title: resolved.title.clone(),
+                    artist: if resolved.artist.is_empty() { track.artist.clone() } else { resolved.artist },
+                    art: resolved.art.or(track.art.clone()),
+                    duration: resolved.duration.or(track.duration),
+                };
+                controls.position_ms.store(0, Ordering::Relaxed);
                 if let Some(session) = state.session.lock().unwrap().as_mut() {
-                    session.now_playing = Some(Track { url: track.url.clone(), title: title.clone() });
+                    session.now_playing = Some(playing);
                 }
-                tracing::info!("playing: {title}");
-                if let Err(e) = stream_pcm(&source, &stream_url, &controls).await {
-                    tracing::warn!("track failed ({title}): {e}");
+                tracing::info!("playing: {}", resolved.title);
+                if let Err(e) = stream_pcm(&source, &resolved.stream, &controls).await {
+                    tracing::warn!("track failed ({}): {e}", resolved.title);
                 }
             }
             Err(e) => tracing::warn!("could not resolve {}: {e}", track.url),
@@ -452,6 +579,8 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
         if source.capture_frame(&frame).await.is_err() {
             break;
         }
+        // Each frame is 10ms of audio — that's the progress bar.
+        controls.position_ms.fetch_add(10, Ordering::Relaxed);
     }
     let _ = ffmpeg.wait().await;
     Ok(())

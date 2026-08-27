@@ -508,6 +508,37 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
     get(session, path).await
 }
 
+pub async fn music_state(session: &Session) -> Result<shared::MusicState, String> {
+    get(session, "music/state".into()).await
+}
+
+/// Transport buttons: "pause", "resume", "skip", "stop".
+pub async fn music_control(session: &Session, action: &str) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/music/control", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::MusicControlRequest { action: action.to_owned() }))
+        .await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err("nothing is playing".into())
+    }
+}
+
+pub async fn music_queue(session: &Session, req: shared::MusicQueueRequest) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/music/queue", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&req))
+        .await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err("couldn't update the queue".into())
+    }
+}
+
 pub async fn unread(session: &Session) -> Result<Vec<shared::UnreadInfo>, String> {
     get(session, "unread".into()).await
 }

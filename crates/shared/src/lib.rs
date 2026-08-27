@@ -377,6 +377,55 @@ pub fn emoji_name_problem(name: &str) -> Option<&'static str> {
     None
 }
 
+/// One track in the music player's queue.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicTrack {
+    pub id: u64,
+    pub url: String,
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub art: Option<String>,
+    #[serde(default)]
+    pub duration: Option<f64>,
+}
+
+/// The shared player, as the music tab sees it (GET /api/music/state).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MusicState {
+    pub active: bool,
+    pub paused: bool,
+    /// Seconds into the current track.
+    pub position: f64,
+    #[serde(default)]
+    pub now_playing: Option<MusicTrack>,
+    #[serde(default)]
+    pub queue: Vec<MusicTrack>,
+    /// Voice identity of the player, for the per-listener volume slider.
+    #[serde(default)]
+    pub bot_identity: String,
+}
+
+/// Body for POST /api/music/control — "pause", "resume", "skip", "stop".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicControlRequest {
+    pub action: String,
+}
+
+/// Body for POST /api/music/queue — "move", "remove", or "clear".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MusicQueueRequest {
+    pub action: String,
+    #[serde(default)]
+    pub id: Option<u64>,
+    /// Negative moves the track earlier in the queue, positive later.
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub ids: Vec<u64>,
+}
+
 /// Unread state for one channel (GET /api/unread).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnreadInfo {

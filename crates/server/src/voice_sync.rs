@@ -149,17 +149,24 @@ pub async fn sync_loop(state: SharedState) {
 async fn sync_once(state: &SharedState) -> anyhow::Result<()> {
     // What LiveKit actually sees, keyed by user.
     let mut actual: HashMap<i64, (i64, bool, bool)> = HashMap::new();
+    // Only rooms we genuinely heard back about. A room we couldn't ask about
+    // must never be treated as empty — that would evict everyone in it.
+    let mut answered: Vec<i64> = Vec::new();
     for channel_id in rooms_to_check(state).await {
         let room = format!("channel-{channel_id}");
         match list_participants(&room).await {
             Ok(participants) => {
+                answered.push(channel_id);
                 for (user_id, sharing, camera) in participants {
                     actual.insert(user_id, (channel_id, sharing, camera));
                 }
             }
-            // A room that has never existed 404s; that's just "empty".
-            Err(e) => tracing::trace!("list {room}: {e}"),
+            Err(e) => tracing::debug!("voice sync: can't read {room}: {e}"),
         }
+    }
+    if answered.is_empty() {
+        // LiveKit's API is unreachable (or misconfigured); leave the roster be.
+        return Ok(());
     }
 
     let now = now_ms();
@@ -202,9 +209,10 @@ async fn sync_once(state: &SharedState) -> anyhow::Result<()> {
         }
     }
 
-    // Ghosts: we think they're in voice, LiveKit disagrees.
-    for (user_id, (_, user, _, _)) in &known {
-        if !actual.contains_key(user_id) {
+    // Ghosts: we think they're in voice, LiveKit says otherwise — but only
+    // for rooms that actually answered.
+    for (user_id, (channel_id, user, _, _)) in &known {
+        if !actual.contains_key(user_id) && answered.contains(channel_id) {
             state.voice.lock().unwrap().remove(user_id);
             changes.push((user.clone(), None, false, false));
         }

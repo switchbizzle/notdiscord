@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.39.0",
+    "date": "2026-08-26",
+    "changes": [
+      "🎵 The music tab is here (Jon's design): Chat / Music tabs at the top right of the channel — the Music tab is a real player with cover art, a progress bar, play/pause/skip/stop, and your own volume slider",
+      "The queue is shared and editable: reorder with ▲▼, tick tracks and remove several at once, or clear the lot — everyone sees the same queue within a second",
+      "On the Music tab, pasting a link and hitting enter just queues it — no command to remember",
+      "Chat stays right underneath so the room keeps talking while the music plays",
+      "Fixed a nasty one: the voice channel list could empty itself if the server briefly couldn't reach the voice service"
+    ]
+  },
+  {
     "version": "0.38.0",
     "date": "2026-08-26",
     "changes": [

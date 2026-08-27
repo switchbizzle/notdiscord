@@ -11,7 +11,7 @@ mod voice;
 
 use icons::Icon;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dioxus::desktop::tao::window::UserAttentionType;
 use dioxus::html::HasFileData;
@@ -530,6 +530,11 @@ fn MainView(session: api::Session) -> Element {
     let mut emoji_open = use_signal(|| false);
     let mut emoji_query = use_signal(String::new);
     let mut slash_sel = use_signal(|| 0usize);
+    // The music tab: shared player state, polled while it's open.
+    let mut music_open = use_signal(|| false);
+    let mut music = use_signal(shared::MusicState::default);
+    let mut music_picked = use_signal(HashSet::<u64>::new);
+    let mut music_volume = use_signal(|| 100i64);
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
@@ -1003,11 +1008,19 @@ fn MainView(session: api::Session) -> Element {
     });
 
     let mut send = move || {
-        let content = draft().trim().to_string();
+        let mut content = draft().trim().to_string();
         let files = pending_files();
         let Some(channel) = selected() else { return };
         if content.is_empty() && files.is_empty() {
             return;
+        }
+        // On the music tab, a bare link means "queue this" — Jon's spec.
+        if music_open()
+            && !content.starts_with('/')
+            && content.split_whitespace().count() == 1
+            && (content.starts_with("http://") || content.starts_with("https://"))
+        {
+            content = format!("/play {content}");
         }
         let reply_target = replying_to().map(|m| m.id);
         replying_to.set(None);
@@ -2753,8 +2766,39 @@ fn MainView(session: api::Session) -> Element {
                             }
                         },
                     }
+                    // Jon's ask: the tab lives at the top right of the middle
+                    // panel and swaps the body between chat and the player.
+                    div { class: "view-tabs",
+                        button {
+                            class: if music_open() { "view-tab" } else { "view-tab active" },
+                            onclick: move |_| music_open.set(false),
+                            "Chat"
+                        }
+                        button {
+                            class: if music_open() { "view-tab active" } else { "view-tab" },
+                            onclick: move |_| {
+                                music_open.set(true);
+                                spawn(async move {
+                                    if let Ok(state) = api::music_state(&session()).await {
+                                        music.set(state);
+                                    }
+                                });
+                            },
+                            if music().active && !music().paused {
+                                span { class: "view-tab-dot" }
+                            }
+                            "Music"
+                        }
+                    }
                 }
-                div { class: "messages",
+                if music_open() {
+                    MusicTab {
+                        music,
+                        picked: music_picked,
+                        volume: music_volume,
+                    }
+                }
+                div { class: if music_open() { "messages music-chat" } else { "messages" },
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
                     {
@@ -3663,6 +3707,257 @@ fn only_emojis(text: &str) -> bool {
                 .and_then(|w| w.strip_suffix(':'))
                 .is_some_and(|name| shared::emoji_name_problem(name).is_none())
         })
+}
+
+fn fmt_secs(secs: f64) -> String {
+    if !secs.is_finite() || secs < 0.0 {
+        return "0:00".into();
+    }
+    let total = secs as u64;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
+/// The music tab: the shared player, plus a queue everyone can edit. State
+/// comes from the server once a second so every screen agrees.
+#[component]
+fn MusicTab(
+    music: Signal<shared::MusicState>,
+    picked: Signal<HashSet<u64>>,
+    volume: Signal<i64>,
+) -> Element {
+    let session = use_context::<Signal<api::Session>>();
+    let voice = use_coroutine_handle::<voice::VoiceCmd>();
+
+    // Poll while the tab is open; closing it unmounts this and stops the loop.
+    use_future(move || async move {
+        loop {
+            if let Ok(state) = api::music_state(&session()).await {
+                music.set(state);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+
+    let mut control = move |action: &'static str| {
+        spawn(async move {
+            let _ = api::music_control(&session(), action).await;
+            if let Ok(state) = api::music_state(&session()).await {
+                music.set(state);
+            }
+        });
+    };
+    let mut edit_queue = move |req: shared::MusicQueueRequest| {
+        spawn(async move {
+            let _ = api::music_queue(&session(), req).await;
+            if let Ok(state) = api::music_state(&session()).await {
+                music.set(state);
+            }
+        });
+    };
+
+    let state = music();
+    let selected_count = picked().len();
+    let toggle_title: &str = if state.paused { "Resume" } else { "Pause" };
+    let toggle_icon: &'static str = if state.paused { "play" } else { "pause" };
+    let state_label: &str = if state.paused { "paused" } else { "now playing" };
+    let remove_label = if selected_count > 0 {
+        format!("Remove {selected_count} selected")
+    } else {
+        "Remove selected".to_string()
+    };
+    let progress = match (&state.now_playing, state.position) {
+        (Some(track), pos) => match track.duration {
+            Some(len) if len > 0.0 => ((pos / len) * 100.0).clamp(0.0, 100.0),
+            _ => 0.0,
+        },
+        _ => 0.0,
+    };
+
+    rsx! {
+        div { class: "music-tab",
+            if let Some(track) = state.now_playing.clone() {
+                div { class: "music-now",
+                    div { class: "music-art",
+                        if let Some(art) = track.art.clone() {
+                            img { src: "{art}", alt: "cover art", loading: "eager" }
+                        } else {
+                            span { class: "music-art-fallback", "♪" }
+                        }
+                    }
+                    div { class: "music-meta",
+                        div { class: "music-source", "{state_label}" }
+                        div { class: "music-title", title: "{track.title}", "{track.title}" }
+                        if !track.artist.is_empty() {
+                            div { class: "music-artist", "{track.artist}" }
+                        }
+                        div { class: "music-scrub",
+                            span { class: "music-time", {fmt_secs(state.position)} }
+                            div { class: "music-bar",
+                                div { class: "music-bar-fill", style: "width: {progress:.1}%" }
+                            }
+                            span { class: "music-time",
+                                {track.duration.map(fmt_secs).unwrap_or_else(|| "--:--".into())}
+                            }
+                        }
+                        div { class: "music-controls",
+                            button {
+                                class: "music-btn primary",
+                                title: "{toggle_title}",
+                                onclick: move |_| control(if music().paused { "resume" } else { "pause" }),
+                                Icon { name: toggle_icon, size: 18 }
+                            }
+                            button {
+                                class: "music-btn",
+                                title: "Skip to the next track",
+                                onclick: move |_| control("skip"),
+                                Icon { name: "skip", size: 15 }
+                            }
+                            button {
+                                class: "music-btn",
+                                title: "Stop and leave voice",
+                                onclick: move |_| control("stop"),
+                                Icon { name: "stop", size: 15 }
+                            }
+                            div { class: "music-vol",
+                                Icon { name: "volume", size: 15 }
+                                input {
+                                    r#type: "range",
+                                    min: "0",
+                                    max: "200",
+                                    value: "{volume}",
+                                    title: "Volume — just for you",
+                                    oninput: move |e| {
+                                        let Ok(v) = e.value().parse::<i64>() else { return };
+                                        volume.set(v);
+                                        let identity = music().bot_identity;
+                                        if !identity.is_empty() {
+                                            voice.send(voice::VoiceCmd::SetVolume {
+                                                identity,
+                                                volume: v as f32 / 100.0,
+                                            });
+                                        }
+                                    },
+                                }
+                                span { class: "music-vol-label", "just you" }
+                            }
+                        }
+                    }
+                }
+            } else {
+                div { class: "music-empty",
+                    span { class: "music-empty-note", "♪" }
+                    div {
+                        div { class: "music-empty-title", "Nothing playing" }
+                        div { class: "music-empty-sub",
+                            "Join a voice channel, then paste a track or playlist link below to start."
+                        }
+                    }
+                }
+            }
+
+            div { class: "music-queue-head",
+                span { class: "music-queue-title", "Up next" }
+                span { class: "music-queue-count",
+                    {match state.queue.len() {
+                        0 => "queue's empty".to_string(),
+                        1 => "1 track".to_string(),
+                        n => format!("{n} tracks"),
+                    }}
+                }
+                span { class: "grow" }
+                button {
+                    class: "qbtn",
+                    disabled: selected_count == 0,
+                    onclick: move |_| {
+                        let ids: Vec<u64> = picked().iter().copied().collect();
+                        picked.write().clear();
+                        edit_queue(shared::MusicQueueRequest {
+                            action: "remove".into(),
+                            ids,
+                            ..Default::default()
+                        });
+                    },
+                    "{remove_label}"
+                }
+                button {
+                    class: "qbtn danger",
+                    disabled: state.queue.is_empty(),
+                    onclick: move |_| {
+                        picked.write().clear();
+                        edit_queue(shared::MusicQueueRequest {
+                            action: "clear".into(),
+                            ..Default::default()
+                        });
+                    },
+                    "Clear"
+                }
+            }
+
+            div { class: "music-queue",
+                for (i, track) in state.queue.iter().cloned().enumerate() {
+                    {
+                        let id = track.id;
+                        let is_picked = picked().contains(&id);
+                        rsx! {
+                            div {
+                                key: "{id}",
+                                class: if is_picked { "music-row picked" } else { "music-row" },
+                                input {
+                                    r#type: "checkbox",
+                                    checked: is_picked,
+                                    onchange: move |e| {
+                                        if e.checked() {
+                                            picked.write().insert(id);
+                                        } else {
+                                            picked.write().remove(&id);
+                                        }
+                                    },
+                                }
+                                span { class: "music-row-idx", "{i + 1}" }
+                                div { class: "music-row-meta",
+                                    div { class: "music-row-title", "{track.title}" }
+                                    if !track.artist.is_empty() {
+                                        div { class: "music-row-artist", "{track.artist}" }
+                                    }
+                                }
+                                span { class: "music-row-dur",
+                                    {track.duration.map(fmt_secs).unwrap_or_default()}
+                                }
+                                div { class: "music-move",
+                                    button {
+                                        title: "Move up",
+                                        disabled: i == 0,
+                                        onclick: move |_| edit_queue(shared::MusicQueueRequest {
+                                            action: "move".into(),
+                                            id: Some(id),
+                                            offset: Some(-1),
+                                            ..Default::default()
+                                        }),
+                                        "▲"
+                                    }
+                                    button {
+                                        title: "Move down",
+                                        onclick: move |_| edit_queue(shared::MusicQueueRequest {
+                                            action: "move".into(),
+                                            id: Some(id),
+                                            offset: Some(1),
+                                            ..Default::default()
+                                        }),
+                                        "▼"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if state.queue.is_empty() {
+                    div { class: "music-queue-empty",
+                        "Paste a link below to queue something up."
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Commands offered by the `/` popup above the compose box.

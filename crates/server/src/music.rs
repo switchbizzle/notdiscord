@@ -4,6 +4,8 @@
 //! command parsing, permissions, chat feedback, and the voice-roster entry
 //! that makes the bot show up in the sidebar.
 
+use axum::extract::State;
+use axum::http::StatusCode;
 use serde::Deserialize;
 
 use shared::ServerEvent;
@@ -58,6 +60,80 @@ pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
         "queue" | "q" | "np" | "nowplaying" => Some(MusicCmd::Queue),
         "ask" | "image" | "draw" => Some(MusicCmd::Ask),
         _ => None,
+    }
+}
+
+// ---------- REST API for the music tab ----------
+
+/// The player as the tab sees it. Polled ~1s while the tab is open.
+pub async fn state_endpoint(
+    State(state): State<SharedState>,
+    _user: crate::auth::AuthUser,
+) -> Result<axum::Json<shared::MusicState>, (StatusCode, axum::Json<shared::ApiError>)> {
+    let mut music: shared::MusicState = reqwest::Client::new()
+        .get(format!("{}/status", sidecar_url()))
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|_| crate::auth::err(StatusCode::SERVICE_UNAVAILABLE, "the music player is offline"))?
+        .json()
+        .await
+        .map_err(|e| crate::auth::internal(e))?;
+    // The tab's volume slider needs to know which voice participant to scale.
+    music.bot_identity = format!("user-{}", state.bot_user().id);
+    Ok(axum::Json(music))
+}
+
+/// Transport buttons: pause, resume, skip, stop.
+pub async fn control_endpoint(
+    State(_state): State<SharedState>,
+    _user: crate::auth::AuthUser,
+    axum::Json(req): axum::Json<shared::MusicControlRequest>,
+) -> StatusCode {
+    let endpoint = match req.action.as_str() {
+        "pause" => "pause",
+        "resume" => "resume",
+        "skip" => "skip",
+        "stop" => "stop",
+        _ => return StatusCode::BAD_REQUEST,
+    };
+    match reqwest::Client::new()
+        .post(format!("{}/{endpoint}", sidecar_url()))
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => StatusCode::NO_CONTENT,
+        Ok(_) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+/// Queue editing: reorder, remove a selection, or clear.
+pub async fn queue_endpoint(
+    State(_state): State<SharedState>,
+    _user: crate::auth::AuthUser,
+    axum::Json(req): axum::Json<shared::MusicQueueRequest>,
+) -> StatusCode {
+    let http = reqwest::Client::new();
+    let call = match req.action.as_str() {
+        "move" => {
+            let (Some(id), Some(offset)) = (req.id, req.offset) else {
+                return StatusCode::BAD_REQUEST;
+            };
+            http.post(format!("{}/queue/move", sidecar_url()))
+                .json(&serde_json::json!({ "id": id, "offset": offset }))
+        }
+        "remove" => http
+            .post(format!("{}/queue/remove", sidecar_url()))
+            .json(&serde_json::json!({ "ids": req.ids })),
+        "clear" => http.post(format!("{}/queue/clear", sidecar_url())),
+        _ => return StatusCode::BAD_REQUEST,
+    };
+    match call.timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(resp) if resp.status().is_success() => StatusCode::NO_CONTENT,
+        Ok(_) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
