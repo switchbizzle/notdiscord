@@ -15,7 +15,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use livekit::options::TrackPublishOptions;
+use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::track::{LocalAudioTrack, LocalTrack, TrackSource};
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
@@ -85,6 +85,42 @@ fn ytdlp_cmd() -> Vec<String> {
 
 fn ffmpeg_cmd() -> String {
     std::env::var("FFMPEG_CMD").unwrap_or_else(|_| "ffmpeg".into())
+}
+
+/// Which rendition to pull.
+///
+/// The crew's old Discord bot forced progressive http_mp3 here, because HLS
+/// made its ffmpeg reconnect between segments. That doesn't reproduce on this
+/// pipeline — a 160k HLS rendition decodes to 30 seconds of unbroken PCM with
+/// an empty stderr — and forcing progressive actively costs quality: on a
+/// SoundCloud track offering hls_aac_160k and http_mp3_1_0, plain "bestaudio"
+/// takes the 160k AAC while the progressive-first string settles for 128k mp3.
+/// So: highest bitrate wins, whatever the protocol. MUSIC_FORMAT overrides it
+/// if a track ever misbehaves.
+fn audio_format() -> String {
+    std::env::var("MUSIC_FORMAT").unwrap_or_else(|_| "bestaudio/best".into())
+}
+
+/// Opus bitrate for the published music track, in bits per second. 128k
+/// stereo is transparent enough for a listening room; LiveKit's own default
+/// for an unspecified audio track is 48k.
+fn music_bitrate() -> u64 {
+    std::env::var("MUSIC_BITRATE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128_000)
+}
+
+/// A SoundCloud cookie file (Netscape format) unlocks whatever the logged-in
+/// account can hear — on a Go+ subscription that's the higher-bitrate
+/// renditions. Free accounts and no cookie both get the standard 128k.
+fn cookie_args() -> Vec<String> {
+    match std::env::var("SOUNDCLOUD_COOKIES") {
+        Ok(path) if !path.is_empty() && std::path::Path::new(&path).exists() => {
+            vec!["--cookies".into(), path]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Mastered music is far hotter than voice, so the DJ is attenuated before it
@@ -421,13 +457,17 @@ async fn resolve_stream(page_url: &str) -> anyhow::Result<Resolved> {
     let cmd = ytdlp_cmd();
     let output = Command::new(&cmd[0])
         .args(&cmd[1..])
+        .args(cookie_args())
         .args([
-            "-f", "bestaudio/best", "--no-warnings",
+            "-f", &audio_format(), "--no-warnings",
             "--print", "title",
             "--print", "uploader",
             "--print", "thumbnail",
             "--print", "duration",
             "--print", "urls",
+            // Which rendition actually won, so the logs can prove it.
+            "--print", "format_id",
+            "--print", "abr",
             page_url,
         ])
         .stdin(Stdio::null())
@@ -445,6 +485,9 @@ async fn resolve_stream(page_url: &str) -> anyhow::Result<Resolved> {
     let art = lines.next().and_then(na);
     let duration = lines.next().and_then(|d| d.parse::<f64>().ok());
     let stream = lines.next().ok_or_else(|| anyhow::anyhow!("no stream url"))?.to_owned();
+    let format_id = lines.next().unwrap_or("?");
+    let abr = lines.next().unwrap_or("?");
+    tracing::info!("source: {format_id} @ {abr} kbps — {title}");
     Ok(Resolved { title, artist, art, duration, stream })
 }
 
@@ -470,7 +513,19 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
     room.local_participant()
         .publish_track(
             LocalTrack::Audio(track),
-            TrackPublishOptions { source: TrackSource::Microphone, ..Default::default() },
+            TrackPublishOptions {
+                source: TrackSource::Microphone,
+                // The defaults are tuned for talking, and all three hurt music:
+                // the built-in preset caps Opus at 48k, DTX stops transmitting
+                // through quiet passages (intros and fades come back chopped),
+                // and RED spends bitrate on packet redundancy a wired server
+                // doesn't need. Override MUSIC_BITRATE to trade quality for
+                // bandwidth.
+                audio_encoding: Some(AudioEncoding { max_bitrate: music_bitrate() }),
+                dtx: false,
+                red: false,
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -523,6 +578,11 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
     let mut ffmpeg = Command::new(ffmpeg_cmd())
         .args([
             "-loglevel", "error",
+            // A dropped TCP connection mid-track used to end the track. Let
+            // ffmpeg pick the stream back up instead.
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
             "-i", stream_url,
             "-vn",
             "-f", "s16le",
