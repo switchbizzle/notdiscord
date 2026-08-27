@@ -1472,6 +1472,7 @@ pub async fn search(
                 reactions: Vec::new(),
                 reply_to: None,
                 reply_preview: None,
+                pinned: false,
             },
             channel_name: r.get(9),
             channel_kind: r.get(10),
@@ -1561,7 +1562,7 @@ pub async fn channel_messages(
 
     let rows = sqlx::query(
         "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, u.id, u.username, u.avatar, u.role, \
-                m.reply_to, ru.username, r.content \
+                m.reply_to, ru.username, r.content, m.pinned_at IS NOT NULL \
          FROM messages m JOIN users u ON u.id = m.author_id \
          LEFT JOIN messages r ON r.id = m.reply_to \
          LEFT JOIN users ru ON ru.id = r.author_id \
@@ -1594,6 +1595,7 @@ pub async fn channel_messages(
                     _ => None,
                 }
             },
+            pinned: r.get(12),
         })
         .collect();
     messages.reverse();
@@ -1616,4 +1618,107 @@ pub async fn channel_messages(
         }
     }
     Ok(Json(messages))
+}
+
+/// Pin rights: admins anywhere; in a DM, either participant (a DM has no
+/// admin). Returns the message's channel and the event audience.
+async fn pin_target(
+    state: &SharedState,
+    user: &User,
+    message_id: i64,
+) -> ApiResult<(i64, Option<Vec<i64>>)> {
+    let channel_id: i64 = sqlx::query_scalar("SELECT channel_id FROM messages WHERE id = ?")
+        .bind(message_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such message"))?;
+    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    let allowed = match &recipients {
+        Some(ids) => ids.contains(&user.id),
+        None => user.role == "admin",
+    };
+    if !allowed {
+        return Err(err(StatusCode::FORBIDDEN, "only admins can pin messages"));
+    }
+    Ok((channel_id, recipients))
+}
+
+pub async fn pin_message(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(message_id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    let (channel_id, recipients) = pin_target(&state, &user, message_id).await?;
+    sqlx::query("UPDATE messages SET pinned_at = ?, pinned_by = ? WHERE id = ?")
+        .bind(now_ms())
+        .bind(user.id)
+        .bind(message_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    let event = ServerEvent::MessagePinChanged { channel_id, message_id, pinned: true };
+    match recipients {
+        Some(ids) => state.broadcast_only(ids, event),
+        None => state.broadcast(event),
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn unpin_message(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(message_id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    let (channel_id, recipients) = pin_target(&state, &user, message_id).await?;
+    sqlx::query("UPDATE messages SET pinned_at = NULL, pinned_by = NULL WHERE id = ?")
+        .bind(message_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    let event = ServerEvent::MessagePinChanged { channel_id, message_id, pinned: false };
+    match recipients {
+        Some(ids) => state.broadcast_only(ids, event),
+        None => state.broadcast(event),
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The pin list for a channel, newest pin first.
+pub async fn channel_pins(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+) -> ApiResult<Json<Vec<Message>>> {
+    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    if recipients.is_some_and(|ids| !ids.contains(&user.id)) {
+        return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+    }
+    let rows = sqlx::query(
+        "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
+                u.id, u.username, u.avatar, u.role \
+         FROM messages m JOIN users u ON u.id = m.author_id \
+         WHERE m.channel_id = ? AND m.pinned_at IS NOT NULL \
+         ORDER BY m.pinned_at DESC",
+    )
+    .bind(channel_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+    let pins = rows
+        .into_iter()
+        .map(|r| Message {
+            id: r.get(0),
+            channel_id: r.get(1),
+            content: r.get(2),
+            created_at: r.get(3),
+            edited_at: r.get(4),
+            author: User { id: r.get(5), username: r.get(6), avatar: r.get(7), role: r.get(8) },
+            reactions: Vec::new(),
+            reply_to: None,
+            reply_preview: None,
+            pinned: true,
+        })
+        .collect();
+    Ok(Json(pins))
 }

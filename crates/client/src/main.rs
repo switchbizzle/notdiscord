@@ -663,6 +663,7 @@ fn MainView(session: api::Session) -> Element {
     let mut incoming_call = use_signal(|| None::<(i64, User)>);
     let mut search_query = use_signal(String::new);
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
+    let mut pins_open = use_signal(|| None::<Vec<Message>>);
     let mut highlight_msg = use_signal(|| None::<i64>);
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
@@ -762,6 +763,16 @@ fn MainView(session: api::Session) -> Element {
                     });
                 }
             }
+            // The target may be far up in already-loaded history, where
+            // highlighting alone changes nothing on screen. Bounded retry
+            // because the row may still be rendering (or fetching, above).
+            dioxus::document::eval(&format!(
+                "(function() {{ let n = 0; const t = setInterval(() => {{ \
+                    const el = document.getElementById('msg-{target}'); \
+                    if (el) {{ el.scrollIntoView({{block: 'center'}}); clearInterval(t); }} \
+                    else if (++n > 20) clearInterval(t); \
+                 }}, 100); }})()"
+            ));
         }
     });
 
@@ -1011,6 +1022,21 @@ fn MainView(session: api::Session) -> Element {
                             ServerEvent::MessageDeleted { channel_id, message_id } => {
                                 if selected().map(|c| c.id) == Some(channel_id) {
                                     messages.write().retain(|m| m.id != message_id);
+                                }
+                            }
+                            ServerEvent::MessagePinChanged { channel_id, message_id, pinned } => {
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    let mut list = messages.write();
+                                    if let Some(m) = list.iter_mut().find(|m| m.id == message_id) {
+                                        m.pinned = pinned;
+                                    }
+                                }
+                                // An open pin list only ever needs unpins live;
+                                // it refetches whenever it's opened.
+                                if !pinned {
+                                    if let Some(pins) = pins_open.write().as_mut() {
+                                        pins.retain(|m| m.id != message_id);
+                                    }
                                 }
                             }
                             ServerEvent::ChannelCreated { channel } => {
@@ -1504,6 +1530,48 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                     div { class: "search-hit-content",
                                         {result.message.content.chars().take(220).collect::<String>()}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(pins) = pins_open() {
+                div {
+                    class: "settings-overlay",
+                    onclick: move |_| pins_open.set(None),
+                    div {
+                        class: "settings-modal whatsnew-modal",
+                        onclick: move |e| e.stop_propagation(),
+                        div { class: "whatsnew-head",
+                            div { class: "whatsnew-title", "Pinned messages" }
+                            div { class: "whatsnew-sub",
+                                if pins.is_empty() {
+                                    "nothing pinned in this channel yet"
+                                } else {
+                                    "{pins.len()} pinned — click to jump"
+                                }
+                            }
+                        }
+                        div { class: "settings-body whatsnew-body",
+                            for pin in pins {
+                                div {
+                                    key: "{pin.id}",
+                                    class: "search-hit",
+                                    onclick: {
+                                        let msg_id = pin.id;
+                                        move |_| {
+                                            pins_open.set(None);
+                                            jump_to.set(Some(msg_id));
+                                        }
+                                    },
+                                    div { class: "search-hit-head",
+                                        span { class: "search-hit-author", "{pin.author.username}" }
+                                        span { class: "release-date", {format_time(pin.created_at)} }
+                                    }
+                                    div { class: "search-hit-content",
+                                        {pin.content.chars().take(220).collect::<String>()}
                                     }
                                 }
                             }
@@ -3315,6 +3383,20 @@ fn MainView(session: api::Session) -> Element {
                             Icon { name: "phone", size: 16 }
                         }
                     }
+                    button {
+                        class: "call-btn",
+                        title: "Pinned messages",
+                        onclick: move |_| {
+                            let Some(channel) = selected() else { return };
+                            spawn(async move {
+                                match api::channel_pins(&session(), channel.id).await {
+                                    Ok(pins) => pins_open.set(Some(pins)),
+                                    Err(e) => status.set(e),
+                                }
+                            });
+                        },
+                        Icon { name: "pin", size: 16 }
+                    }
                     input {
                         class: "search-input",
                         placeholder: "search messages…",
@@ -3396,6 +3478,10 @@ fn MainView(session: api::Session) -> Element {
                         let first_unread = divider_at().and_then(|last_read| {
                             messages().iter().map(|m| m.id).filter(|id| *id > last_read).min()
                         });
+                        // Pin rights mirror the server: admins anywhere, and
+                        // either side of a DM (a DM has no admin).
+                        let can_pin = session().user.role == "admin"
+                            || selected().is_some_and(|c| c.kind == "dm");
                         rsx! {
                             for (msg, compact) in group_messages(&messages()).into_iter().rev() {
                                 {
@@ -3404,7 +3490,7 @@ fn MainView(session: api::Session) -> Element {
                                     let msg_id = msg.id;
                                     rsx! {
                                         div { class: if is_target { "hit-wrap" } else { "" },
-                                            MessageRow { key: "{msg_id}", msg, compact }
+                                            MessageRow { key: "{msg_id}", msg, compact, can_pin }
                                         }
                                         if divider_here {
                                             div { class: "new-divider", span { class: "new-pill", "NEW" } }
@@ -4833,7 +4919,7 @@ const REACTION_EMOJIS: &[&str] = &[
 ];
 
 #[component]
-fn MessageRow(msg: Message, compact: bool) -> Element {
+fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut lightbox = use_context::<Signal<Option<String>>>();
@@ -4898,6 +4984,15 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                     jump.set(Some(original));
                 }));
             }
+            if can_pin {
+                let pinned = msg.pinned;
+                let label = if pinned { "Unpin message" } else { "Pin message" };
+                items.push(menu::item(label, "pin", move || {
+                    spawn(async move {
+                        let _ = api::set_pinned(&session(), msg_id, !pinned).await;
+                    });
+                }));
+            }
             if own {
                 let content = msg.content.clone();
                 items.push(menu::item("Edit message", "edit", move || {
@@ -4917,6 +5012,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
 
     rsx! {
         div {
+            id: "msg-{msg_id}",
             class: if compact { "msg compact" } else { "msg" },
             oncontextmenu: msg_menu,
             div { class: "msg-actions",
@@ -4986,6 +5082,11 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                             "{msg.author.username}"
                         }
                         span { class: "msg-time", {format_time(msg.created_at)} }
+                        if msg.pinned {
+                            span { class: "pin-flag", title: "Pinned message",
+                                Icon { name: "pin", size: 11 }
+                            }
+                        }
                     }
                 }
                 if editing() {

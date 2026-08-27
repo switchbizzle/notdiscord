@@ -239,6 +239,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 reactions: Vec::new(),
                 reply_to: valid_reply,
                 reply_preview,
+                pinned: false,
             };
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
 

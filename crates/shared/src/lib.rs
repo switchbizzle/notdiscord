@@ -90,6 +90,8 @@ pub struct Message {
     /// Author + content of the replied-to message, for rendering.
     #[serde(default)]
     pub reply_preview: Option<ReplyPreview>,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -532,6 +534,7 @@ pub enum ServerEvent {
     ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     MessageEdited { channel_id: i64, message_id: i64, content: String, edited_at: i64 },
     MessageDeleted { channel_id: i64, message_id: i64 },
+    MessagePinChanged { channel_id: i64, message_id: i64, pinned: bool },
     StickerCreated { sticker: Sticker },
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },

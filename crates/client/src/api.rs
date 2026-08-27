@@ -508,6 +508,24 @@ pub async fn messages(session: &Session, channel_id: i64, before: Option<i64>) -
     get(session, path).await
 }
 
+pub async fn set_pinned(session: &Session, message_id: i64, pinned: bool) -> Result<(), String> {
+    let url = format!("{}/api/messages/{message_id}/pin", session.base_url);
+    let req = if pinned { http().post(url) } else { http().delete(url) };
+    let resp = send_retry(req.bearer_auth(&session.token)).await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        match resp.json::<ApiError>().await {
+            Ok(e) => Err(e.error),
+            Err(_) => Err("could not update the pin".into()),
+        }
+    }
+}
+
+pub async fn channel_pins(session: &Session, channel_id: i64) -> Result<Vec<Message>, String> {
+    get(session, format!("channels/{channel_id}/pins")).await
+}
+
 /// Queue a link without posting it to chat (the Music tab's composer).
 pub async fn music_play(session: &Session, channel_id: i64, url: String) -> Result<(), String> {
     let resp = send_retry(http()

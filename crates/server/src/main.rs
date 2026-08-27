@@ -242,6 +242,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/profile", post(routes::update_profile))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
+        .route("/api/channels/{id}/pins", get(routes::channel_pins))
+        .route(
+            "/api/messages/{id}/pin",
+            post(routes::pin_message).delete(routes::unpin_message),
+        )
         .route("/api/dms", post(routes::create_dm))
         .route(
             "/api/upload",

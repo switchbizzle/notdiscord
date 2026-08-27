@@ -956,6 +956,9 @@ input:focus { border-color: #5865f2; }
 .msg-head { display: flex; align-items: baseline; gap: 8px; }
 .msg-author { font-weight: 600; color: #f2f3f5; }
 .msg-time { font-size: 11px; color: #949ba4; }
+/* Small pushpin beside the timestamp of a pinned message. */
+.pin-flag { color: #e8b33f; display: inline-flex; align-items: center; }
+.pin-flag .icon { display: inline-flex; }
 .msg-body {
     color: #dbdee1;
     line-height: 1.4;

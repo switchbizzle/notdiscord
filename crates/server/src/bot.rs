@@ -151,6 +151,7 @@ pub async fn post_and_get_id(state: &SharedState, channel_id: i64, content: &str
         reactions: Vec::new(),
         reply_to: None,
         reply_preview: None,
+        pinned: false,
     };
     let event = ServerEvent::MessageCreated { message };
     match &recipients {
@@ -185,6 +186,7 @@ pub async fn post_message(state: &SharedState, channel_id: i64, content: &str) -
             reactions: Vec::new(),
             reply_to: None,
             reply_preview: None,
+            pinned: false,
         };
         let event = ServerEvent::MessageCreated { message };
         match &recipients {

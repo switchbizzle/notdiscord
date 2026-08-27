@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.44.0",
+    "date": "2026-08-27",
+    "changes": [
+      "📌 Pinned messages: admins can right-click any message to pin it (in DMs, both of you can). Pinned messages get a little gold pushpin, and the pushpin button next to the channel name lists a channel's pins — click one to jump straight to it",
+      "Jumping to a message (a pin, a reply's original) now actually scrolls it into view instead of highlighting it somewhere off-screen"
+    ]
+  },
+  {
     "version": "0.43.2",
     "date": "2026-08-27",
     "changes": [
