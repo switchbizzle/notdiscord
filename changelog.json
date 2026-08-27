@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.45.1",
+    "date": "2026-08-27",
+    "changes": [
+      "🎙️ Fixed: mic sensitivity could let audio through while nobody looked lit up. The slider, the level bar, and the threshold marker were all on different scales — now they share one dB scale, so the knob sits exactly on the marker and the bar shows the same peaks the gate hears",
+      "The level bar now lives directly under the sensitivity slider (it was stranded under Mic volume), so \"set the line just below your voice\" finally works as written",
+      "Opening the gate now takes ~30ms of sustained sound instead of one 10ms spike, so a keyboard click can't broadcast half a second of your room"
+    ]
+  },
+  {
     "version": "0.45.0",
     "date": "2026-08-27",
     "changes": [

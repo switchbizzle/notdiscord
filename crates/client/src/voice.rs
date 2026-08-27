@@ -95,9 +95,123 @@ pub const PTT_KEY_CHOICES: &[&str] = &[
     "Grave", "CapsLock", "LShift", "LControl", "LAlt",
 ];
 
-/// Mic input level (0..1), updated ~10x/sec while in a call. Kept separate
-/// from VoiceStatus so only the meter widget re-renders on ticks.
+/// Mic input level: peak RMS on the i16 scale since the last tick, updated
+/// ~10x/sec while in a call (the UI maps it to dB). Kept separate from
+/// VoiceStatus so only the meter widget re-renders on ticks.
 pub type MicLevelSignal = Signal<f32, SyncStorage>;
+
+/// The voice-activity gate, fed one 10ms frame at a time. Opening takes
+/// ATTACK_FRAMES consecutive frames above the threshold (so a keyboard click
+/// can't pop it open); once open, any hot frame keeps it open, and it closes
+/// SPEAK_HOLD after the last one. A floor keeps room hum from ever counting
+/// as voice. Threshold 0 = classic open mic: always transmit, but the
+/// speaking ring still only lights on real voice.
+pub struct VadGate {
+    hot_frames: u32,
+    last_voice: std::time::Instant,
+}
+
+/// How long the gate (and speaking ring) stays hot past the last voice frame.
+const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(600);
+/// Consecutive 10ms frames above threshold needed to open a closed gate.
+const ATTACK_FRAMES: u32 = 3;
+/// RMS below this is never voice, whatever the slider says.
+const VOICE_FLOOR: f64 = 300.0;
+
+impl VadGate {
+    pub fn new() -> Self {
+        Self { hot_frames: 0, last_voice: std::time::Instant::now() - SPEAK_HOLD }
+    }
+
+    /// Returns (gate open, voice recent). Transmission in voice-activity mode
+    /// follows the first; the local speaking ring follows both.
+    pub fn feed(&mut self, rms: f64, threshold: f64, now: std::time::Instant) -> (bool, bool) {
+        if rms >= threshold.max(VOICE_FLOOR) {
+            self.hot_frames += 1;
+            let already_open = now.duration_since(self.last_voice) < SPEAK_HOLD;
+            if already_open || self.hot_frames >= ATTACK_FRAMES {
+                self.last_voice = now;
+            }
+        } else {
+            self.hot_frames = 0;
+        }
+        let voice_recent = now.duration_since(self.last_voice) < SPEAK_HOLD;
+        (threshold <= 0.0 || voice_recent, voice_recent)
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Feed `n` frames of the given level, 10ms apart, returning the last verdict.
+    fn feed_n(gate: &mut VadGate, t: &mut Instant, rms: f64, thr: f64, n: u32) -> (bool, bool) {
+        let mut out = (false, false);
+        for _ in 0..n {
+            *t += Duration::from_millis(10);
+            out = gate.feed(rms, thr, *t);
+        }
+        out
+    }
+
+    #[test]
+    fn click_does_not_open_gate() {
+        let mut gate = VadGate::new();
+        let mut t = Instant::now();
+        // Two hot frames (a 20ms click), then quiet: never opens.
+        assert_eq!(feed_n(&mut gate, &mut t, 5000.0, 1000.0, 2), (false, false));
+        assert_eq!(feed_n(&mut gate, &mut t, 100.0, 1000.0, 5), (false, false));
+    }
+
+    #[test]
+    fn sustained_voice_opens_then_holds_then_closes() {
+        let mut gate = VadGate::new();
+        let mut t = Instant::now();
+        assert_eq!(feed_n(&mut gate, &mut t, 5000.0, 1000.0, 3), (true, true));
+        // Quiet again: stays open through the hold...
+        assert_eq!(feed_n(&mut gate, &mut t, 100.0, 1000.0, 50), (true, true));
+        // ...and closes once the hold has fully elapsed.
+        assert_eq!(feed_n(&mut gate, &mut t, 100.0, 1000.0, 20), (false, false));
+    }
+
+    #[test]
+    fn open_gate_refreshes_on_single_hot_frame() {
+        let mut gate = VadGate::new();
+        let mut t = Instant::now();
+        feed_n(&mut gate, &mut t, 5000.0, 1000.0, 3);
+        // 40 quiet frames (400ms), then ONE hot frame: still open, hold reset.
+        feed_n(&mut gate, &mut t, 100.0, 1000.0, 40);
+        assert_eq!(feed_n(&mut gate, &mut t, 5000.0, 1000.0, 1), (true, true));
+        assert_eq!(feed_n(&mut gate, &mut t, 100.0, 1000.0, 55), (true, true));
+    }
+
+    #[test]
+    fn below_threshold_never_transmits() {
+        let mut gate = VadGate::new();
+        let mut t = Instant::now();
+        // Loud-ish room noise under the user's threshold: closed forever.
+        assert_eq!(feed_n(&mut gate, &mut t, 900.0, 1000.0, 200), (false, false));
+    }
+
+    #[test]
+    fn floor_applies_when_threshold_is_lower() {
+        let mut gate = VadGate::new();
+        let mut t = Instant::now();
+        // Threshold 50 but hum at 200 is under the 300 floor: closed.
+        assert_eq!(feed_n(&mut gate, &mut t, 200.0, 50.0, 200), (false, false));
+    }
+
+    #[test]
+    fn open_mic_transmits_but_ring_needs_voice() {
+        let mut gate = VadGate::new();
+        let mut t = Instant::now();
+        // Threshold 0: gate open on silence, ring dark.
+        assert_eq!(feed_n(&mut gate, &mut t, 10.0, 0.0, 5), (true, false));
+        // Real voice: both.
+        assert_eq!(feed_n(&mut gate, &mut t, 5000.0, 0.0, 3), (true, true));
+    }
+}
 
 /// Thread-safe signal: voice status is updated from tokio worker tasks.
 pub type VoiceStatusSignal = Signal<VoiceStatus, SyncStorage>;
@@ -735,7 +849,7 @@ pub async fn voice_task(
                 crate::api::save_settings(&settings);
             }
             VoiceCmd::SetVadThreshold(threshold) => {
-                let threshold = threshold.clamp(0.0, 3000.0);
+                let threshold = threshold.clamp(0.0, 32768.0);
                 if let Some(active) = &call {
                     active.vad_threshold.store(threshold.to_bits(), Ordering::Relaxed);
                 }
@@ -860,7 +974,7 @@ async fn connect(
     let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
     let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
     let ptt_active = Arc::new(AtomicBool::new(false));
-    let vad_threshold = Arc::new(AtomicU32::new(settings.vad_threshold.clamp(0.0, 3000.0).to_bits()));
+    let vad_threshold = Arc::new(AtomicU32::new(settings.vad_threshold.clamp(0.0, 32768.0).to_bits()));
 
     // PTT key poller: 30ms ticks, no global hotkey registration, so the key
     // keeps working in other apps and is never swallowed system-wide.
@@ -899,7 +1013,6 @@ async fn connect(
     let pump_ptt_active = ptt_active.clone();
     let pump_vad = vad_threshold.clone();
     tokio::spawn(async move {
-        const SPEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(600);
         const METER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
         let mut denoise = nnnoiseless::DenoiseState::new();
         let mut denoised = [0.0f32; NS_FRAME];
@@ -907,9 +1020,10 @@ async fn connect(
         let mut resample_pos: f64 = 0.0;
         let mut last_sample: f32 = 0.0;
         let step = sample_rate as f64 / NS_RATE as f64;
+        let mut gate = VadGate::new();
         let mut speaking = false;
-        let mut last_voice = std::time::Instant::now() - SPEAK_HOLD;
         let mut last_meter = std::time::Instant::now() - METER_INTERVAL;
+        let mut meter_peak: f64 = 0.0;
 
         while let Some(chunk) = frame_rx.recv().await {
             // Downmix interleaved device channels to mono f32 (i16 scale).
@@ -953,24 +1067,22 @@ async fn connect(
                     / frame.len() as f64)
                     .sqrt();
                 let now = std::time::Instant::now();
+                // The meter reports the PEAK since the last tick, in raw RMS
+                // (i16 scale). Sampling one 10ms frame in ten made the bar
+                // miss the very peaks people calibrate the threshold against.
+                meter_peak = meter_peak.max(rms);
                 if now.duration_since(last_meter) >= METER_INTERVAL {
                     last_meter = now;
-                    mic_level.set(((rms / 10000.0) as f32).min(1.0));
+                    mic_level.set(meter_peak as f32);
+                    meter_peak = 0.0;
                 }
                 let gate_threshold = f32::from_bits(pump_vad.load(Ordering::Relaxed)) as f64;
-                // The speaking ring needs a floor so "always transmit" doesn't
-                // glow constantly on room hum.
-                if rms >= gate_threshold.max(300.0) {
-                    last_voice = now;
-                }
-                let voice_recent = now.duration_since(last_voice) < SPEAK_HOLD;
+                let (vad_open, voice_recent) = gate.feed(rms, gate_threshold, now);
                 let muted = pump_status.peek().muted;
                 let gate_open = if pump_ptt_mode.load(Ordering::Relaxed) {
                     pump_ptt_active.load(Ordering::Relaxed)
                 } else {
-                    // Voice activity: transmit only while above the threshold
-                    // (with hold); 0 = classic open mic.
-                    gate_threshold <= 0.0 || voice_recent
+                    vad_open
                 };
                 let transmitting = !muted && gate_open;
                 let now_speaking = transmitting && voice_recent;

@@ -1960,20 +1960,34 @@ fn MainView(session: api::Session) -> Element {
                                         class: "settings-slider",
                                         min: "0",
                                         max: "100",
-                                        value: "{(audio_settings().vad_threshold / 20.0) as i32}",
+                                        // Slider, marker, and meter all share the
+                                        // dB mapping, so the knob sits exactly on
+                                        // the marker line.
+                                        value: "{mic_pos(audio_settings().vad_threshold) as i32}",
                                         oninput: move |e| {
                                             if let Ok(v) = e.value().parse::<f32>() {
-                                                let threshold = v * 20.0; // 0..=2000 RMS
+                                                let threshold = pos_to_rms(v);
                                                 audio_settings.write().vad_threshold = threshold;
                                                 voice.send(voice::VoiceCmd::SetVadThreshold(threshold));
                                             }
                                         },
                                     }
+                                    div { class: "meter-wrap",
+                                        MicMeter { level: mic_level }
+                                        if audio_settings().vad_threshold > 0.0 {
+                                            div {
+                                                class: "meter-threshold",
+                                                style: "left: {mic_pos(audio_settings().vad_threshold)}%",
+                                            }
+                                        }
+                                    }
                                     div { class: "settings-hint",
-                                        if audio_settings().vad_threshold <= 0.0 {
+                                        if voice_status().channel_id.is_none() {
+                                            "join a voice channel to see your level here"
+                                        } else if audio_settings().vad_threshold <= 0.0 {
                                             "always transmitting (open mic)"
                                         } else {
-                                            "transmits only when you speak above the marker"
+                                            "transmits only while the bar crosses the marker"
                                         }
                                     }
                                 }
@@ -2008,17 +2022,15 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     },
                                 }
-                                div { class: "meter-wrap",
-                                    MicMeter { level: mic_level }
-                                    if audio_settings().voice_mode != "ptt" && audio_settings().vad_threshold > 0.0 {
-                                        div {
-                                            class: "meter-threshold",
-                                            style: "left: {(audio_settings().vad_threshold / 10000.0 * 100.0).clamp(0.0, 100.0)}%",
-                                        }
+                                // In PTT mode the sensitivity block is gone, so
+                                // the level meter lives here instead.
+                                if audio_settings().voice_mode == "ptt" {
+                                    div { class: "meter-wrap",
+                                        MicMeter { level: mic_level }
                                     }
-                                }
-                                if voice_status().channel_id.is_none() {
-                                    div { class: "settings-hint", "join a voice channel to test your mic" }
+                                    if voice_status().channel_id.is_none() {
+                                        div { class: "settings-hint", "join a voice channel to test your mic" }
+                                    }
                                 }
                                 label { class: "ns-toggle-row",
                                     input {
@@ -5507,14 +5519,63 @@ fn name_color(user_id: i64, members: &[UserStatus], tags: &[Tag]) -> String {
         .unwrap_or_else(|| format!("hsl({}, 65%, 68%)", avatar_hue(user_id)))
 }
 
+/// Slider/meter position (0..100) for a raw i16-scale RMS value, on a dB
+/// scale spanning -60..0 dBFS. One mapping for the meter fill, the threshold
+/// marker, AND the sensitivity slider, so they always line up.
+fn mic_pos(rms: f32) -> f32 {
+    if rms <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * (rms / 32768.0).log10();
+    ((db + 60.0) / 60.0 * 100.0).clamp(1.0, 100.0)
+}
+
+/// Inverse of mic_pos: slider position back to raw RMS (0 stays 0 = open mic).
+fn pos_to_rms(pos: f32) -> f32 {
+    if pos <= 0.0 {
+        return 0.0;
+    }
+    let db = pos / 100.0 * 60.0 - 60.0;
+    32768.0 * 10f32.powf(db / 20.0)
+}
+
 /// Live mic input level bar. Isolated so 10Hz meter ticks only re-render this.
 #[component]
 fn MicMeter(level: voice::MicLevelSignal) -> Element {
-    let pct = (level() * 100.0).clamp(0.0, 100.0);
+    let pct = mic_pos(level());
     rsx! {
         div { class: "mic-meter",
             div { class: "mic-meter-fill", style: "width: {pct}%" }
         }
+    }
+}
+
+#[cfg(test)]
+mod mic_scale_tests {
+    use super::{mic_pos, pos_to_rms};
+
+    #[test]
+    fn slider_and_marker_agree() {
+        // The knob position and the marker drawn from the stored RMS must be
+        // the same number, or the "line just below your voice" promise lies.
+        for p in 1..=100 {
+            let round = mic_pos(pos_to_rms(p as f32));
+            assert!((round - p as f32).abs() < 0.5, "pos {p} -> {round}");
+        }
+    }
+
+    #[test]
+    fn zero_stays_open_mic() {
+        assert_eq!(pos_to_rms(0.0), 0.0);
+        assert_eq!(mic_pos(0.0), 0.0);
+    }
+
+    #[test]
+    fn scale_is_sane() {
+        // Full scale i16 RMS pegs the bar; the 300-RMS gate floor sits low.
+        assert!(mic_pos(32768.0) > 99.0);
+        let floor = mic_pos(300.0);
+        assert!((25.0..40.0).contains(&floor), "floor at {floor}%");
     }
 }
 

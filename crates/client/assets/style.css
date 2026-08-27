@@ -328,7 +328,7 @@ button.sidebar-title:hover { background: #35373c; }
     cursor: pointer;
 }
 .ns-toggle-row input { accent-color: #5865f2; }
-.meter-wrap { position: relative; }
+.meter-wrap { position: relative; margin: 4px 0 6px; }
 .meter-threshold {
     position: absolute;
     top: -2px;
