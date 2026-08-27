@@ -3,6 +3,7 @@ mod bot;
 mod music;
 mod preview;
 mod routes;
+mod voice_sync;
 mod ws;
 
 use std::collections::HashMap;
@@ -30,6 +31,9 @@ pub struct AppState {
     pub presence: Mutex<HashMap<i64, u32>>,
     /// user id -> (voice channel id, user, sharing screen, camera on) for everyone in voice.
     pub voice: Mutex<HashMap<i64, (i64, shared::User, bool, bool)>>,
+    /// user id -> when they last left voice, so the LiveKit reconciler doesn't
+    /// resurrect someone whose departure hasn't propagated yet.
+    pub voice_left: Mutex<HashMap<i64, i64>>,
     /// The resident bot's user account (admins can rename it / set an avatar).
     pub bot: Mutex<shared::User>,
     /// Whether a music status watcher task is currently running.
@@ -195,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
         events,
         presence: Mutex::new(HashMap::new()),
         voice: Mutex::new(HashMap::new()),
+        voice_left: Mutex::new(HashMap::new()),
         bot: Mutex::new(bot_user),
         music_watch: Mutex::new(false),
         music_player: Mutex::new(None),
@@ -202,6 +207,9 @@ async fn main() -> anyhow::Result<()> {
 
     // NotBot announces new client releases in chat.
     tokio::spawn(bot::announce_loop(state.clone()));
+
+    // LiveKit is the authority on who's actually in a voice room.
+    tokio::spawn(voice_sync::sync_loop(state.clone()));
 
     // Hourly sweep of expired uploads (avatars and stickers are protected).
     {

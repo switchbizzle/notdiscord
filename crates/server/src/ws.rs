@@ -110,10 +110,14 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                                 let mut voice = state.voice.lock().unwrap();
                                 match channel_id {
                                     Some(ch) => {
+                                        state.voice_left.lock().unwrap().remove(&user.id);
                                         voice.insert(user.id, (ch, user.clone(), sharing, camera));
                                     }
                                     None => {
                                         voice.remove(&user.id);
+                                        // Hold off the LiveKit reconciler briefly: the
+                                        // participant may linger there for a moment.
+                                        state.voice_left.lock().unwrap().insert(user.id, now_ms());
                                     }
                                 }
                             }
