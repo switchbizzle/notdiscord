@@ -395,7 +395,7 @@ pub async fn list_users(
     _user: AuthUser,
 ) -> ApiResult<Json<Vec<UserStatus>>> {
     let rows = sqlx::query(
-        "SELECT id, username, avatar, role, banned FROM users ORDER BY username COLLATE NOCASE",
+        "SELECT id, username, avatar, role, banned, status_text FROM users ORDER BY username COLLATE NOCASE",
     )
     .fetch_all(&state.db)
     .await
@@ -415,13 +415,34 @@ pub async fn list_users(
         .map(|r| {
             let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) };
             let banned: i64 = r.get(4);
+            let status: Option<String> = r.get(5);
             // The bot never sleeps.
             let is_online = online.contains(&user.id) || user.id == state.bot_user().id;
             let tag_ids = tag_map.remove(&user.id).unwrap_or_default();
-            UserStatus { user, online: is_online, banned: banned != 0, tag_ids }
+            UserStatus { user, online: is_online, banned: banned != 0, tag_ids, status }
         })
         .collect();
     Ok(Json(users))
+}
+
+/// Set (or clear) your own custom status line.
+pub async fn set_status(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::SetStatusRequest>,
+) -> ApiResult<StatusCode> {
+    let status = req
+        .text
+        .map(|t| t.trim().chars().take(100).collect::<String>())
+        .filter(|t| !t.is_empty());
+    sqlx::query("UPDATE users SET status_text = ? WHERE id = ?")
+        .bind(&status)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::StatusChanged { user_id: user.id, status });
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_tags(State(state): State<SharedState>, _user: AuthUser) -> ApiResult<Json<Vec<Tag>>> {
@@ -633,7 +654,7 @@ pub async fn get_profile(
     _user: AuthUser,
     Path(user_id): Path<i64>,
 ) -> ApiResult<Json<Profile>> {
-    let row = sqlx::query("SELECT id, username, avatar, bio, created_at, role, banned FROM users WHERE id = ?")
+    let row = sqlx::query("SELECT id, username, avatar, bio, created_at, role, banned, status_text FROM users WHERE id = ?")
         .bind(user_id)
         .fetch_optional(&state.db)
         .await
@@ -642,6 +663,7 @@ pub async fn get_profile(
         return Err(err(StatusCode::NOT_FOUND, "no such user"));
     };
     let banned: i64 = row.get(6);
+    let status: Option<String> = row.get(7);
     let tags = sqlx::query(
         "SELECT t.id, t.name, t.color FROM user_tags ut JOIN tags t ON t.id = ut.tag_id \
          WHERE ut.user_id = ? ORDER BY t.name COLLATE NOCASE",
@@ -659,6 +681,7 @@ pub async fn get_profile(
         created_at: row.get(4),
         banned: banned != 0,
         tags,
+        status,
     }))
 }
 

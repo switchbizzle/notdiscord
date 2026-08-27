@@ -588,6 +588,21 @@ button.sidebar-title:hover { background: #35373c; }
 }
 .profile-name { font-size: 20px; font-weight: 700; }
 .profile-joined { color: #949ba4; font-size: 12px; }
+.profile-status {
+    color: #dbdee1;
+    font-size: 13px;
+    font-style: italic;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+.status-edit-row { width: 100%; display: flex; flex-direction: column; gap: 2px; }
+.status-input {
+    width: 100%;
+    background: #1e1f22;
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 13px;
+}
 .profile-bio {
     color: #dbdee1;
     font-size: 14px;
@@ -1075,6 +1090,17 @@ ul.md-list { list-style-type: disc; }
 }
 .member:not(.online) .member-avatar { filter: grayscale(0.9) brightness(0.7); }
 .member-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Name row + optional status line; the column soaks up the row's free width
+   so the presence dot stays pinned right. */
+.member-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.member-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.member-status {
+    color: #80848e;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 
 .role-badge {
     background: #5865f2;

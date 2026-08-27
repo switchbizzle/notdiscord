@@ -237,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/email", get(routes::email_status).post(routes::email_request))
         .route("/api/email/verify", post(routes::email_verify))
         .route("/api/users", get(routes::list_users))
+        .route("/api/status", post(routes::set_status))
         .route("/api/users/{id}/profile", get(routes::get_profile))
         .route("/api/users/{id}/role", post(routes::set_role))
         .route("/api/users/{id}/ban", post(routes::set_ban))

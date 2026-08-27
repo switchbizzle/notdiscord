@@ -765,6 +765,8 @@ fn MainView(session: api::Session) -> Element {
     let mut highlight_msg = use_signal(|| None::<i64>);
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
+    let mut status_draft = use_signal(String::new);
+    let mut editing_status = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
     let mut settings_tab = use_signal(|| "voice");
     let mut pw_current = use_signal(String::new);
@@ -1128,6 +1130,17 @@ fn MainView(session: api::Session) -> Element {
                                     messages.write().retain(|m| m.id != message_id);
                                 }
                             }
+                            ServerEvent::StatusChanged { user_id, status: new_status } => {
+                                if let Some(m) = members.write().iter_mut().find(|m| m.user.id == user_id) {
+                                    m.status = new_status.clone();
+                                }
+                                // Keep an open profile card in step.
+                                if profile_card.peek().as_ref().map(|p| p.user.id) == Some(user_id) {
+                                    if let Some(p) = profile_card.write().as_mut() {
+                                        p.status = new_status;
+                                    }
+                                }
+                            }
                             ServerEvent::MessagePinChanged { channel_id, message_id, pinned } => {
                                 if selected().map(|c| c.id) == Some(channel_id) {
                                     let mut list = messages.write();
@@ -1173,7 +1186,7 @@ fn MainView(session: api::Session) -> Element {
                                 match list.iter_mut().find(|m| m.user.id == user.id) {
                                     Some(entry) => entry.online = online,
                                     None => {
-                                        list.push(UserStatus { user, online, banned: false, tag_ids: Vec::new() });
+                                        list.push(UserStatus { user, online, banned: false, tag_ids: Vec::new(), status: None });
                                         list.sort_by(|a, b| a.user.username.to_lowercase().cmp(&b.user.username.to_lowercase()));
                                     }
                                 }
@@ -2828,6 +2841,7 @@ fn MainView(session: api::Session) -> Element {
                     onclick: move |_| {
                         profile_card.set(None);
                         editing_bio.set(false);
+                        editing_status.set(false);
                     },
                     div {
                         class: "profile-card",
@@ -2847,6 +2861,37 @@ fn MainView(session: api::Session) -> Element {
                             for tag in profile.tags.iter() {
                                 span { class: "tag-pill", style: "background: {tag.color}", "{tag.name}" }
                             }
+                        }
+                        if editing_status() {
+                            div { class: "status-edit-row",
+                                input {
+                                    class: "status-input",
+                                    placeholder: "what's up? (leave empty to clear)",
+                                    maxlength: "100",
+                                    value: "{status_draft}",
+                                    spellcheck: "true",
+                                    oncontextmenu: move |e: Event<MouseData>| {
+                                        menu::open(ctx_menu, &e, menu::text_field_items())
+                                    },
+                                    oninput: move |e| status_draft.set(e.value()),
+                                    onkeydown: move |e| {
+                                        if e.key() == Key::Enter {
+                                            spawn(async move {
+                                                let text = Some(status_draft()).filter(|s| !s.trim().is_empty());
+                                                match api::set_status(&session(), text).await {
+                                                    Ok(()) => editing_status.set(false),
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        } else if e.key() == Key::Escape {
+                                            editing_status.set(false);
+                                        }
+                                    },
+                                }
+                                div { class: "edit-hint", "Enter to save · Esc to cancel" }
+                            }
+                        } else if let Some(text) = profile.status.clone() {
+                            div { class: "profile-status", "{text}" }
                         }
                         div { class: "profile-joined", "Member since {format_date(profile.created_at)}" }
                         if editing_bio() {
@@ -3056,6 +3101,16 @@ fn MainView(session: api::Session) -> Element {
                                             editing_bio.set(true);
                                         },
                                         "Edit bio"
+                                    }
+                                    button {
+                                        class: "profile-btn",
+                                        onclick: move |_| {
+                                            status_draft.set(
+                                                profile_card().and_then(|p| p.status).unwrap_or_default(),
+                                            );
+                                            editing_status.set(true);
+                                        },
+                                        "Set status"
                                     }
                                 }
                             }
@@ -3551,7 +3606,17 @@ fn MainView(session: api::Session) -> Element {
                         UserAvatar { user: session().user.clone(), class: "member-avatar" }
                         div { class: "me-text",
                             span { class: "me-name", "{session().user.username}" }
-                            span { class: "me-status", "{status}" }
+                            span { class: "me-status",
+                                // Your own custom status wins over the plain
+                                // connection state ("online").
+                                {
+                                    let mine = members()
+                                        .iter()
+                                        .find(|m| m.user.id == session().user.id)
+                                        .and_then(|m| m.status.clone());
+                                    mine.unwrap_or_else(|| status())
+                                }
+                            }
                         }
                     }
                     button {
@@ -4330,24 +4395,31 @@ fn MainView(session: api::Session) -> Element {
                             }
                         },
                         UserAvatar { user: member.user.clone(), class: "member-avatar" }
-                        span {
-                            class: "member-name",
-                            style: "color: {name_color(member.user.id, &members(), &tags())}",
-                            "{member.user.username}"
-                        }
-                        for tag_id in member.tag_ids.iter().take(1) {
-                            if let Some(tag) = tags().iter().find(|t| t.id == *tag_id) {
+                        div { class: "member-main",
+                            div { class: "member-line",
                                 span {
-                                    class: "tag-pill",
-                                    style: "background: {tag.color}",
-                                    "{tag.name}"
+                                    class: "member-name",
+                                    style: "color: {name_color(member.user.id, &members(), &tags())}",
+                                    "{member.user.username}"
+                                }
+                                for tag_id in member.tag_ids.iter().take(1) {
+                                    if let Some(tag) = tags().iter().find(|t| t.id == *tag_id) {
+                                        span {
+                                            class: "tag-pill",
+                                            style: "background: {tag.color}",
+                                            "{tag.name}"
+                                        }
+                                    }
+                                }
+                                if member.banned {
+                                    span { class: "role-badge banned-badge", "BANNED" }
+                                } else if member.user.role == "admin" {
+                                    span { class: "role-badge", "ADMIN" }
                                 }
                             }
-                        }
-                        if member.banned {
-                            span { class: "role-badge banned-badge", "BANNED" }
-                        } else if member.user.role == "admin" {
-                            span { class: "role-badge", "ADMIN" }
+                            if let Some(text) = member.status.clone() {
+                                div { class: "member-status", "{text}" }
+                            }
                         }
                         span { class: "member-dot" }
                     }

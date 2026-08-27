@@ -490,6 +490,15 @@ async fn expect_no_content(resp: reqwest::Response, fallback: &str) -> Result<()
     }
 }
 
+pub async fn set_status(session: &Session, text: Option<String>) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/status", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::SetStatusRequest { text }))
+        .await?;
+    expect_no_content(resp, "could not update your status").await
+}
+
 pub async fn email_status(session: &Session) -> Result<shared::EmailStatus, String> {
     get(session, "email".into()).await
 }

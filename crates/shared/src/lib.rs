@@ -30,6 +30,8 @@ pub struct Profile {
     pub banned: bool,
     #[serde(default)]
     pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +119,9 @@ pub struct UserStatus {
     /// Ids of custom tags assigned to this user.
     #[serde(default)]
     pub tag_ids: Vec<i64>,
+    /// Custom status text ("away", "playing X"), if set.
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// A custom cosmetic role: a named, colored badge admins assign to users.
@@ -179,6 +184,12 @@ pub struct EmailRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailVerifyRequest {
     pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetStatusRequest {
+    /// None or empty clears the status.
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -564,6 +575,8 @@ pub enum ServerEvent {
     MessageEdited { channel_id: i64, message_id: i64, content: String, edited_at: i64 },
     MessageDeleted { channel_id: i64, message_id: i64 },
     MessagePinChanged { channel_id: i64, message_id: i64, pinned: bool },
+    /// A user set or cleared their custom status text.
+    StatusChanged { user_id: i64, status: Option<String> },
     StickerCreated { sticker: Sticker },
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
