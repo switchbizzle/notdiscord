@@ -1069,19 +1069,115 @@ pub struct FileQuery {
     pub dl: Option<String>,
 }
 
+/// Outcome of applying a Range header to a file of known length.
+#[derive(Debug, PartialEq, Eq)]
+enum ByteRange {
+    /// No usable range — serve the whole file. Malformed headers land here
+    /// too: RFC 9110 says an unparseable Range is ignored, not an error.
+    Full,
+    /// Serve bytes start..=end (both already clamped inside the file).
+    Slice(u64, u64),
+    /// Syntactically a range, but nothing in it exists — 416.
+    Unsatisfiable,
+}
+
+/// Single ranges only ("bytes=a-b", "bytes=a-", "bytes=-n") — that's all a
+/// video element ever sends. Multi-range requests get the whole file.
+fn parse_range(header: Option<&str>, len: u64) -> ByteRange {
+    let Some(spec) = header.and_then(|h| h.strip_prefix("bytes=")) else {
+        return ByteRange::Full;
+    };
+    if spec.contains(',') {
+        return ByteRange::Full;
+    }
+    let Some((start, end)) = spec.split_once('-') else {
+        return ByteRange::Full;
+    };
+    let (start, end) = (start.trim(), end.trim());
+    match (start.is_empty(), end.is_empty()) {
+        (true, true) => ByteRange::Full,
+        // "-n": the last n bytes.
+        (true, false) => match end.parse::<u64>() {
+            Ok(0) => ByteRange::Unsatisfiable,
+            Ok(n) if len > 0 => ByteRange::Slice(len.saturating_sub(n), len - 1),
+            Ok(_) => ByteRange::Unsatisfiable,
+            Err(_) => ByteRange::Full,
+        },
+        // "a-": from a to the end.
+        (false, true) => match start.parse::<u64>() {
+            Ok(s) if s < len => ByteRange::Slice(s, len - 1),
+            Ok(_) => ByteRange::Unsatisfiable,
+            Err(_) => ByteRange::Full,
+        },
+        // "a-b", end clamped to the file.
+        (false, false) => match (start.parse::<u64>(), end.parse::<u64>()) {
+            (Ok(s), Ok(e)) if s <= e && s < len => ByteRange::Slice(s, e.min(len - 1)),
+            (Ok(_), Ok(_)) => ByteRange::Unsatisfiable,
+            _ => ByteRange::Full,
+        },
+    }
+}
+
 /// Stream a file from disk with backpressure (no whole-file buffering).
-async fn stream_file(path: std::path::PathBuf, headers: Vec<(header::HeaderName, String)>) -> Response {
-    let Ok(file) = tokio::fs::File::open(&path).await else {
+/// Honors single-byte-range requests so video elements can seek.
+async fn stream_file(
+    path: std::path::PathBuf,
+    headers: Vec<(header::HeaderName, String)>,
+    range: Option<String>,
+) -> Response {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let Ok(mut file) = tokio::fs::File::open(&path).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let len = file.metadata().await.ok().map(|m| m.len());
-    let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
-    let mut resp = Response::new(axum::body::Body::from_stream(stream));
-    if let Some(len) = len {
-        if let Ok(value) = len.to_string().parse() {
-            resp.headers_mut().insert(header::CONTENT_LENGTH, value);
+    let verdict = match len {
+        Some(len) => parse_range(range.as_deref(), len),
+        // No length means no way to validate a range; serve in full.
+        None => ByteRange::Full,
+    };
+
+    let mut resp = match verdict {
+        ByteRange::Unsatisfiable => {
+            let mut resp = Response::new(axum::body::Body::empty());
+            *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+            if let Some(len) = len {
+                if let Ok(v) = format!("bytes */{len}").parse() {
+                    resp.headers_mut().insert(header::CONTENT_RANGE, v);
+                }
+            }
+            resp
         }
-    }
+        ByteRange::Slice(start, end) => {
+            if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            let window = end - start + 1;
+            let stream =
+                tokio_util::io::ReaderStream::with_capacity(file.take(window), 64 * 1024);
+            let mut resp = Response::new(axum::body::Body::from_stream(stream));
+            *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+            let total = len.unwrap_or(0);
+            if let Ok(v) = format!("bytes {start}-{end}/{total}").parse() {
+                resp.headers_mut().insert(header::CONTENT_RANGE, v);
+            }
+            if let Ok(v) = window.to_string().parse() {
+                resp.headers_mut().insert(header::CONTENT_LENGTH, v);
+            }
+            resp
+        }
+        ByteRange::Full => {
+            let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+            let mut resp = Response::new(axum::body::Body::from_stream(stream));
+            if let Some(len) = len {
+                if let Ok(v) = len.to_string().parse() {
+                    resp.headers_mut().insert(header::CONTENT_LENGTH, v);
+                }
+            }
+            resp
+        }
+    };
+    resp.headers_mut().insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
     for (key, value) in headers {
         if let Ok(value) = value.parse() {
             resp.headers_mut().insert(key, value);
@@ -1090,10 +1186,41 @@ async fn stream_file(path: std::path::PathBuf, headers: Vec<(header::HeaderName,
     resp
 }
 
+#[cfg(test)]
+mod range_tests {
+    use super::{parse_range, ByteRange::*};
+
+    #[test]
+    fn range_parsing() {
+        let len = 1000;
+        // The forms a video element actually sends.
+        assert_eq!(parse_range(Some("bytes=0-499"), len), Slice(0, 499));
+        assert_eq!(parse_range(Some("bytes=500-"), len), Slice(500, 999));
+        assert_eq!(parse_range(Some("bytes=-100"), len), Slice(900, 999));
+        // Clamping and bounds.
+        assert_eq!(parse_range(Some("bytes=900-5000"), len), Slice(900, 999));
+        assert_eq!(parse_range(Some("bytes=-5000"), len), Slice(0, 999));
+        assert_eq!(parse_range(Some("bytes=1000-"), len), Unsatisfiable);
+        assert_eq!(parse_range(Some("bytes=1200-1300"), len), Unsatisfiable);
+        assert_eq!(parse_range(Some("bytes=-0"), len), Unsatisfiable);
+        assert_eq!(parse_range(Some("bytes=5-2"), len), Unsatisfiable);
+        // Ignored (full response), per RFC: malformed or unsupported.
+        assert_eq!(parse_range(None, len), Full);
+        assert_eq!(parse_range(Some("bytes=abc-"), len), Full);
+        assert_eq!(parse_range(Some("bytes=-"), len), Full);
+        assert_eq!(parse_range(Some("bytes=0-1,5-9"), len), Full);
+        assert_eq!(parse_range(Some("items=0-5"), len), Full);
+        // Empty file: any concrete range is unsatisfiable.
+        assert_eq!(parse_range(Some("bytes=0-"), 0), Unsatisfiable);
+        assert_eq!(parse_range(Some("bytes=-5"), 0), Unsatisfiable);
+    }
+}
+
 fn file_response(
     path: std::path::PathBuf,
     name: &str,
     force_download: bool,
+    range: Option<String>,
 ) -> impl std::future::Future<Output = Response> + Send + 'static {
     let name = name.to_owned();
     async move {
@@ -1112,31 +1239,41 @@ fn file_response(
                 ));
             }
         }
-        stream_file(path, headers).await
+        stream_file(path, headers, range).await
     }
+}
+
+/// The Range header as a string, if the request carried one.
+fn range_of(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_owned)
 }
 
 /// Current format: /files/{32-hex id}/{sanitized original filename}.
 pub async fn serve_file(
     Path((id, name)): Path<(String, String)>,
     Query(q): Query<FileQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let id_ok = id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
     if !id_ok || name != sanitize_filename(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    file_response(crate::uploads_dir().join(&id).join(&name), &name, q.dl.is_some()).await
+    file_response(crate::uploads_dir().join(&id).join(&name), &name, q.dl.is_some(), range_of(&headers)).await
 }
 
 /// Legacy format from the first uploads release: /files/{32-hex}.{ext}.
-pub async fn serve_file_legacy(Path(name): Path<String>, Query(q): Query<FileQuery>) -> Response {
+pub async fn serve_file_legacy(
+    Path(name): Path<String>,
+    Query(q): Query<FileQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let valid = name.len() < 40
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
         && name.matches('.').count() == 1;
     if !valid {
         return StatusCode::NOT_FOUND.into_response();
     }
-    file_response(crate::uploads_dir().join(&name), &name, q.dl.is_some()).await
+    file_response(crate::uploads_dir().join(&name), &name, q.dl.is_some(), range_of(&headers)).await
 }
 
 pub async fn list_emojis(
@@ -1628,14 +1765,16 @@ pub async fn changelog() -> Response {
     }
 }
 
-/// Public: download the current client build (streamed).
-pub async fn download_client() -> Response {
+/// Public: download the current client build (streamed). Range support means
+/// a dropped update download can resume where it left off.
+pub async fn download_client(headers: axum::http::HeaderMap) -> Response {
     stream_file(
         client_dir().join("NotDiscord.exe"),
         vec![
             (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
             (header::CONTENT_DISPOSITION, "attachment; filename=\"NotDiscord.exe\"".to_owned()),
         ],
+        range_of(&headers),
     )
     .await
 }

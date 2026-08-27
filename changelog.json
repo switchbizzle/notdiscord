@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.46.0",
+    "date": "2026-08-27",
+    "changes": [
+      "⏩ Video seeking works: you can finally scrub shared clips to any point instead of watching from the start. The server now speaks HTTP range requests, which also means a dropped update download can resume instead of starting over"
+    ]
+  },
+  {
     "version": "0.45.1",
     "date": "2026-08-27",
     "changes": [
