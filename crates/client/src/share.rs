@@ -135,15 +135,31 @@ pub type SharedFrame = Arc<Mutex<Option<(u32, u32, Vec<u32>)>>>;
 
 // ---------- Call window state ----------
 
-/// One video tile: somebody's camera or screen.
+/// What a tile shows: live video, or the person's avatar when they're
+/// audio-only. Everyone in the call gets a tile either way.
+pub enum TileKind {
+    Video(SharedFrame),
+    Avatar { initial: String, color: u32 },
+}
+
+/// One person (or one of their streams) in the call.
 pub struct Tile {
     /// LiveKit identity, so speaking updates can find this tile.
     pub identity: String,
     pub label: String,
-    pub frame: SharedFrame,
+    pub kind: TileKind,
     pub speaking: Arc<AtomicBool>,
-    /// Cleared when the track ends, so the tile disappears.
+    /// Cleared when the stream ends, which stops its frame pump.
     pub alive: Arc<AtomicBool>,
+}
+
+impl Tile {
+    fn frame(&self) -> Option<(u32, u32, Vec<u32>)> {
+        match &self.kind {
+            TileKind::Video(slot) => slot.lock().ok().and_then(|f| f.clone()),
+            TileKind::Avatar { .. } => None,
+        }
+    }
 }
 
 /// Everything the call window draws. Voice owns it and mutates in place; the
@@ -509,6 +525,16 @@ impl Canvas<'_> {
             .sum::<f32>() as i32
     }
 
+    fn circle(&mut self, cx: i32, cy: i32, r: i32, color: u32) {
+        for y in (cy - r).max(0)..(cy + r).min(self.h) {
+            let dy = y - cy;
+            let span = ((r * r - dy * dy) as f64).sqrt() as i32;
+            for x in (cx - span).max(0)..(cx + span).min(self.w) {
+                self.buf[(y * self.w + x) as usize] = color;
+            }
+        }
+    }
+
     /// Draw a frame letterboxed inside a rect.
     fn video(&mut self, x: i32, y: i32, w: i32, h: i32, frame: &Option<(u32, u32, Vec<u32>)>) {
         self.rect(x, y, w, h, 0x00101113);
@@ -619,16 +645,22 @@ impl CallWindow {
         // ---- header: who you're with, and for how long ----
         canvas.rect(0, 0, w, HEADER_H, BAR);
         let mut pen = canvas.text(16, 11, 15.0, BRIGHT, &state.title);
-        let people = state.tiles.len();
+        // Count people, not tiles — someone sharing camera *and* screen has two.
+        let mut seen: Vec<&str> = Vec::new();
+        for tile in &state.tiles {
+            if !seen.contains(&tile.identity.as_str()) {
+                seen.push(&tile.identity);
+            }
+        }
         pen = canvas.text(
             pen + 12,
             13,
             13.0,
             MUTED,
-            &match people {
-                0 => "waiting for video…".to_string(),
-                1 => "1 stream".to_string(),
-                n => format!("{n} streams"),
+            &match seen.len() {
+                0 => "connecting…".to_string(),
+                1 => "just you".to_string(),
+                n => format!("{n} in the call"),
             },
         );
         let _ = pen;
@@ -658,8 +690,28 @@ impl CallWindow {
                 let (cx, cy) = (i % cols, i / cols);
                 let x = pad + cx * (cell_w + pad);
                 let y = content_y + pad + cy * (cell_h + pad);
-                let frame = tile.frame.lock().unwrap().clone();
-                canvas.video(x, y, cell_w, cell_h, &frame);
+                match &tile.kind {
+                    TileKind::Video(_) => {
+                        let frame = tile.frame();
+                        canvas.video(x, y, cell_w, cell_h, &frame);
+                    }
+                    TileKind::Avatar { initial, color } => {
+                        // Audio-only: their avatar, so the room still looks
+                        // like a room.
+                        canvas.rect(x, y, cell_w, cell_h, 0x00272930);
+                        let radius = (cell_w.min(cell_h) / 5).clamp(22, 74);
+                        canvas.circle(x + cell_w / 2, y + cell_h / 2 - 6, radius, *color);
+                        let size = radius as f32 * 1.1;
+                        let tw = canvas.text_width(size, initial);
+                        canvas.text(
+                            x + cell_w / 2 - tw / 2,
+                            y + cell_h / 2 - 6 - (size * 0.62) as i32,
+                            size,
+                            0x00ffffff,
+                            initial,
+                        );
+                    }
+                }
                 // Speaking gets a green frame, like the ring in the app.
                 if tile.speaking.load(Ordering::Relaxed) {
                     canvas.rect(x, y, cell_w, 2, GREEN);

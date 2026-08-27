@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.38.0",
+    "date": "2026-08-26",
+    "changes": [
+      "The call window now shows everyone in the call, not just whoever's sharing video — people on audio get their avatar, so it looks like a group call",
+      "Someone's video appears in their tile the moment they turn a camera or share on; no need to hit Watch again",
+      "Your own camera is a tile alongside everyone else's now, instead of a thumbnail in the corner"
+    ]
+  },
+  {
     "version": "0.37.0",
     "date": "2026-08-26",
     "changes": [

@@ -1,29 +1,22 @@
-//! Visual harness for the call window: two fake participant tiles, a
-//! self-preview, and the control row — then it screenshots itself so the
-//! layout can be checked without needing two people in a call.
+//! Visual harness for the call window: one person on camera, two audio-only
+//! people as avatars, plus the control row — then it screenshots itself, so
+//! the layout can be checked without needing three people in a call.
 //! `cargo run -p client --example callwindow`
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 #[path = "../src/share.rs"]
 mod share;
 
 /// A recognisable test pattern so scaling and letterboxing are obvious.
-fn pattern(w: u32, h: u32, base: u32, bars: bool) -> (u32, u32, Vec<u32>) {
+fn pattern(w: u32, h: u32, base: u32) -> (u32, u32, Vec<u32>) {
     let mut px = vec![0u32; (w * h) as usize];
     for y in 0..h {
         for x in 0..w {
             let edge = x < 3 || y < 3 || x >= w - 3 || y >= h - 3;
-            let stripe = bars && ((x / 40) % 2 == 0);
             let shade = ((y * 255) / h) & 0x3f;
-            px[(y * w + x) as usize] = if edge {
-                0x00ffffff
-            } else if stripe {
-                base.saturating_add(shade << 8)
-            } else {
-                base
-            };
+            px[(y * w + x) as usize] = if edge { 0x00ffffff } else { base + (shade << 8) };
         }
     }
     (w, h, px)
@@ -34,75 +27,54 @@ fn main() {
         title: "lounge".into(),
         started_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(154)),
         muted: true,
-        sharing: true,
-        camera_on: true,
+        camera_on: false,
+        sharing: false,
         ..Default::default()
     }));
 
-    let make_tile = |identity: &str, label: &str, frame: (u32, u32, Vec<u32>), talking: bool| {
-        let slot: share::SharedFrame = Arc::new(Mutex::new(Some(frame)));
-        share::Tile {
-            identity: identity.into(),
-            label: label.into(),
-            frame: slot,
-            speaking: Arc::new(AtomicBool::new(talking)),
-            alive: Arc::new(AtomicBool::new(true)),
-        }
+    let tile = |identity: &str, label: &str, kind: share::TileKind, talking: bool| share::Tile {
+        identity: identity.into(),
+        label: label.into(),
+        kind,
+        speaking: Arc::new(AtomicBool::new(talking)),
+        alive: Arc::new(AtomicBool::new(true)),
     };
 
     {
         let mut view = state.lock().unwrap();
-        view.tiles.push(make_tile(
+        view.tiles.push(tile(
             "user-4",
             "JunkfoodJon · camera",
-            pattern(640, 480, 0x00204060, false),
+            share::TileKind::Video(Arc::new(Mutex::new(Some(pattern(640, 480, 0x00204060))))),
             true,
         ));
-        view.tiles.push(make_tile(
+        view.tiles.push(tile(
             "user-3",
-            "switchb · screen",
-            pattern(1280, 720, 0x00203020, true),
+            "switchb",
+            share::TileKind::Avatar { initial: "S".into(), color: 0x005865f2 },
             false,
         ));
-        view.self_preview = Some(Arc::new(Mutex::new(Some(pattern(320, 240, 0x00402038, false)))));
+        view.tiles.push(tile(
+            "user-7",
+            "space_goat",
+            share::TileKind::Avatar { initial: "G".into(), color: 0x004f8a6d },
+            false,
+        ));
     }
 
-    let (tx, _rx) = tokio_unbounded();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<share::CallAction>();
     if let Err(e) = share::open_call_window(state.clone(), tx) {
         println!("FAIL: {e}");
         return;
     }
 
     std::thread::sleep(std::time::Duration::from_secs(4));
-
-    use windows_capture::encoder::ImageFormat;
-    use windows_capture::window::Window;
-    match Window::from_contains_name("lounge") {
-        Ok(_) => println!("call window is open"),
-        Err(e) => {
-            println!("FAIL: no call window ({e})");
-            return;
-        }
-    }
-    // Snapshot it for inspection.
     match snapshot("lounge") {
         Ok(()) => println!("saved callwindow-shot.png"),
         Err(e) => println!("screenshot failed: {e}"),
     }
-    println!(
-        "tiles: {} · window open: {}",
-        state.lock().unwrap().tiles.len(),
-        state.lock().unwrap().open
-    );
-    let _ = ImageFormat::Png;
-}
-
-/// The window wants a tokio sender; the harness has no runtime, so make one.
-fn tokio_unbounded() -> (
-    tokio::sync::mpsc::UnboundedSender<share::CallAction>,
-    tokio::sync::mpsc::UnboundedReceiver<share::CallAction>,
-) {
-    tokio::sync::mpsc::unbounded_channel()
+    let view = state.lock().unwrap();
+    println!("tiles: {} · window open: {}", view.tiles.len(), view.open);
 }
 
 fn snapshot(title: &str) -> Result<(), String> {
@@ -148,5 +120,3 @@ fn snapshot(title: &str) -> Result<(), String> {
     let control = Snap::start_free_threaded(settings).map_err(|e| e.to_string())?;
     control.wait().map_err(|e| e.to_string())
 }
-
-fn _unused(_: Ordering) {}

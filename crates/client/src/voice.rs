@@ -278,33 +278,106 @@ impl Drop for ActiveCall {
 }
 
 
-/// Add somebody's stream to the call window (opening it if needed) and start
-/// pumping frames into its tile.
-fn add_tile(
+/// Avatar colour for an identity, matching the app's `hsl(hue, 55%, 42%)`.
+fn avatar_color(identity: &str) -> u32 {
+    let id: i64 = identity.strip_prefix("user-").and_then(|i| i.parse().ok()).unwrap_or(1);
+    let hue = ((id * 137) % 360) as f64;
+    let (s, l): (f64, f64) = (0.55, 0.42);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match hue as u32 / 60 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to8 = |v: f64| (((v + m) * 255.0).round() as u32).min(255);
+    (to8(r) << 16) | (to8(g) << 8) | to8(b)
+}
+
+/// Rebuild the call window's tiles: one per person in the call, showing their
+/// video when they have some and their avatar when they don't. Existing tiles
+/// are reused so their frame pumps keep running.
+fn rebuild_call_tiles(
     call_state: &crate::share::SharedCall,
-    actions: &tokio::sync::mpsc::UnboundedSender<crate::share::CallAction>,
-    track: &RemoteVideoTrack,
-    identity: String,
-    label: String,
-) -> Result<(), String> {
-    let frame: crate::share::SharedFrame = Default::default();
-    let alive = Arc::new(AtomicBool::new(true));
-    {
-        let mut view = call_state.lock().unwrap();
-        // Watching the same stream twice just refocuses the existing tile.
-        if view.tiles.iter().any(|t| t.label == label) {
-            return crate::share::open_call_window(call_state.clone(), actions.clone());
+    snapshot: &VoiceStatus,
+    tracks: Option<&Arc<Mutex<VideoTracks>>>,
+) {
+    use crate::share::{Tile, TileKind};
+
+    let tracks = tracks.map(|t| t.lock().unwrap());
+    let mut view = call_state.lock().unwrap();
+    let self_preview = view.self_preview.clone();
+    let mut old: Vec<Tile> = std::mem::take(&mut view.tiles);
+    let mut next: Vec<Tile> = Vec::new();
+
+    let mut take_or_make = |label: String, identity: &str, make: &mut dyn FnMut() -> Option<TileKind>| {
+        if let Some(pos) = old.iter().position(|t| t.label == label) {
+            next.push(old.remove(pos));
+            return;
         }
-        view.tiles.push(crate::share::Tile {
-            identity,
-            label,
-            frame: frame.clone(),
-            speaking: Arc::new(AtomicBool::new(false)),
-            alive: alive.clone(),
-        });
+        if let Some(kind) = make() {
+            next.push(Tile {
+                identity: identity.to_owned(),
+                label,
+                kind,
+                speaking: Arc::new(AtomicBool::new(false)),
+                alive: Arc::new(AtomicBool::new(true)),
+            });
+        }
+    };
+
+    for participant in &snapshot.participants {
+        let mut has_video = false;
+
+        // Other people's streams come off the room; ours is the local preview.
+        if let Some(tracks) = tracks.as_ref() {
+            for (kind, map) in [("screen", &tracks.screen), ("camera", &tracks.camera)] {
+                let Some(track) = map.get(&participant.identity) else { continue };
+                has_video = true;
+                let label = format!("{} · {kind}", participant.name);
+                let track = track.clone();
+                take_or_make(label, &participant.identity, &mut || {
+                    let frame: crate::share::SharedFrame = Default::default();
+                    let alive = Arc::new(AtomicBool::new(true));
+                    crate::share::pump_track(&track, frame.clone(), alive);
+                    Some(TileKind::Video(frame))
+                });
+            }
+        }
+        if participant.is_me && snapshot.camera_self {
+            if let Some(slot) = self_preview.clone() {
+                has_video = true;
+                take_or_make(
+                    format!("{} · camera", participant.name),
+                    &participant.identity,
+                    &mut || Some(TileKind::Video(slot.clone())),
+                );
+            }
+        }
+
+        if !has_video {
+            let initial = participant
+                .name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "?".into());
+            let color = avatar_color(&participant.identity);
+            take_or_make(participant.name.clone(), &participant.identity, &mut || {
+                Some(TileKind::Avatar { initial: initial.clone(), color })
+            });
+        }
     }
-    crate::share::pump_track(track, frame, alive);
-    crate::share::open_call_window(call_state.clone(), actions.clone())
+
+    // Whatever is left has gone away; clearing `alive` stops its frame pump.
+    for gone in old {
+        gone.alive.store(false, Ordering::Relaxed);
+    }
+    view.tiles = next;
 }
 
 pub async fn voice_task(
@@ -317,27 +390,37 @@ pub async fn voice_task(
     let call_state: crate::share::SharedCall = Default::default();
     let (action_tx, mut action_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::share::CallAction>();
+    // The current call's video tracks, readable by the mirror task below.
+    let live_tracks: Arc<Mutex<Option<Arc<Mutex<VideoTracks>>>>> = Default::default();
 
     // Keep the call window in step with the app: control states, who's
     // talking, and tiles whose track has ended.
     {
         let call_state = call_state.clone();
+        let live_tracks = live_tracks.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 let snapshot = status.peek().clone();
-                let Ok(mut view) = call_state.lock() else { continue };
-                view.muted = snapshot.muted;
-                view.deafened = snapshot.deafened;
-                view.camera_on = snapshot.camera_self;
-                view.sharing = snapshot.sharing_self;
-                view.tiles.retain(|tile| tile.alive.load(Ordering::Relaxed));
-                for tile in &view.tiles {
-                    let talking = snapshot
-                        .participants
-                        .iter()
-                        .any(|p| p.identity == tile.identity && p.speaking);
-                    tile.speaking.store(talking, Ordering::Relaxed);
+                {
+                    let Ok(mut view) = call_state.lock() else { continue };
+                    view.muted = snapshot.muted;
+                    view.deafened = snapshot.deafened;
+                    view.camera_on = snapshot.camera_self;
+                    view.sharing = snapshot.sharing_self;
+                }
+                // Everyone in the call gets a tile — video if they have it,
+                // avatar if they don't.
+                let tracks = live_tracks.lock().ok().and_then(|t| t.clone());
+                rebuild_call_tiles(&call_state, &snapshot, tracks.as_ref());
+                if let Ok(view) = call_state.lock() {
+                    for tile in &view.tiles {
+                        let talking = snapshot
+                            .participants
+                            .iter()
+                            .any(|p| p.identity == tile.identity && p.speaking);
+                        tile.speaking.store(talking, Ordering::Relaxed);
+                    }
                 }
             }
         });
@@ -399,6 +482,7 @@ pub async fn voice_task(
                 }
                 match connect(&url, &token, status, mic_level).await {
                     Ok(active) => {
+                        *live_tracks.lock().unwrap() = Some(active.video_tracks.clone());
                         call = Some(active);
                         status.write().connecting = false;
                         // You hear your own arrival too, like Discord.
@@ -419,6 +503,7 @@ pub async fn voice_task(
                     old.room.close().await.ok();
                     play_voice_blip(false);
                 }
+                *live_tracks.lock().unwrap() = None;
                 {
                     let mut view = call_state.lock().unwrap();
                     for tile in &view.tiles {
@@ -484,15 +569,10 @@ pub async fn voice_task(
                 if let Some(active) = &call {
                     let track = active.video_tracks.lock().unwrap().screen.get(&identity).cloned();
                     match track {
-                        Some(track) => {
-                            let name = participant_name(status, &identity);
-                            if let Err(e) = add_tile(
-                                &call_state,
-                                &action_tx,
-                                &track,
-                                identity.clone(),
-                                format!("{name} · screen"),
-                            ) {
+                        Some(_) => {
+                            if let Err(e) =
+                                crate::share::open_call_window(call_state.clone(), action_tx.clone())
+                            {
                                 status.write().error = e;
                             }
                         }
@@ -568,15 +648,10 @@ pub async fn voice_task(
                 if let Some(active) = &call {
                     let track = active.video_tracks.lock().unwrap().camera.get(&identity).cloned();
                     match track {
-                        Some(track) => {
-                            let name = participant_name(status, &identity);
-                            if let Err(e) = add_tile(
-                                &call_state,
-                                &action_tx,
-                                &track,
-                                identity.clone(),
-                                format!("{name} · camera"),
-                            ) {
+                        Some(_) => {
+                            if let Err(e) =
+                                crate::share::open_call_window(call_state.clone(), action_tx.clone())
+                            {
                                 status.write().error = e;
                             }
                         }
