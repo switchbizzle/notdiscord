@@ -1,6 +1,8 @@
 //! Visual harness for the call window: one person on camera, two audio-only
 //! people as avatars, plus the control row — then it screenshots itself, so
-//! the layout can be checked without needing three people in a call.
+//! the layout can be checked without needing three people in a call. It also
+//! drives a real double-click on the camera tile (through the OS, not a fake
+//! event) to check the blown-up view and the way back.
 //! `cargo run -p client --example callwindow`
 
 use std::sync::atomic::AtomicBool;
@@ -68,16 +70,65 @@ fn main() {
         return;
     }
 
-    std::thread::sleep(std::time::Duration::from_secs(4));
-    match snapshot("lounge") {
-        Ok(()) => println!("saved callwindow-shot.png"),
-        Err(e) => println!("screenshot failed: {e}"),
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    shoot("callwindow-grid.png");
+
+    // Tile 0 (the camera) sits in the top-left quarter of the content area.
+    match window_rect() {
+        Some((left, top, width, height)) => {
+            let (x, y) = (left + width / 4, top + (height as f64 * 0.35) as i32);
+            double_click(x, y);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            shoot("callwindow-focused.png");
+            double_click(x, y);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            shoot("callwindow-restored.png");
+        }
+        None => println!("FAIL: could not find the call window to click"),
     }
+
     let view = state.lock().unwrap();
     println!("tiles: {} · window open: {}", view.tiles.len(), view.open);
 }
 
-fn snapshot(title: &str) -> Result<(), String> {
+fn shoot(name: &str) {
+    match snapshot("lounge", name) {
+        Ok(()) => println!("saved {name}"),
+        Err(e) => println!("screenshot failed ({name}): {e}"),
+    }
+}
+
+/// Screen rect of the call window, in physical pixels.
+fn window_rect() -> Option<(i32, i32, i32, i32)> {
+    use winapi::um::winuser::{FindWindowW, GetWindowRect};
+    let class: Vec<u16> = "NotDiscordViewer\0".encode_utf16().collect();
+    unsafe {
+        let hwnd = FindWindowW(class.as_ptr(), std::ptr::null());
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut rect = std::mem::zeroed::<winapi::shared::windef::RECT>();
+        if GetWindowRect(hwnd, &mut rect) == 0 {
+            return None;
+        }
+        Some((rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+    }
+}
+
+/// Two real clicks, close enough together to count as a double-click.
+fn double_click(x: i32, y: i32) {
+    use winapi::um::winuser::{mouse_event, SetCursorPos, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP};
+    unsafe {
+        SetCursorPos(x, y);
+        for _ in 0..2 {
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+    }
+}
+
+fn snapshot(title: &str, out: &str) -> Result<(), String> {
     use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
     use windows_capture::encoder::ImageFormat;
     use windows_capture::frame::Frame;
@@ -88,19 +139,21 @@ fn snapshot(title: &str) -> Result<(), String> {
     };
     use windows_capture::window::Window;
 
-    struct Snap;
+    struct Snap {
+        out: String,
+    }
     impl GraphicsCaptureApiHandler for Snap {
-        type Flags = ();
+        type Flags = String;
         type Error = Box<dyn std::error::Error + Send + Sync>;
-        fn new(_: Context<Self::Flags>) -> Result<Self, Self::Error> {
-            Ok(Self)
+        fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+            Ok(Self { out: ctx.flags })
         }
         fn on_frame_arrived(
             &mut self,
             frame: &mut Frame,
             control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
-            frame.save_as_image("callwindow-shot.png", ImageFormat::Png)?;
+            frame.save_as_image(&self.out, ImageFormat::Png)?;
             control.stop();
             Ok(())
         }
@@ -115,7 +168,7 @@ fn snapshot(title: &str) -> Result<(), String> {
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
-        (),
+        out.to_string(),
     );
     let control = Snap::start_free_threaded(settings).map_err(|e| e.to_string())?;
     control.wait().map_err(|e| e.to_string())

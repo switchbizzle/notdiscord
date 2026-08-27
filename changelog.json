@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.40.0",
+    "date": "2026-08-26",
+    "changes": [
+      "🖥️ Double-click someone's screen share or camera in the call window and it fills the whole window — double-click it again to get everyone back",
+      "There's a Fullscreen button up in the corner of the call window (F11 works too), so a stream can have your entire monitor instead of sharing it with an avatar",
+      "Escape backs out one step at a time — the big stream first, then fullscreen. It never hangs up on you"
+    ]
+  },
+  {
     "version": "0.39.0",
     "date": "2026-08-26",
     "changes": [

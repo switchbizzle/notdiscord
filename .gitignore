@@ -33,3 +33,6 @@ Thumbs.db
 
 # Distribution binaries
 /dist/
+
+# Screenshots the visual harnesses take of themselves
+/callwindow-*.png

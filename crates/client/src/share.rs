@@ -293,6 +293,18 @@ struct ViewerWindow {
     alive: Arc<AtomicBool>,
 }
 
+/// Where a tile landed in the last frame, so clicks can find it.
+struct TileHit {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    /// Labels are unique per tile and survive the 200ms rebuilds, so they're
+    /// what "which tile is focused" is remembered by.
+    label: String,
+    video: bool,
+}
+
 /// The call window: tiles, self-preview and controls.
 struct CallWindow {
     window: Rc<winit::window::Window>,
@@ -302,6 +314,21 @@ struct CallWindow {
     cursor: (f64, f64),
     /// Hit boxes recomputed on each draw: (x, y, w, h, action).
     buttons: Vec<(i32, i32, i32, i32, CallAction)>,
+    /// The window's own controls, which never reach the voice engine.
+    chrome: Vec<(i32, i32, i32, i32, ChromeAction)>,
+    tile_hits: Vec<TileHit>,
+    /// Label of the tile blown up to fill the window, if any.
+    focused: Option<String>,
+    fullscreen: bool,
+    /// Last left-press, for spotting double-clicks ourselves — winit doesn't
+    /// report click counts on Windows.
+    last_click: Option<(std::time::Instant, i32, i32)>,
+}
+
+/// A click on the window's own chrome (as opposed to a call control).
+#[derive(Clone, Copy, PartialEq)]
+enum ChromeAction {
+    Fullscreen,
 }
 
 enum WindowKind {
@@ -373,6 +400,11 @@ impl winit::application::ApplicationHandler<ViewerRequest> for ViewerApp {
                                 actions,
                                 cursor: (0.0, 0.0),
                                 buttons: Vec::new(),
+                                chrome: Vec::new(),
+                                tile_hits: Vec::new(),
+                                focused: None,
+                                fullscreen: false,
+                                last_click: None,
                             }),
                         );
                     }
@@ -423,6 +455,24 @@ impl winit::application::ApplicationHandler<ViewerRequest> for ViewerApp {
                 }
                 if let Some(WindowKind::Call(call)) = self.windows.get_mut(&id) {
                     call.click();
+                }
+            }
+            winit::event::WindowEvent::KeyboardInput { event, .. } => {
+                use winit::keyboard::{Key, NamedKey};
+                if event.state != winit::event::ElementState::Pressed {
+                    return;
+                }
+                let Some(WindowKind::Call(call)) = self.windows.get_mut(&id) else { return };
+                match event.logical_key {
+                    Key::Named(NamedKey::F11) => call.set_fullscreen(!call.fullscreen),
+                    // Escape backs out one level: the blown-up tile first,
+                    // then fullscreen. It never hangs up the call.
+                    Key::Named(NamedKey::Escape) => {
+                        if call.focused.take().is_none() && call.fullscreen {
+                            call.set_fullscreen(false);
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -603,11 +653,56 @@ impl ViewerWindow {
 }
 
 impl CallWindow {
+    fn set_fullscreen(&mut self, on: bool) {
+        self.fullscreen = on;
+        self.window.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
+    }
+
     fn click(&mut self) {
         let (cx, cy) = (self.cursor.0 as i32, self.cursor.1 as i32);
+        let hit = |x: &i32, y: &i32, w: &i32, h: &i32| cx >= *x && cx < x + w && cy >= *y && cy < y + h;
+
+        // Second press in the same spot, quickly: a double-click. (Windows'
+        // own threshold is 500ms; winit doesn't surface click counts.)
+        let now = std::time::Instant::now();
+        let double = self.last_click.is_some_and(|(at, x, y)| {
+            now.duration_since(at) < std::time::Duration::from_millis(450)
+                && (cx - x).abs() < 6
+                && (cy - y).abs() < 6
+        });
+        // A double-click's second press starts a fresh count, so a triple
+        // click doesn't toggle twice.
+        self.last_click = if double { None } else { Some((now, cx, cy)) };
+
         for (x, y, w, h, action) in &self.buttons {
-            if cx >= *x && cx < x + w && cy >= *y && cy < y + h {
+            if hit(x, y, w, h) {
                 let _ = self.actions.send(*action);
+                return;
+            }
+        }
+        for (x, y, w, h, action) in &self.chrome {
+            if hit(x, y, w, h) {
+                match action {
+                    ChromeAction::Fullscreen => {
+                        let on = !self.fullscreen;
+                        self.set_fullscreen(on);
+                    }
+                }
+                return;
+            }
+        }
+        if !double {
+            return;
+        }
+        // Double-click a stream to fill the window with it; double-click the
+        // filled window to get everyone back.
+        for tile in &self.tile_hits {
+            if hit(&tile.x, &tile.y, &tile.w, &tile.h) {
+                if self.focused.as_deref() == Some(tile.label.as_str()) {
+                    self.focused = None;
+                } else if tile.video {
+                    self.focused = Some(tile.label.clone());
+                }
                 return;
             }
         }
@@ -663,33 +758,89 @@ impl CallWindow {
                 n => format!("{n} in the call"),
             },
         );
-        let _ = pen;
+        if self.focused.is_some() {
+            canvas.text(pen + 12, 13, 13.0, MUTED, "· double-click to go back");
+        }
+
+        // Fullscreen toggle, right-aligned — and the only way back out once
+        // the title bar is gone (Escape and F11 work too).
+        let fs_label = if self.fullscreen { "Exit fullscreen" } else { "Fullscreen" };
+        let fs_w = canvas.text_width(12.0, fs_label) + 20;
+        let fs_x = w - fs_w - 12;
+        let fs_y = 7;
+        let fs_h = 26;
+        let fs_hovered = self.cursor.0 as i32 >= fs_x
+            && (self.cursor.0 as i32) < fs_x + fs_w
+            && self.cursor.1 as i32 >= fs_y
+            && (self.cursor.1 as i32) < fs_y + fs_h;
+        canvas.rect(fs_x, fs_y, fs_w, fs_h, if fs_hovered { 0x004e5058 } else { CHIP });
+        canvas.text(fs_x + 10, fs_y + 6, 12.0, BRIGHT, fs_label);
+        self.chrome.clear();
+        self.chrome.push((fs_x, fs_y, fs_w, fs_h, ChromeAction::Fullscreen));
+
         if let Some(started) = state.started_at {
             let secs = started.elapsed().as_secs();
             let clock = format!("{:02}:{:02}", secs / 60, secs % 60);
             let tw = canvas.text_width(13.0, &clock);
-            canvas.text(w - tw - 16, 13, 13.0, MUTED, &clock);
+            canvas.text(fs_x - tw - 14, 13, 13.0, MUTED, &clock);
         }
 
         // ---- tiles ----
         let content_y = HEADER_H;
         let content_h = (h - HEADER_H - FOOTER_H).max(0);
+        self.tile_hits.clear();
+        // A focused stream that ended (or a person who left) quietly drops
+        // back to the grid rather than showing an empty box.
+        let focused_idx = self.focused.as_ref().and_then(|label| {
+            state
+                .tiles
+                .iter()
+                .position(|t| t.label == *label && matches!(t.kind, TileKind::Video(_)))
+        });
+        if self.focused.is_some() && focused_idx.is_none() {
+            self.focused = None;
+        }
         if state.tiles.is_empty() {
             let msg = "Nobody's sharing video yet";
             let tw = canvas.text_width(15.0, msg);
             canvas.text((w - tw) / 2, content_y + content_h / 2 - 8, 15.0, MUTED, msg);
         } else {
-            let n = state.tiles.len() as i32;
-            let cols = (n as f64).sqrt().ceil() as i32;
-            let rows = (n + cols - 1) / cols;
             let pad = 8;
-            let cell_w = (w - pad * (cols + 1)) / cols;
-            let cell_h = (content_h - pad * (rows + 1)) / rows.max(1);
-            for (i, tile) in state.tiles.iter().enumerate() {
-                let i = i as i32;
-                let (cx, cy) = (i % cols, i / cols);
-                let x = pad + cx * (cell_w + pad);
-                let y = content_y + pad + cy * (cell_h + pad);
+            // One tile filling the window, or the grid.
+            let places: Vec<(usize, i32, i32, i32, i32)> = match focused_idx {
+                Some(idx) => {
+                    vec![(idx, pad, content_y + pad, w - pad * 2, content_h - pad * 2)]
+                }
+                None => {
+                    let n = state.tiles.len() as i32;
+                    let cols = (n as f64).sqrt().ceil() as i32;
+                    let rows = (n + cols - 1) / cols;
+                    let cell_w = (w - pad * (cols + 1)) / cols;
+                    let cell_h = (content_h - pad * (rows + 1)) / rows.max(1);
+                    (0..n)
+                        .map(|i| {
+                            let (cx, cy) = (i % cols, i / cols);
+                            (
+                                i as usize,
+                                pad + cx * (cell_w + pad),
+                                content_y + pad + cy * (cell_h + pad),
+                                cell_w,
+                                cell_h,
+                            )
+                        })
+                        .collect()
+                }
+            };
+            for (idx, x, y, cell_w, cell_h) in places {
+                let tile = &state.tiles[idx];
+                self.tile_hits.push(TileHit {
+                    x,
+                    y,
+                    w: cell_w,
+                    h: cell_h,
+                    label: tile.label.clone(),
+                    video: matches!(tile.kind, TileKind::Video(_)),
+                });
                 match &tile.kind {
                     TileKind::Video(_) => {
                         let frame = tile.frame();
