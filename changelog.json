@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.43.2",
+    "date": "2026-08-27",
+    "changes": [
+      "📹 Fixed: video tiles only refreshed when you switched tabs, and showed a broken-image icon until they did. They now update continuously on their own",
+      "The \"+ new channel\" box is gone from the bottom of the channel list — channels are made in Server settings → Channels now, and the list fills the space it left"
+    ]
+  },
+  {
     "version": "0.43.1",
     "date": "2026-08-27",
     "changes": [

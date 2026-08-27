@@ -1326,23 +1326,6 @@ fn MainView(session: api::Session) -> Element {
         });
     };
 
-    let add_channel = move || {
-        let name = new_channel().trim().to_string();
-        if name.is_empty() {
-            return;
-        }
-        spawn(async move {
-            let kind = if new_channel_voice() { "voice" } else { "text" };
-            // Success arrives back via the ChannelCreated broadcast.
-            if let Err(e) = api::create_channel(&session(), name, kind).await {
-                status.set(e);
-            } else {
-                new_channel.set(String::new());
-                new_channel_voice.set(false);
-            }
-        });
-    };
-
     let logout = move |_| {
         let active = api::load_servers().active;
         servers_file.set(api::remove_server(active));
@@ -3270,25 +3253,8 @@ fn MainView(session: api::Session) -> Element {
                         if updating() { "⬇ downloading update…" } else { "⬆ Update v{info.version} — install & restart" }
                     }
                 }
-                div { class: "new-channel-row",
-                    button {
-                        class: "new-channel-kind",
-                        title: if new_channel_voice() { "Creating a voice channel — click for text" } else { "Creating a text channel — click for voice" },
-                        onclick: move |_| new_channel_voice.set(!new_channel_voice()),
-                        if new_channel_voice() { Icon { name: "volume", size: 14 } } else { "#" }
-                    }
-                    input {
-                        class: "new-channel",
-                        placeholder: if new_channel_voice() { "+ new voice channel" } else { "+ new channel" },
-                        value: "{new_channel}",
-                        oninput: move |e| new_channel.set(e.value()),
-                        onkeydown: move |e| {
-                            if e.key() == Key::Enter {
-                                add_channel();
-                            }
-                        },
-                    }
-                }
+                // Channels are created in Server settings → Channels now, so
+                // the sidebar's own box is gone and the list takes the room.
                 div { class: "me",
                     div {
                         class: "me-info",
@@ -4374,27 +4340,24 @@ fn fmt_secs(secs: f64) -> String {
 fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) -> Element {
     let voice = use_coroutine_handle::<voice::VoiceCmd>();
 
-    // One interval swaps every tile's src. It clears itself once the tiles
-    // are gone, which is what stops it when you leave the tab.
+    // Tiles refresh by re-requesting their frame, and the stamp that makes
+    // each request unique comes from here. It used to be a JS interval that
+    // rewrote every src, but that cleared itself the moment it ticked with no
+    // tiles on screen — before the first paint, or any lull in the call — and
+    // nothing restarted it, so the picture froze until a tab swap remounted
+    // the whole thing. A signal can't die like that: it starts with the first
+    // render and stops when the tab unmounts, which is also what stops the
+    // requests, and with them the encoding.
+    let mut tick = use_signal(|| 0u64);
     use_future(move || async move {
-        dioxus::document::eval(
-            "(() => {
-               if (window.__ndvideo) clearInterval(window.__ndvideo);
-               window.__ndvideo = setInterval(() => {
-                 const tiles = document.querySelectorAll('img[data-vkey]');
-                 if (!tiles.length) {
-                   clearInterval(window.__ndvideo);
-                   window.__ndvideo = null;
-                   return;
-                 }
-                 const stamp = Date.now();
-                 tiles.forEach(img => {
-                   img.src = 'http://ndvideo.localhost/' + img.dataset.vkey + '?t=' + stamp;
-                 });
-               }, 70);
-             })()",
-        );
+        let mut frame = 0u64;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(70)).await;
+            frame += 1;
+            tick.set(frame);
+        }
     });
+    let stamp = tick();
 
     let snapshot = status();
     let in_call = snapshot.channel_id.is_some();
@@ -4466,8 +4429,11 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
                                         Some(vkey) => rsx! {
                                             img {
                                                 class: "video-frame",
-                                                "data-vkey": "{vkey}",
-                                                alt: "{label}",
+                                                src: "http://ndvideo.localhost/{vkey}?t={stamp}",
+                                                // Empty alt: a frame that hasn't
+                                                // arrived yet shows nothing rather
+                                                // than a broken-image icon.
+                                                alt: "",
                                             }
                                         },
                                         None => rsx! {
