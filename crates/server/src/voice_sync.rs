@@ -164,6 +164,11 @@ async fn sync_once(state: &SharedState) -> anyhow::Result<()> {
 
     let now = now_ms();
     let known: HashMap<i64, (i64, User, bool, bool)> = state.voice.lock().unwrap().clone();
+    tracing::debug!(
+        "voice sync: livekit sees {} participant(s), roster has {}",
+        actual.len(),
+        known.len()
+    );
     let mut changes: Vec<(User, Option<i64>, bool, bool)> = Vec::new();
 
     // Anyone LiveKit sees who we're missing (or whose state drifted).
