@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.36.2",
+    "date": "2026-08-26",
+    "changes": [
+      "Turning on your camera now opens a preview of yourself, so you can see what everyone else sees (it closes when you turn the camera off)",
+      "The voice channel list is now kept honest by the server checking who's really in the call — no more ghosts or invisible people, whatever your client is doing"
+    ]
+  },
+  {
     "version": "0.36.1",
     "date": "2026-08-26",
     "changes": [

@@ -410,10 +410,14 @@ pub async fn voice_task(
                             .await
                         {
                             Ok(publication) => {
+                                // Show yourself what you're broadcasting; the
+                                // window closes with the camera.
+                                let preview =
+                                    crate::share::open_frame_viewer("Your camera — NotDiscord".into()).ok();
                                 // Opening the webcam can take seconds; don't
                                 // stall the voice command loop while it does.
                                 let opened = tokio::task::spawn_blocking(move || {
-                                    crate::camera::start_camera(source)
+                                    crate::camera::start_camera(source, preview)
                                 })
                                 .await
                                 .unwrap_or_else(|e| Err(format!("camera thread panicked: {e}")));
