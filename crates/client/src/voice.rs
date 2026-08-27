@@ -277,14 +277,101 @@ impl Drop for ActiveCall {
     }
 }
 
+
+/// Add somebody's stream to the call window (opening it if needed) and start
+/// pumping frames into its tile.
+fn add_tile(
+    call_state: &crate::share::SharedCall,
+    actions: &tokio::sync::mpsc::UnboundedSender<crate::share::CallAction>,
+    track: &RemoteVideoTrack,
+    identity: String,
+    label: String,
+) -> Result<(), String> {
+    let frame: crate::share::SharedFrame = Default::default();
+    let alive = Arc::new(AtomicBool::new(true));
+    {
+        let mut view = call_state.lock().unwrap();
+        // Watching the same stream twice just refocuses the existing tile.
+        if view.tiles.iter().any(|t| t.label == label) {
+            return crate::share::open_call_window(call_state.clone(), actions.clone());
+        }
+        view.tiles.push(crate::share::Tile {
+            identity,
+            label,
+            frame: frame.clone(),
+            speaking: Arc::new(AtomicBool::new(false)),
+            alive: alive.clone(),
+        });
+    }
+    crate::share::pump_track(track, frame, alive);
+    crate::share::open_call_window(call_state.clone(), actions.clone())
+}
+
 pub async fn voice_task(
     mut rx: UnboundedReceiver<VoiceCmd>,
     mut status: VoiceStatusSignal,
     mut mic_level: MicLevelSignal,
 ) {
     let mut call: Option<ActiveCall> = None;
+    // Shared with the call window: what it draws, and what its buttons do.
+    let call_state: crate::share::SharedCall = Default::default();
+    let (action_tx, mut action_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::share::CallAction>();
 
-    while let Some(cmd) = rx.next().await {
+    // Keep the call window in step with the app: control states, who's
+    // talking, and tiles whose track has ended.
+    {
+        let call_state = call_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let snapshot = status.peek().clone();
+                let Ok(mut view) = call_state.lock() else { continue };
+                view.muted = snapshot.muted;
+                view.deafened = snapshot.deafened;
+                view.camera_on = snapshot.camera_self;
+                view.sharing = snapshot.sharing_self;
+                view.tiles.retain(|tile| tile.alive.load(Ordering::Relaxed));
+                for tile in &view.tiles {
+                    let talking = snapshot
+                        .participants
+                        .iter()
+                        .any(|p| p.identity == tile.identity && p.speaking);
+                    tile.speaking.store(talking, Ordering::Relaxed);
+                }
+            }
+        });
+    }
+
+    loop {
+        // Commands arrive from the UI and from the call window's buttons.
+        let cmd = tokio::select! {
+            next = rx.next() => match next {
+                Some(cmd) => cmd,
+                None => break,
+            },
+            action = action_rx.recv() => match action {
+                Some(action) => {
+                    let snapshot = status.peek().clone();
+                    match action {
+                        crate::share::CallAction::Mic => VoiceCmd::ToggleMute,
+                        crate::share::CallAction::Deafen => VoiceCmd::ToggleDeafen,
+                        crate::share::CallAction::Camera => {
+                            if snapshot.camera_self { VoiceCmd::StopCamera } else { VoiceCmd::StartCamera }
+                        }
+                        crate::share::CallAction::Screen => {
+                            if snapshot.sharing_self {
+                                VoiceCmd::StopScreenShare
+                            } else {
+                                VoiceCmd::StartScreenShare { monitor: None }
+                            }
+                        }
+                        crate::share::CallAction::Leave => VoiceCmd::Leave,
+                    }
+                }
+                None => continue,
+            },
+        };
         match cmd {
             VoiceCmd::Join { channel_id, channel_name, url, token } => {
                 // Leave any current room first.
@@ -299,6 +386,17 @@ pub async fn voice_task(
                     connecting: true,
                     ..Default::default()
                 });
+                {
+                    let mut view = call_state.lock().unwrap();
+                    view.title = channel_name.clone();
+                    view.started_at = Some(std::time::Instant::now());
+                    view.tiles.clear();
+                    view.self_preview = None;
+                    view.muted = false;
+                    view.deafened = false;
+                    view.camera_on = false;
+                    view.sharing = false;
+                }
                 match connect(&url, &token, status, mic_level).await {
                     Ok(active) => {
                         call = Some(active);
@@ -320,6 +418,16 @@ pub async fn voice_task(
                     stop_camera(&mut old, status).await;
                     old.room.close().await.ok();
                     play_voice_blip(false);
+                }
+                {
+                    let mut view = call_state.lock().unwrap();
+                    for tile in &view.tiles {
+                        tile.alive.store(false, Ordering::Relaxed);
+                    }
+                    view.tiles.clear();
+                    view.self_preview = None;
+                    view.open = false;
+                    view.started_at = None;
                 }
                 status.set(VoiceStatus::default());
                 mic_level.set(0.0);
@@ -378,7 +486,13 @@ pub async fn voice_task(
                     match track {
                         Some(track) => {
                             let name = participant_name(status, &identity);
-                            if let Err(e) = crate::share::open_viewer(track, format!("{name}'s screen — NotDiscord")) {
+                            if let Err(e) = add_tile(
+                                &call_state,
+                                &action_tx,
+                                &track,
+                                identity.clone(),
+                                format!("{name} · screen"),
+                            ) {
                                 status.write().error = e;
                             }
                         }
@@ -410,10 +524,13 @@ pub async fn voice_task(
                             .await
                         {
                             Ok(publication) => {
-                                // Show yourself what you're broadcasting; the
-                                // window closes with the camera.
-                                let preview =
-                                    crate::share::open_frame_viewer("Your camera — NotDiscord".into()).ok();
+                                // Show yourself what you're broadcasting, as a
+                                // picture-in-picture in the call window.
+                                let slot: crate::share::SharedFrame = Default::default();
+                                let alive = Arc::new(AtomicBool::new(true));
+                                call_state.lock().unwrap().self_preview = Some(slot.clone());
+                                let _ = crate::share::open_call_window(call_state.clone(), action_tx.clone());
+                                let preview = Some((slot, alive));
                                 // Opening the webcam can take seconds; don't
                                 // stall the voice command loop while it does.
                                 let opened = tokio::task::spawn_blocking(move || {
@@ -453,7 +570,13 @@ pub async fn voice_task(
                     match track {
                         Some(track) => {
                             let name = participant_name(status, &identity);
-                            if let Err(e) = crate::share::open_viewer(track, format!("{name}'s camera — NotDiscord")) {
+                            if let Err(e) = add_tile(
+                                &call_state,
+                                &action_tx,
+                                &track,
+                                identity.clone(),
+                                format!("{name} · camera"),
+                            ) {
                                 status.write().error = e;
                             }
                         }

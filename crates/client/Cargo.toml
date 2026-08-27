@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "client"
-version = "0.36.2"
+version = "0.37.0"
 edition = "2021"
 
 [dependencies]
@@ -30,6 +30,7 @@ softbuffer = "0.4"
 arboard = "3"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+fontdue = "0.9.4"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror"] }

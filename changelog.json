@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.37.0",
+    "date": "2026-08-26",
+    "changes": [
+      "Video is a real call window now: everyone's stream side by side with their name on it, your own camera in the corner, and a call timer up top",
+      "Mute, deafen, camera, share screen and leave are right there in the window — no more hunting for the app",
+      "Whoever's talking gets a green border, like the speaking ring in the app",
+      "Watch a screen share and a camera at once; closing the window stops watching but keeps you in the call"
+    ]
+  },
+  {
     "version": "0.36.2",
     "date": "2026-08-26",
     "changes": [
