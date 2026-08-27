@@ -4,6 +4,7 @@ mod api;
 mod emoji;
 mod icons;
 mod md;
+mod menu;
 mod camera;
 mod share;
 mod tray;
@@ -79,7 +80,10 @@ fn main() {
             Config::new()
                 .with_window(window)
                 .with_menu(None)
-                .with_disable_context_menu(false)
+                // The webview's own menu is Back / Reload / Save as / Print —
+                // none of which means anything here. `menu.rs` puts a menu
+                // that fits the clicked element in its place.
+                .with_disable_context_menu(true)
                 // X hides to the system tray; the tray menu's Quit exits.
                 .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
         )
@@ -518,6 +522,17 @@ fn MainView(session: api::Session) -> Element {
             }
         });
     };
+    // Clear a channel's badge without opening it: the newest message id is
+    // what "read up to here" means, so fetch it first.
+    let mark_channel_read = move |channel_id: i64| {
+        spawn(async move {
+            let Ok(msgs) = api::messages(&session(), channel_id, None).await else { return };
+            let Some(newest) = msgs.iter().map(|m| m.id).max() else { return };
+            api::mark_read(&session(), channel_id, newest).await;
+            let mut unread = unread;
+            unread.write().remove(&channel_id);
+        });
+    };
     let voice_status = use_signal_sync(voice::VoiceStatus::default);
     let mic_level = use_signal_sync(|| 0.0f32);
     let voice = use_coroutine(move |rx| voice::voice_task(rx, voice_status, mic_level));
@@ -540,6 +555,80 @@ fn MainView(session: api::Session) -> Element {
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
     let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
     let mut jump_to = use_context_provider(|| Signal::new(None::<i64>));
+    // The one open right-click menu, wherever it was opened from.
+    let ctx_menu: menu::MenuSignal = use_context_provider(|| Signal::new(None::<menu::Menu>));
+    // A person is a person wherever they turn up, so the member list and the
+    // voice roster offer the same menu.
+    let member_items = move |user: User, banned: bool, is_admin: bool| -> Vec<menu::Item> {
+        let me = session().user.id;
+        let mut items = vec![menu::item("View profile", "user", {
+            let id = user.id;
+            move || {
+                spawn(async move {
+                    let (mut profile_card, mut status) = (profile_card, status);
+                    match api::profile(&session(), id).await {
+                        Ok(profile) => profile_card.set(Some(profile)),
+                        Err(e) => status.set(e),
+                    }
+                });
+            }
+        })];
+        if user.id != me {
+            items.push(menu::item("Message", "message", {
+                let id = user.id;
+                move || {
+                    spawn(async move {
+                        let (mut channels, mut status) = (channels, status);
+                        let mut open = open_channel;
+                        match api::create_dm(&session(), id).await {
+                            Ok(channel) => {
+                                if !channels().iter().any(|c| c.id == channel.id) {
+                                    channels.write().push(channel.clone());
+                                }
+                                open(channel);
+                            }
+                            Err(e) => status.set(e),
+                        }
+                    });
+                }
+            }));
+        }
+        items.push(menu::item("Mention in chat", "at-sign", {
+            let username = user.username.clone();
+            move || {
+                let mut draft = draft;
+                let current = draft();
+                let gap = if current.is_empty() || current.ends_with(' ') { "" } else { " " };
+                draft.set(format!("{current}{gap}@{username} "));
+            }
+        }));
+        if session().user.role == "admin" && user.id != me {
+            let label = if is_admin { "Remove admin" } else { "Make admin" };
+            items.push(menu::item(label, "shield", {
+                let (id, username) = (user.id, user.username.clone());
+                move || {
+                    let mut confirm = confirm;
+                    confirm.set(Some(ConfirmAction::SetRole {
+                        user_id: id,
+                        username: username.clone(),
+                        make_admin: !is_admin,
+                    }));
+                }
+            }));
+            items.push(menu::danger(if banned { "Unban" } else { "Ban" }, "ban", {
+                let (id, username) = (user.id, user.username.clone());
+                move || {
+                    let mut confirm = confirm;
+                    confirm.set(Some(ConfirmAction::SetBan {
+                        user_id: id,
+                        username: username.clone(),
+                        banned: !banned,
+                    }));
+                }
+            }));
+        }
+        items
+    };
     // The embedded media player: lives in a dock OUTSIDE the message list, so
     // chat traffic re-rendering messages can never interrupt playback.
     let mut now_playing = use_context_provider(|| Signal::new(None::<NowPlaying>));
@@ -1198,6 +1287,7 @@ fn MainView(session: api::Session) -> Element {
             if drag_over() {
                 div { class: "drop-overlay", "Drop to upload to {selected_name}" }
             }
+            {menu::view(ctx_menu)}
             if updating() {
                 div { class: "update-overlay",
                     div { class: "spinner" }
@@ -2077,6 +2167,10 @@ fn MainView(session: api::Session) -> Element {
                                 class: "profile-bio-edit",
                                 rows: "3",
                                 value: "{bio_draft}",
+                                spellcheck: "true",
+                                oncontextmenu: move |e: Event<MouseData>| {
+                                    menu::open(ctx_menu, &e, menu::text_field_items())
+                                },
                                 oninput: move |e| bio_draft.set(e.value()),
                             }
                             button {
@@ -2334,6 +2428,28 @@ fn MainView(session: api::Session) -> Element {
                                 let channel = channel.clone();
                                 move |_| open_channel(channel.clone())
                             },
+                            oncontextmenu: {
+                                let (id, name) = (channel.id, channel.name.clone());
+                                move |e: Event<MouseData>| {
+                                    let mut items = Vec::new();
+                                    if unread().contains_key(&id) {
+                                        items.push(menu::item("Mark as read", "check-square", move || {
+                                            mark_channel_read(id)
+                                        }));
+                                    }
+                                    if session().user.role == "admin" {
+                                        let name = name.clone();
+                                        items.push(menu::danger("Delete channel", "trash", move || {
+                                            let mut confirm = confirm;
+                                            confirm.set(Some(ConfirmAction::DeleteChannel {
+                                                id,
+                                                name: name.clone(),
+                                            }));
+                                        }));
+                                    }
+                                    menu::open(ctx_menu, &e, items);
+                                }
+                            },
                             span { class: "chan-name", "# {channel.name}" }
                             if let Some((count, mentions, _)) = unread().get(&channel.id).copied() {
                                 if selected_id != Some(channel.id) {
@@ -2377,6 +2493,18 @@ fn MainView(session: api::Session) -> Element {
                                 let channel = channel.clone();
                                 move |_| open_channel(channel.clone())
                             },
+                            oncontextmenu: {
+                                let id = channel.id;
+                                move |e: Event<MouseData>| {
+                                    let mut items = Vec::new();
+                                    if unread().contains_key(&id) {
+                                        items.push(menu::item("Mark as read", "check-square", move || {
+                                            mark_channel_read(id)
+                                        }));
+                                    }
+                                    menu::open(ctx_menu, &e, items);
+                                }
+                            },
                             if let Some(peer) = dm_peer(&channel, session().user.id) {
                                 UserAvatar { user: peer, class: "dm-avatar" }
                             }
@@ -2404,6 +2532,7 @@ fn MainView(session: api::Session) -> Element {
                     for channel in channels().into_iter().filter(|c| c.kind == "voice") {
                         {
                             let ch_id = channel.id;
+                            let ch_name = channel.name.clone();
                             rsx! {
                         button {
                             key: "v{channel.id}",
@@ -2421,6 +2550,29 @@ fn MainView(session: api::Session) -> Element {
                                         Err(e) => status.set(e),
                                     }
                                 });
+                            },
+                            oncontextmenu: {
+                                let name = ch_name.clone();
+                                move |e: Event<MouseData>| {
+                                    let mut items = Vec::new();
+                                    // Leaving isn't something a left-click can do here.
+                                    if voice_status().channel_id == Some(ch_id) {
+                                        items.push(menu::item("Disconnect", "phone-off", move || {
+                                            voice.send(voice::VoiceCmd::Leave);
+                                        }));
+                                    }
+                                    if session().user.role == "admin" {
+                                        let name = name.clone();
+                                        items.push(menu::danger("Delete channel", "trash", move || {
+                                            let mut confirm = confirm;
+                                            confirm.set(Some(ConfirmAction::DeleteChannel {
+                                                id: ch_id,
+                                                name: name.clone(),
+                                            }));
+                                        }));
+                                    }
+                                    menu::open(ctx_menu, &e, items);
+                                }
                             },
                             Icon { name: "volume", size: 15 }
                             span { class: "voice-channel-name chan-name", "{channel.name}" }
@@ -2442,7 +2594,20 @@ fn MainView(session: api::Session) -> Element {
                         if let Some(occupants) = voice_rosters().get(&ch_id).cloned() {
                             div { class: "voice-occupants",
                                 for (occupant, occ_sharing, occ_camera) in occupants {
-                                    div { key: "{occupant.id}", class: "voice-occupant",
+                                    div {
+                                        key: "{occupant.id}",
+                                        class: "voice-occupant",
+                                        oncontextmenu: {
+                                            let occupant = occupant.clone();
+                                            move |e: Event<MouseData>| {
+                                                let is_admin = occupant.role == "admin";
+                                                menu::open(ctx_menu, &e, member_items(
+                                                    occupant.clone(),
+                                                    false,
+                                                    is_admin,
+                                                ));
+                                            }
+                                        },
                                         UserAvatar { user: occupant.clone(), class: "dm-avatar occupant-avatar" }
                                         span { class: "voice-occupant-name", "{occupant.username}" }
                                         if occ_sharing {
@@ -2750,6 +2915,12 @@ fn MainView(session: api::Session) -> Element {
                         class: "search-input",
                         placeholder: "search messages…",
                         value: "{search_query}",
+                        // Search terms aren't prose; red squiggles under names
+                        // and slang would be noise.
+                        spellcheck: "false",
+                        oncontextmenu: move |e: Event<MouseData>| {
+                            menu::open(ctx_menu, &e, menu::text_field_items())
+                        },
                         oninput: move |e| search_query.set(e.value()),
                         onkeydown: move |e| {
                             if e.key() == Key::Enter {
@@ -3333,6 +3504,11 @@ fn MainView(session: api::Session) -> Element {
                     input {
                         placeholder: "Message {selected_name}",
                         value: "{draft}",
+                        // Prose: worth spell-checking.
+                        spellcheck: "true",
+                        oncontextmenu: move |e: Event<MouseData>| {
+                            menu::open(ctx_menu, &e, menu::text_field_items())
+                        },
                         oninput: move |e| {
                             draft.set(e.value());
                             mention_sel.set(0);
@@ -3425,6 +3601,16 @@ fn MainView(session: api::Session) -> Element {
                                         Err(e) => status.set(e),
                                     }
                                 });
+                            }
+                        },
+                        oncontextmenu: {
+                            let member = member.clone();
+                            move |e: Event<MouseData>| {
+                                menu::open(ctx_menu, &e, member_items(
+                                    member.user.clone(),
+                                    member.banned,
+                                    member.user.role == "admin",
+                                ));
                             }
                         },
                         UserAvatar { user: member.user.clone(), class: "member-avatar" }
@@ -3727,6 +3913,7 @@ fn MusicTab(
 ) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let voice = use_coroutine_handle::<voice::VoiceCmd>();
+    let ctx_menu = use_context::<menu::MenuSignal>();
 
     // Poll while the tab is open; closing it unmounts this and stops the loop.
     use_future(move || async move {
@@ -3838,7 +4025,10 @@ fn MusicTab(
                                         }
                                     },
                                 }
-                                span { class: "music-vol-label", "just you" }
+                                span { class: "music-vol-label",
+                                    Icon { name: "user", size: 12 }
+                                    "just you"
+                                }
                             }
                         }
                     }
@@ -3877,6 +4067,7 @@ fn MusicTab(
                             ..Default::default()
                         });
                     },
+                    Icon { name: "trash", size: 13 }
                     "{remove_label}"
                 }
                 button {
@@ -3889,6 +4080,7 @@ fn MusicTab(
                             ..Default::default()
                         });
                     },
+                    Icon { name: "list-x", size: 13 }
                     "Clear"
                 }
             }
@@ -3898,20 +4090,54 @@ fn MusicTab(
                     {
                         let id = track.id;
                         let is_picked = picked().contains(&id);
+                        let url = track.url.clone();
+                        let title = track.title.clone();
                         rsx! {
                             div {
                                 key: "{id}",
                                 class: if is_picked { "music-row picked" } else { "music-row" },
-                                input {
-                                    r#type: "checkbox",
-                                    checked: is_picked,
-                                    onchange: move |e| {
-                                        if e.checked() {
-                                            picked.write().insert(id);
-                                        } else {
+                                oncontextmenu: move |e: Event<MouseData>| {
+                                    let (url, title) = (url.clone(), title.clone());
+                                    menu::open(ctx_menu, &e, vec![
+                                        menu::item("Play next", "chevron-up", move || {
+                                            let mut edit = edit_queue;
+                                            edit(shared::MusicQueueRequest {
+                                                action: "move".into(),
+                                                id: Some(id),
+                                                // Clamped server-side, so -index lands it on top.
+                                                offset: Some(-(i as i64)),
+                                                ..Default::default()
+                                            });
+                                        }),
+                                        menu::item("Copy track link", "link", {
+                                            let url = url.clone();
+                                            move || menu::copy_to_clipboard(url.clone())
+                                        }),
+                                        menu::item("Copy title", "copy", move || {
+                                            menu::copy_to_clipboard(title.clone())
+                                        }),
+                                        menu::danger("Remove from queue", "trash", move || {
+                                            let (mut edit, mut picked) = (edit_queue, picked);
                                             picked.write().remove(&id);
+                                            edit(shared::MusicQueueRequest {
+                                                action: "remove".into(),
+                                                ids: vec![id],
+                                                ..Default::default()
+                                            });
+                                        }),
+                                    ]);
+                                },
+                                button {
+                                    class: if is_picked { "qcheck on" } else { "qcheck" },
+                                    title: if is_picked { "Deselect" } else { "Select" },
+                                    onclick: move |_| {
+                                        if is_picked {
+                                            picked.write().remove(&id);
+                                        } else {
+                                            picked.write().insert(id);
                                         }
                                     },
+                                    Icon { name: "check", size: 12 }
                                 }
                                 span { class: "music-row-idx", "{i + 1}" }
                                 div { class: "music-row-meta",
@@ -3933,7 +4159,7 @@ fn MusicTab(
                                             offset: Some(-1),
                                             ..Default::default()
                                         }),
-                                        "▲"
+                                        Icon { name: "chevron-up", size: 14 }
                                     }
                                     button {
                                         title: "Move down",
@@ -3943,7 +4169,7 @@ fn MusicTab(
                                             offset: Some(1),
                                             ..Default::default()
                                         }),
-                                        "▼"
+                                        Icon { name: "chevron-down", size: 14 }
                                     }
                                 }
                             }
@@ -4006,6 +4232,7 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
     let emojis_ctx = use_context::<Signal<Vec<shared::CustomEmoji>>>();
     let mut replying_ctx = use_context::<Signal<Option<Message>>>();
     let mut jump_ctx = use_context::<Signal<Option<i64>>>();
+    let ctx_menu = use_context::<menu::MenuSignal>();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
@@ -4033,8 +4260,54 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
         }
     }
 
+    // Right-click offers what you can actually do to a message — and nothing
+    // else. Edit and Delete only appear when they'd work.
+    let msg_menu = {
+        let msg = msg.clone();
+        move |e: Event<MouseData>| {
+            let content = msg.content.clone();
+            let msg_for_reply = msg.clone();
+            let reply_to = msg.reply_to;
+            let mut items = vec![
+                menu::item("Reply", "reply", move || {
+                    let mut replying = replying_ctx;
+                    replying.set(Some(msg_for_reply.clone()));
+                }),
+                menu::item("Add reaction", "smile", move || {
+                    let mut target = react_target;
+                    target.set(Some(msg_id));
+                }),
+                menu::item("Copy text", "copy", move || {
+                    menu::copy_selection_or(content.clone())
+                }),
+            ];
+            if let Some(original) = reply_to {
+                items.push(menu::item("Jump to the original", "reply", move || {
+                    let mut jump = jump_ctx;
+                    jump.set(Some(original));
+                }));
+            }
+            if own {
+                let content = msg.content.clone();
+                items.push(menu::item("Edit message", "edit", move || {
+                    let (mut draft, mut is_editing) = (edit_draft, editing);
+                    draft.set(content.clone());
+                    is_editing.set(true);
+                }));
+            }
+            if own || session().user.role == "admin" {
+                items.push(menu::danger("Delete message", "trash", move || {
+                    ws.send(ClientEvent::DeleteMessage { message_id: msg_id });
+                }));
+            }
+            menu::open(ctx_menu, &e, items);
+        }
+    };
+
     rsx! {
-        div { class: if compact { "msg compact" } else { "msg" },
+        div {
+            class: if compact { "msg compact" } else { "msg" },
+            oncontextmenu: msg_menu,
             div { class: "msg-actions",
                 button {
                     title: "Reply",
@@ -4108,6 +4381,10 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                     input {
                         class: "edit-input",
                         value: "{edit_draft}",
+                        spellcheck: "true",
+                        oncontextmenu: move |e: Event<MouseData>| {
+                            menu::open(ctx_menu, &e, menu::text_field_items())
+                        },
                         oninput: move |e| edit_draft.set(e.value()),
                         onkeydown: move |e| {
                             if e.key() == Key::Enter {
@@ -4142,6 +4419,32 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                             let src = src.clone();
                             move |_| lightbox.set(Some(src.clone()))
                         },
+                        oncontextmenu: {
+                            let src = src.clone();
+                            move |e: Event<MouseData>| {
+                                let src = src.clone();
+                                menu::open(ctx_menu, &e, vec![
+                                    menu::item("View image", "eye", {
+                                        let src = src.clone();
+                                        move || {
+                                            let mut lightbox = lightbox;
+                                            lightbox.set(Some(src.clone()));
+                                        }
+                                    }),
+                                    menu::item("Save image as…", "download", {
+                                        let src = src.clone();
+                                        move || menu::save_url_as(src.clone())
+                                    }),
+                                    menu::item("Copy image link", "link", {
+                                        let src = src.clone();
+                                        move || menu::copy_to_clipboard(src.clone())
+                                    }),
+                                    menu::item("Open in browser", "external-link", move || {
+                                        let _ = open::that(&src);
+                                    }),
+                                ]);
+                            }
+                        },
                     }
                 }
                 for (i, src) in videos.into_iter().enumerate() {
@@ -4159,13 +4462,33 @@ fn MessageRow(msg: Message, compact: bool) -> Element {
                 for (i, url) in files.into_iter().enumerate() {
                     {
                         let filename = url.rsplit('/').next().unwrap_or("file").to_owned();
+                        let menu_url = url.clone();
                         rsx! {
                             div {
                                 key: "f{i}",
                                 class: "msg-file",
                                 title: "Download {filename}",
-                                onclick: move |_| {
-                                    let _ = open::that(&url);
+                                onclick: {
+                                    let url = url.clone();
+                                    move |_| {
+                                        let _ = open::that(&url);
+                                    }
+                                },
+                                oncontextmenu: move |e: Event<MouseData>| {
+                                    let url = menu_url.clone();
+                                    menu::open(ctx_menu, &e, vec![
+                                        menu::item("Save as…", "download", {
+                                            let url = url.clone();
+                                            move || menu::save_url_as(url.clone())
+                                        }),
+                                        menu::item("Copy link", "link", {
+                                            let url = url.clone();
+                                            move || menu::copy_to_clipboard(url.clone())
+                                        }),
+                                        menu::item("Open in browser", "external-link", move || {
+                                            let _ = open::that(&url);
+                                        }),
+                                    ]);
                                 },
                                 span { class: "msg-file-icon", Icon { name: "file", size: 22 } }
                                 span { class: "msg-file-name", "{filename}" }

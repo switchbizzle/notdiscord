@@ -16,8 +16,13 @@ pub enum MdNode {
     Link { url: String, children: Vec<MdNode> },
     Break,
     Para(Vec<MdNode>),
+    /// Inline children that must not open a block — used where markdown
+    /// hands us something we render as plain content mid-sentence.
+    Span(Vec<MdNode>),
     Quote(Vec<MdNode>),
-    List(Vec<MdNode>),
+    /// `start` is the first number of an ordered list; `None` is a bullet
+    /// list. Typing "1. thing" and getting a bullet back loses the number.
+    List { start: Option<u64>, items: Vec<MdNode> },
     Item(Vec<MdNode>),
 }
 
@@ -75,7 +80,7 @@ fn close_tag(tag: Tag, children: Vec<MdNode>) -> Option<MdNode> {
         Tag::Strikethrough => MdNode::Strike(children),
         Tag::Heading { .. } => MdNode::Para(vec![MdNode::Bold(children)]),
         Tag::BlockQuote(_) => MdNode::Quote(children),
-        Tag::List(_) => MdNode::List(children),
+        Tag::List(start) => MdNode::List { start, items: children },
         Tag::Item => MdNode::Item(children),
         Tag::CodeBlock(_) => MdNode::CodeBlock(flatten_text(&children)),
         Tag::Link { dest_url, .. } => {
@@ -83,8 +88,9 @@ fn close_tag(tag: Tag, children: Vec<MdNode>) -> Option<MdNode> {
             if url.starts_with("http://") || url.starts_with("https://") {
                 MdNode::Link { url, children }
             } else {
-                // Non-web schemes render as plain content.
-                MdNode::Para(children)
+                // Non-web schemes render as plain content — inline, so a
+                // mailto: in the middle of a sentence doesn't break the line.
+                MdNode::Span(children)
             }
         }
         // Images: show the alt text, don't fetch anything.
@@ -97,7 +103,8 @@ fn children_or_none(children: Vec<MdNode>) -> Option<MdNode> {
     if children.is_empty() {
         None
     } else {
-        Some(MdNode::Para(children))
+        // Inline: an unhandled tag shouldn't start a new block.
+        Some(MdNode::Span(children))
     }
 }
 
@@ -108,8 +115,10 @@ fn flatten_text(nodes: &[MdNode]) -> String {
             MdNode::Text(t) | MdNode::Code(t) | MdNode::CodeBlock(t) => out.push_str(t),
             MdNode::Break => out.push('\n'),
             MdNode::Bold(c) | MdNode::Italic(c) | MdNode::Strike(c) | MdNode::Para(c)
-            | MdNode::Quote(c) | MdNode::List(c) | MdNode::Item(c)
-            | MdNode::Link { children: c, .. } => out.push_str(&flatten_text(c)),
+            | MdNode::Span(c) | MdNode::Quote(c) | MdNode::List { items: c, .. }
+            | MdNode::Item(c) | MdNode::Link { children: c, .. } => {
+                out.push_str(&flatten_text(c))
+            }
         }
     }
     out
@@ -223,8 +232,27 @@ fn CustomEmoji(name: String) -> Element {
     }
 }
 
+/// Copy link / Open link — the only two things a link can do.
+fn link_menu(ctx_menu: crate::menu::MenuSignal, url: String) -> impl FnMut(MouseEvent) {
+    move |e: MouseEvent| {
+        let url = url.clone();
+        crate::menu::open(ctx_menu, &e, vec![
+            crate::menu::item("Open link", "external-link", {
+                let url = url.clone();
+                move || {
+                    let _ = open::that(&url);
+                }
+            }),
+            crate::menu::item("Copy link", "link", move || {
+                crate::menu::copy_to_clipboard(url.clone())
+            }),
+        ]);
+    }
+}
+
 #[component]
 fn MdOne(node: MdNode) -> Element {
+    let ctx_menu = use_context::<crate::menu::MenuSignal>();
     match node {
         MdNode::Text(t) => rsx! {
             for (i, seg) in rich_segments(&t).into_iter().enumerate() {
@@ -234,6 +262,7 @@ fn MdOne(node: MdNode) -> Element {
                     Seg::Emoji(name) => rsx! { CustomEmoji { key: "{i}", name } },
                     Seg::Url(url) => {
                         let title = url.clone();
+                        let menu_url = url.clone();
                         rsx! {
                             span {
                                 key: "{i}",
@@ -242,6 +271,7 @@ fn MdOne(node: MdNode) -> Element {
                                 onclick: move |_| {
                                     let _ = open::that(&url);
                                 },
+                                oncontextmenu: link_menu(ctx_menu, menu_url),
                                 "{title}"
                             }
                         }
@@ -256,11 +286,19 @@ fn MdOne(node: MdNode) -> Element {
         MdNode::CodeBlock(t) => rsx! { pre { class: "md-pre", code { "{t}" } } },
         MdNode::Break => rsx! { br {} },
         MdNode::Para(c) => rsx! { p { class: "md-p", Md { nodes: c } } },
+        MdNode::Span(c) => rsx! { span { Md { nodes: c } } },
         MdNode::Quote(c) => rsx! { blockquote { class: "md-quote", Md { nodes: c } } },
-        MdNode::List(c) => rsx! { ul { class: "md-list", Md { nodes: c } } },
-        MdNode::Item(c) => rsx! { li { Md { nodes: c } } },
+        // "1. thing" keeps its numbers, and keeps the number it started at.
+        MdNode::List { start: Some(first), items } => rsx! {
+            ol { class: "md-list", start: "{first}", Md { nodes: items } }
+        },
+        MdNode::List { start: None, items } => rsx! {
+            ul { class: "md-list", Md { nodes: items } }
+        },
+        MdNode::Item(c) => rsx! { li { class: "md-item", Md { nodes: c } } },
         MdNode::Link { url, children } => {
             let title = url.clone();
+            let menu_url = url.clone();
             rsx! {
                 span {
                     class: "md-link",
@@ -268,6 +306,7 @@ fn MdOne(node: MdNode) -> Element {
                     onclick: move |_| {
                         let _ = open::that(&url);
                     },
+                    oncontextmenu: link_menu(ctx_menu, menu_url),
                     Md { nodes: children }
                 }
             }

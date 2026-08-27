@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.41.0",
+    "date": "2026-08-27",
+    "changes": [
+      "🖱️ Right-click actually does something now, and only when there's something to do: a message offers Reply / Add reaction / Copy text / Edit / Delete, an image offers Save image as, a person offers Message / Mention / admin actions, a queue track offers Play next / Remove, and any text box offers Cut / Copy / Paste / Select all",
+      "The old browser menu (Back, Reload, Print, Save as…) is gone — none of it did anything useful here. Right-clicking empty space now opens nothing at all instead of a menu of junk",
+      "Numbered lists keep their numbers: typing 1. 2. 3. used to turn them into bullets and throw the numbers away. A list that starts at 7 starts at 7",
+      "The message box stays in the same place when you switch between Chat and Music — no more jumping, and the empty strip underneath it is gone",
+      "Fixed the music queue drawing on top of the chat underneath it",
+      "Icons instead of bare text on the queue's tick boxes, Remove selected, Clear, the up/down arrows and the \"just you\" volume tag",
+      "The message box spell-checks what you type (the search box doesn't, so names and slang stay unmarked)"
+    ]
+  },
+  {
     "version": "0.40.0",
     "date": "2026-08-26",
     "changes": [

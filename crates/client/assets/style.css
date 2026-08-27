@@ -1007,7 +1007,18 @@ input:focus { border-color: #5865f2; }
     margin: 2px 0;
     color: #b5bac1;
 }
-.md-list { margin: 2px 0 2px 22px; }
+/* Numbers stay numbers, bullets stay bullets, and the marker sits inside the
+   message's own indent instead of hanging off the left edge. */
+.md-list {
+    margin: 3px 0;
+    padding-left: 26px;
+    list-style-position: outside;
+}
+ol.md-list { list-style-type: decimal; }
+ul.md-list { list-style-type: disc; }
+.md-item { margin: 2px 0; padding-left: 2px; }
+.md-item::marker { color: #949ba4; }
+.md-list .md-list { margin: 2px 0; }
 .md-link { color: #00a8fc; cursor: pointer; }
 .md-link:hover { text-decoration: underline; }
 
@@ -1473,7 +1484,12 @@ input:focus { border-color: #5865f2; }
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* Never shrink below its content: flex would otherwise squeeze the player
+       and spill the queue over the chat underneath. A long queue is capped
+       here and scrolls inside .music-queue instead. */
+    flex: 0 0 auto;
     max-height: 62%;
+    overflow: hidden;
     border-bottom: 1px solid #232428;
 }
 
@@ -1560,6 +1576,9 @@ input:focus { border-color: #5865f2; }
 .music-queue-head .grow { flex: 1; }
 
 .qbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 5px 11px;
     border-radius: 6px;
     background: #3a3c42;
@@ -1582,7 +1601,24 @@ input:focus { border-color: #5865f2; }
 }
 .music-row:hover { background: #35373c; }
 .music-row.picked { background: rgba(88, 101, 242, 0.18); }
-.music-row input[type="checkbox"] { accent-color: #5865f2; }
+
+/* The native checkbox rendered as a bare white square on this background. */
+.qcheck {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1.5px solid #6d6f78;
+    background: none;
+    color: transparent;
+    display: grid;
+    place-items: center;
+}
+.qcheck:hover { border-color: #949ba4; }
+.qcheck.on {
+    background: #5865f2;
+    border-color: #5865f2;
+    color: #fff;
+}
 .music-row-idx {
     color: #949ba4;
     font-size: 12px;
@@ -1614,8 +1650,9 @@ input:focus { border-color: #5865f2; }
 .music-move button:disabled { opacity: 0.3; cursor: default; }
 .music-queue-empty { padding: 18px; text-align: center; color: #949ba4; font-size: 13px; }
 
-/* Chat keeps its place underneath the player. */
-.messages.music-chat { flex: 0 0 auto; max-height: 38%; }
+/* Chat takes whatever the player leaves, so the compose box sits at exactly
+   the same height on both tabs and doesn't jump when you switch. */
+.messages.music-chat { flex: 1 1 auto; min-height: 0; }
 
 /* ---------- Unread badges + NEW divider ---------- */
 
@@ -1884,3 +1921,42 @@ input:focus { border-color: #5865f2; }
     cursor: pointer;
 }
 .link-card-playrow:hover { background: #5865f2; }
+
+/* ---------- Right-click menus ---------- */
+
+.ctx-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+}
+.ctx-menu {
+    position: fixed;
+    min-width: 210px;
+    max-width: 260px;
+    padding: 5px;
+    background: #111214;
+    border: 1px solid #2b2d31;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: 5px;
+    background: none;
+    color: #b5bac1;
+    font-size: 13px;
+    text-align: left;
+}
+.ctx-item:hover { background: #5865f2; color: #fff; }
+.ctx-item.danger { color: #f23f43; }
+.ctx-item.danger:hover { background: #f23f43; color: #fff; }
+.ctx-item .icon { opacity: 0.9; }
+.ctx-icon-gap { width: 15px; flex-shrink: 0; }
+.ctx-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
