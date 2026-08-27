@@ -663,11 +663,62 @@ fn MainView(session: api::Session) -> Element {
     let mut input_devices = use_signal(Vec::<String>::new);
     let mut output_devices = use_signal(Vec::<String>::new);
 
+    // Server settings, opened by clicking the channel title.
+    let mut server_settings_open = use_signal(|| false);
+    let mut srv_pane = use_signal(|| "channel");
+    // Which channel row is being renamed, and to what.
+    let mut renaming_channel = use_signal(|| None::<(i64, String)>);
+
+    // Commit the in-progress channel rename, if it says anything new.
+    let mut save_channel_rename = move || {
+        let Some((channel_id, draft)) = renaming_channel() else { return };
+        let name = draft.trim().trim_start_matches('#').to_lowercase();
+        renaming_channel.set(None);
+        if name.is_empty() {
+            return;
+        }
+        spawn(async move {
+            if let Err(e) = api::rename_channel(&session(), channel_id, name).await {
+                status.set(e);
+            }
+        });
+    };
+
     let mut open_settings = move |tab: &'static str| {
         input_devices.set(voice::list_input_devices());
         output_devices.set(voice::list_output_devices());
         settings_tab.set(tab);
         settings_open.set(true);
+    };
+
+    // Everything the server panes show, fetched once when the panel opens.
+    let mut open_server_settings = move |pane: &'static str| {
+        srv_pane.set(pane);
+        renaming_channel.set(None);
+        server_name_draft.set(session().server_name);
+        server_settings_open.set(true);
+        if session().user.role != "admin" {
+            return;
+        }
+        spawn(async move {
+            if let Ok(setting) = api::get_retention(&session()).await {
+                retention_days.set(setting.days);
+            }
+            if let Ok(info) = api::get_storage(&session()).await {
+                storage_info.set(Some(info));
+            }
+            if let Ok(setting) = api::get_invite(&session()).await {
+                invite_draft.set(setting.code);
+                invite_loaded.set(true);
+                invite_message.set(String::new());
+            }
+            if let Ok(settings) = api::get_bot_settings(&session()).await {
+                persona_draft.set(settings.persona);
+                bot_name_draft.set(settings.name);
+                persona_loaded.set(true);
+                persona_message.set(String::new());
+            }
+        });
     };
 
     // Jump to a referenced message: highlight it, loading history if needed.
@@ -1051,6 +1102,21 @@ fn MainView(session: api::Session) -> Element {
                                 api::update_saved_server(&s);
                                 session.set(s);
                                 servers_file.set(api::load_servers());
+                            }
+                            ServerEvent::ChannelRenamed { channel_id, name } => {
+                                if let Some(channel) =
+                                    channels.write().iter_mut().find(|c| c.id == channel_id)
+                                {
+                                    channel.name = name.clone();
+                                }
+                                // The header reads from `selected`, so it needs
+                                // the new name too.
+                                if selected().map(|c| c.id) == Some(channel_id) {
+                                    if let Some(mut current) = selected() {
+                                        current.name = name;
+                                        selected.set(Some(current));
+                                    }
+                                }
                             }
                             ServerEvent::ChannelDeleted { channel_id } => {
                                 channels.write().retain(|c| c.id != channel_id);
@@ -1456,35 +1522,6 @@ fn MainView(session: api::Session) -> Element {
                                 },
                                 "Account"
                             }
-                            if session().user.role == "admin" {
-                                button {
-                                    class: if settings_tab() == "server" { "settings-tab active" } else { "settings-tab" },
-                                    onclick: move |_| {
-                                        server_name_draft.set(session().server_name);
-                                        settings_tab.set("server");
-                                        spawn(async move {
-                                            if let Ok(setting) = api::get_retention(&session()).await {
-                                                retention_days.set(setting.days);
-                                            }
-                                            if let Ok(info) = api::get_storage(&session()).await {
-                                                storage_info.set(Some(info));
-                                            }
-                                            if let Ok(setting) = api::get_invite(&session()).await {
-                                                invite_draft.set(setting.code);
-                                                invite_loaded.set(true);
-                                                invite_message.set(String::new());
-                                            }
-                                            if let Ok(settings) = api::get_bot_settings(&session()).await {
-                                                persona_draft.set(settings.persona);
-                                                bot_name_draft.set(settings.name);
-                                                persona_loaded.set(true);
-                                                persona_message.set(String::new());
-                                            }
-                                        });
-                                    },
-                                    "Server"
-                                }
-                            }
                             button {
                                 class: "settings-close",
                                 onclick: move |_| settings_open.set(false),
@@ -1551,275 +1588,6 @@ fn MainView(session: api::Session) -> Element {
                                     "Change password"
                                 }
                                 div { class: "settings-hint", "changing your password signs you out everywhere else" }
-                            } else if settings_tab() == "server" {
-                                label { "Server name" }
-                                input {
-                                    value: "{server_name_draft}",
-                                    oninput: move |e| server_name_draft.set(e.value()),
-                                }
-                                label { "Server ID" }
-                                div { class: "settings-value settings-mono", "{session().server_id}" }
-                                label { "Keep uploads for" }
-                                select {
-                                    onchange: move |e| {
-                                        if let Ok(days) = e.value().parse::<i64>() {
-                                            spawn(async move {
-                                                match api::set_retention(&session(), days).await {
-                                                    Ok(setting) => {
-                                                        retention_days.set(setting.days);
-                                                        status.set(format!("uploads now expire after {} days", setting.days));
-                                                    }
-                                                    Err(e) => status.set(e),
-                                                }
-                                            });
-                                        }
-                                    },
-                                    option { value: "21", selected: retention_days() == 21, "3 weeks (default)" }
-                                    option { value: "30", selected: retention_days() == 30, "1 month" }
-                                    option { value: "60", selected: retention_days() == 60, "2 months" }
-                                    option { value: "90", selected: retention_days() == 90, "3 months" }
-                                }
-                                div { class: "settings-hint", "expired files disappear from chat; avatars and stickers never expire" }
-                                if let Some(info) = storage_info() {
-                                    label { "Storage" }
-                                    {
-                                        let used_gb = info.used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                                        let pct = ((used_gb / info.cap_gb as f64) * 100.0).min(100.0);
-                                        rsx! {
-                                            div { class: "storage-row",
-                                                div { class: "storage-bar",
-                                                    div {
-                                                        class: if pct >= 90.0 { "storage-fill full" } else { "storage-fill" },
-                                                        style: "width: {pct:.1}%",
-                                                    }
-                                                }
-                                                span { class: "storage-text", "{used_gb:.2} GB of {info.cap_gb} GB used" }
-                                            }
-                                        }
-                                    }
-                                    select {
-                                        onchange: move |e| {
-                                            if let Ok(cap) = e.value().parse::<i64>() {
-                                                spawn(async move {
-                                                    match api::set_storage_cap(&session(), cap).await {
-                                                        Ok(info) => {
-                                                            status.set(format!("storage cap is now {} GB", info.cap_gb));
-                                                            storage_info.set(Some(info));
-                                                        }
-                                                        Err(e) => status.set(e),
-                                                    }
-                                                });
-                                            }
-                                        },
-                                        option { value: "10", selected: info.cap_gb == 10, "10 GB" }
-                                        option { value: "30", selected: info.cap_gb == 30, "30 GB (default)" }
-                                        option { value: "50", selected: info.cap_gb == 50, "50 GB" }
-                                        option { value: "100", selected: info.cap_gb == 100, "100 GB" }
-                                        option { value: "200", selected: info.cap_gb == 200, "200 GB" }
-                                    }
-                                    div { class: "settings-hint", "uploads are refused once the cap is reached" }
-                                }
-                                if invite_loaded() {
-                                    label { "Invite code" }
-                                    div { class: "invite-row",
-                                        input {
-                                            class: "invite-input",
-                                            spellcheck: "false",
-                                            placeholder: "empty = anyone can join",
-                                            value: "{invite_draft}",
-                                            oninput: move |e| invite_draft.set(e.value()),
-                                        }
-                                        button {
-                                            class: "profile-btn",
-                                            title: "Copy the invite code",
-                                            disabled: invite_draft().trim().is_empty(),
-                                            onclick: move |_| {
-                                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                                    if clipboard.set_text(invite_draft().trim().to_owned()).is_ok() {
-                                                        invite_message.set("copied".into());
-                                                    }
-                                                }
-                                            },
-                                            "Copy"
-                                        }
-                                        button {
-                                            class: "profile-btn",
-                                            title: "Generate a fresh code",
-                                            onclick: move |_| invite_draft.set(random_invite_code()),
-                                            "Shuffle"
-                                        }
-                                        button {
-                                            class: "profile-btn primary",
-                                            onclick: move |_| {
-                                                spawn(async move {
-                                                    match api::set_invite(&session(), invite_draft().trim().to_owned()).await {
-                                                        Ok(setting) => {
-                                                            invite_message.set(if setting.code.is_empty() {
-                                                                "saved — registration is now open to anyone".into()
-                                                            } else {
-                                                                "saved — newcomers need the new code".into()
-                                                            });
-                                                            invite_draft.set(setting.code);
-                                                        }
-                                                        Err(e) => invite_message.set(e),
-                                                    }
-                                                });
-                                            },
-                                            "Save code"
-                                        }
-                                    }
-                                    if invite_message().is_empty() {
-                                        div { class: "settings-hint", "newcomers must type this code to sign up; people already in stay in" }
-                                    } else {
-                                        div { class: "settings-hint pw-good", "{invite_message}" }
-                                    }
-                                }
-                                if persona_loaded() {
-                                    label { "Bot name & avatar" }
-                                    div { class: "invite-row",
-                                        input {
-                                            class: "invite-input",
-                                            value: "{bot_name_draft}",
-                                            oninput: move |e| bot_name_draft.set(e.value()),
-                                        }
-                                        button {
-                                            class: "profile-btn",
-                                            title: "Pick an avatar image for the bot",
-                                            onclick: move |_| {
-                                                spawn(async move {
-                                                    let Some(file) = rfd::AsyncFileDialog::new()
-                                                        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
-                                                        .pick_file()
-                                                        .await
-                                                    else {
-                                                        return;
-                                                    };
-                                                    let bytes = file.read().await;
-                                                    if bytes.len() > 8 * 1024 * 1024 {
-                                                        persona_message.set("avatar too large (max 8 MB)".into());
-                                                        return;
-                                                    }
-                                                    let uploaded = match api::upload(&session(), &file.file_name(), bytes).await {
-                                                        Ok(url) => url,
-                                                        Err(e) => return persona_message.set(e),
-                                                    };
-                                                    let update = shared::BotSettingsUpdate { avatar: Some(uploaded), ..Default::default() };
-                                                    match api::set_bot_settings(&session(), update).await {
-                                                        Ok(_) => persona_message.set("avatar updated".into()),
-                                                        Err(e) => persona_message.set(e),
-                                                    }
-                                                });
-                                            },
-                                            "Avatar"
-                                        }
-                                        button {
-                                            class: "profile-btn primary",
-                                            onclick: move |_| {
-                                                spawn(async move {
-                                                    let update = shared::BotSettingsUpdate { name: Some(bot_name_draft()), ..Default::default() };
-                                                    match api::set_bot_settings(&session(), update).await {
-                                                        Ok(settings) => {
-                                                            bot_name_draft.set(settings.name.clone());
-                                                            persona_message.set(format!("the bot now answers to @{}", settings.name));
-                                                        }
-                                                        Err(e) => persona_message.set(e),
-                                                    }
-                                                });
-                                            },
-                                            "Rename"
-                                        }
-                                    }
-                                    label { "Bot personality" }
-                                    textarea {
-                                        class: "persona-edit",
-                                        rows: "5",
-                                        spellcheck: "false",
-                                        value: "{persona_draft}",
-                                        oninput: move |e| persona_draft.set(e.value()),
-                                    }
-                                    div { class: "invite-row",
-                                        button {
-                                            class: "profile-btn",
-                                            title: "Restore the built-in personality",
-                                            onclick: move |_| {
-                                                spawn(async move {
-                                                    // Empty resets server-side to the default.
-                                                    let update = shared::BotSettingsUpdate { persona: Some(String::new()), ..Default::default() };
-                                                    match api::set_bot_settings(&session(), update).await {
-                                                        Ok(settings) => {
-                                                            persona_draft.set(settings.persona);
-                                                            persona_message.set("reset to the default personality".into());
-                                                        }
-                                                        Err(e) => persona_message.set(e),
-                                                    }
-                                                });
-                                            },
-                                            "Reset"
-                                        }
-                                        button {
-                                            class: "profile-btn primary",
-                                            onclick: move |_| {
-                                                spawn(async move {
-                                                    let update = shared::BotSettingsUpdate { persona: Some(persona_draft()), ..Default::default() };
-                                                    match api::set_bot_settings(&session(), update).await {
-                                                        Ok(settings) => {
-                                                            persona_draft.set(settings.persona);
-                                                            persona_message.set("saved — the bot will act like this from its next reply".into());
-                                                        }
-                                                        Err(e) => persona_message.set(e),
-                                                    }
-                                                });
-                                            },
-                                            "Save personality"
-                                        }
-                                    }
-                                    if persona_message().is_empty() {
-                                        div { class: "settings-hint", "how the bot talks — rewrite it however the crew votes" }
-                                    } else {
-                                        div { class: "settings-hint pw-good", "{persona_message}" }
-                                    }
-                                }
-                                button {
-                                    class: "profile-btn",
-                                    onclick: move |_| {
-                                        spawn(async move {
-                                            let Some(file) = rfd::AsyncFileDialog::new()
-                                                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
-                                                .pick_file()
-                                                .await
-                                            else {
-                                                return;
-                                            };
-                                            let bytes = file.read().await;
-                                            if bytes.len() > 8 * 1024 * 1024 {
-                                                status.set("icon too large (max 8 MB)".into());
-                                                return;
-                                            }
-                                            match api::upload(&session(), &file.file_name(), bytes).await {
-                                                Ok(url) => {
-                                                    if let Err(e) = api::set_server_icon(&session(), url).await {
-                                                        status.set(e);
-                                                    }
-                                                }
-                                                Err(e) => status.set(e),
-                                            }
-                                        });
-                                    },
-                                    "Change server icon"
-                                }
-                                button {
-                                    class: "profile-btn primary",
-                                    onclick: move |_| {
-                                        spawn(async move {
-                                            match api::rename_server(&session(), server_name_draft()).await {
-                                                // The rename lands for everyone via broadcast.
-                                                Ok(_) => settings_open.set(false),
-                                                Err(e) => status.set(e),
-                                            }
-                                        });
-                                    },
-                                    "Save"
-                                }
                             } else if settings_tab() == "voice" {
                                 label { "Microphone" }
                                 select {
@@ -2130,6 +1898,632 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 },
                                 {action.confirm_label()}
+                            }
+                        }
+                    }
+                }
+            }
+            if server_settings_open() {
+                {
+                    let is_admin = session().user.role == "admin";
+                    rsx! {
+                        div {
+                            class: "srv-overlay",
+                            onclick: move |_| server_settings_open.set(false),
+                            div {
+                                class: "srv-shell",
+                                onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                div { class: "srv-nav",
+                                    div { class: "srv-nav-head", "{session().server_name}" }
+                                    button {
+                                        class: if srv_pane() == "channel" { "srv-nav-item active" } else { "srv-nav-item" },
+                                        onclick: move |_| srv_pane.set("channel"),
+                                        Icon { name: "tag", size: 15 }
+                                        "Channels"
+                                    }
+                                    button {
+                                        class: if srv_pane() == "overview" { "srv-nav-item active" } else { "srv-nav-item" },
+                                        onclick: move |_| srv_pane.set("overview"),
+                                        Icon { name: "settings", size: 15 }
+                                        "Overview"
+                                    }
+                                    button {
+                                        class: if srv_pane() == "roles" { "srv-nav-item active" } else { "srv-nav-item" },
+                                        onclick: move |_| srv_pane.set("roles"),
+                                        Icon { name: "user", size: 15 }
+                                        "Roles & members"
+                                    }
+                                    button {
+                                        class: if srv_pane() == "permissions" { "srv-nav-item active" } else { "srv-nav-item" },
+                                        onclick: move |_| srv_pane.set("permissions"),
+                                        Icon { name: "shield", size: 15 }
+                                        "Permissions"
+                                    }
+                                    if is_admin {
+                                        button {
+                                            class: if srv_pane() == "bot" { "srv-nav-item active" } else { "srv-nav-item" },
+                                            onclick: move |_| srv_pane.set("bot"),
+                                            Icon { name: "message", size: 15 }
+                                            "Bot"
+                                        }
+                                        button {
+                                            class: if srv_pane() == "storage" { "srv-nav-item active" } else { "srv-nav-item" },
+                                            onclick: move |_| srv_pane.set("storage"),
+                                            Icon { name: "file", size: 15 }
+                                            "Storage"
+                                        }
+                                    }
+                                }
+                                div { class: "srv-pane",
+                                    div { class: "srv-pane-head",
+                                        div { class: "srv-pane-title",
+                                            {match srv_pane() {
+                                                "channel" => "Channels",
+                                                "overview" => "Overview",
+                                                "roles" => "Roles & members",
+                                                "permissions" => "Permissions",
+                                                "bot" => "Bot",
+                                                _ => "Storage",
+                                            }}
+                                        }
+                                        button {
+                                            class: "srv-close",
+                                            title: "Close",
+                                            onclick: move |_| server_settings_open.set(false),
+                                            Icon { name: "x", size: 15 }
+                                        }
+                                    }
+                                    div { class: "srv-pane-body",
+
+                                        // ---- Channels ----
+                                        if srv_pane() == "channel" {
+                                            if !is_admin {
+                                                div { class: "srv-note", "Only admins can add, rename or delete channels." }
+                                            }
+                                            for channel in channels().into_iter().filter(|c| c.kind != "dm") {
+                                                {
+                                                    let id = channel.id;
+                                                    let name = channel.name.clone();
+                                                    let chan_icon: &'static str =
+                                                        if channel.kind == "voice" { "volume" } else { "tag" };
+                                                    let current = selected().map(|c| c.id) == Some(id);
+                                                    let editing_this = renaming_channel().is_some_and(|(cid, _)| cid == id);
+                                                    let draft = renaming_channel()
+                                                        .filter(|(cid, _)| *cid == id)
+                                                        .map(|(_, d)| d)
+                                                        .unwrap_or_default();
+                                                    rsx! {
+                                                        div {
+                                                            key: "{id}",
+                                                            class: if current { "srv-row current" } else { "srv-row" },
+                                                            Icon { name: chan_icon, size: 15 }
+                                                            if editing_this {
+                                                                input {
+                                                                    class: "srv-input",
+                                                                    value: "{draft}",
+                                                                    spellcheck: "false",
+                                                                    oninput: move |e| renaming_channel.set(Some((id, e.value()))),
+                                                                    onkeydown: move |e| {
+                                                                        if e.key() == Key::Enter {
+                                                                            save_channel_rename();
+                                                                        } else if e.key() == Key::Escape {
+                                                                            renaming_channel.set(None);
+                                                                        }
+                                                                    },
+                                                                }
+                                                                button {
+                                                                    class: "srv-btn primary",
+                                                                    onclick: move |_| save_channel_rename(),
+                                                                    "Save"
+                                                                }
+                                                                button {
+                                                                    class: "srv-btn",
+                                                                    onclick: move |_| renaming_channel.set(None),
+                                                                    "Cancel"
+                                                                }
+                                                            } else {
+                                                                span { class: "srv-row-name", "{name}" }
+                                                                if current {
+                                                                    span { class: "srv-chip", "you're here" }
+                                                                }
+                                                                span { class: "grow" }
+                                                                if is_admin {
+                                                                    button {
+                                                                        class: "srv-btn",
+                                                                        onclick: {
+                                                                            let name = name.clone();
+                                                                            move |_| renaming_channel.set(Some((id, name.clone())))
+                                                                        },
+                                                                        Icon { name: "edit", size: 13 }
+                                                                        "Rename"
+                                                                    }
+                                                                    button {
+                                                                        class: "srv-btn danger",
+                                                                        onclick: {
+                                                                            let name = name.clone();
+                                                                            move |_| confirm.set(Some(ConfirmAction::DeleteChannel {
+                                                                                id,
+                                                                                name: name.clone(),
+                                                                            }))
+                                                                        },
+                                                                        Icon { name: "trash", size: 13 }
+                                                                        "Delete"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if is_admin {
+                                                div { class: "srv-create",
+                                                    input {
+                                                        class: "srv-input",
+                                                        placeholder: "new channel name",
+                                                        value: "{new_channel}",
+                                                        spellcheck: "false",
+                                                        oninput: move |e| new_channel.set(e.value()),
+                                                    }
+                                                    button {
+                                                        class: if new_channel_voice() { "srv-btn" } else { "srv-btn primary" },
+                                                        onclick: move |_| new_channel_voice.set(false),
+                                                        "Text"
+                                                    }
+                                                    button {
+                                                        class: if new_channel_voice() { "srv-btn primary" } else { "srv-btn" },
+                                                        onclick: move |_| new_channel_voice.set(true),
+                                                        "Voice"
+                                                    }
+                                                    button {
+                                                        class: "srv-btn",
+                                                        disabled: new_channel().trim().is_empty(),
+                                                        onclick: move |_| {
+                                                            let name = new_channel().trim().to_string();
+                                                            if name.is_empty() {
+                                                                return;
+                                                            }
+                                                            let kind = if new_channel_voice() { "voice" } else { "text" };
+                                                            new_channel.set(String::new());
+                                                            spawn(async move {
+                                                                if let Err(e) = api::create_channel(&session(), name, kind).await {
+                                                                    status.set(e);
+                                                                }
+                                                            });
+                                                        },
+                                                        Icon { name: "plus", size: 13 }
+                                                        "Create"
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Overview ----
+                                        else if srv_pane() == "overview" {
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Server name" }
+                                                div { class: "srv-inline",
+                                                    input {
+                                                        class: "srv-input",
+                                                        value: "{server_name_draft}",
+                                                        disabled: !is_admin,
+                                                        oninput: move |e| server_name_draft.set(e.value()),
+                                                    }
+                                                    if is_admin {
+                                                        button {
+                                                            class: "srv-btn primary",
+                                                            onclick: move |_| {
+                                                                let name = server_name_draft().trim().to_string();
+                                                                if name.is_empty() {
+                                                                    return;
+                                                                }
+                                                                spawn(async move {
+                                                                    if let Err(e) = api::rename_server(&session(), name).await {
+                                                                        status.set(e);
+                                                                    }
+                                                                });
+                                                            },
+                                                            "Save"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if is_admin {
+                                                div { class: "srv-field",
+                                                    div { class: "srv-label", "Server icon" }
+                                                    div { class: "srv-inline",
+                                                        button {
+                                                            class: "srv-btn",
+                                                            onclick: move |_| {
+                                                                spawn(async move {
+                                                                    let Some(file) = rfd::AsyncFileDialog::new()
+                                                                        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                                                        .pick_file()
+                                                                        .await
+                                                                    else {
+                                                                        return;
+                                                                    };
+                                                                    let bytes = file.read().await;
+                                                                    if bytes.len() > 8 * 1024 * 1024 {
+                                                                        status.set("icon too large (max 8 MB)".into());
+                                                                        return;
+                                                                    }
+                                                                    match api::upload(&session(), &file.file_name(), bytes).await {
+                                                                        Ok(url) => {
+                                                                            if let Err(e) = api::set_server_icon(&session(), url).await {
+                                                                                status.set(e);
+                                                                            }
+                                                                        }
+                                                                        Err(e) => status.set(e),
+                                                                    }
+                                                                });
+                                                            },
+                                                            Icon { name: "plus", size: 13 }
+                                                            "Choose an image"
+                                                        }
+                                                        div { class: "srv-hint", "shown on the server rail — 8 MB max" }
+                                                    }
+                                                }
+                                                div { class: "srv-field",
+                                                    div { class: "srv-label", "Invite code" }
+                                                    div { class: "srv-inline",
+                                                        input {
+                                                            class: "srv-input",
+                                                            value: "{invite_draft}",
+                                                            spellcheck: "false",
+                                                            oninput: move |e| invite_draft.set(e.value()),
+                                                        }
+                                                        button {
+                                                            class: "srv-btn",
+                                                            title: "Copy",
+                                                            onclick: move |_| {
+                                                                menu::copy_to_clipboard(invite_draft().trim().to_owned());
+                                                                invite_message.set("copied".into());
+                                                            },
+                                                            Icon { name: "copy", size: 13 }
+                                                        }
+                                                        button {
+                                                            class: "srv-btn",
+                                                            onclick: move |_| invite_draft.set(random_invite_code()),
+                                                            "Shuffle"
+                                                        }
+                                                        button {
+                                                            class: "srv-btn primary",
+                                                            disabled: !invite_loaded(),
+                                                            onclick: move |_| {
+                                                                let code = invite_draft().trim().to_string();
+                                                                spawn(async move {
+                                                                    match api::set_invite(&session(), code).await {
+                                                                        Ok(setting) => {
+                                                                            invite_draft.set(setting.code);
+                                                                            invite_message.set("saved".into());
+                                                                        }
+                                                                        Err(e) => invite_message.set(e),
+                                                                    }
+                                                                });
+                                                            },
+                                                            "Save"
+                                                        }
+                                                    }
+                                                    if !invite_message().is_empty() {
+                                                        div { class: "srv-hint", "{invite_message}" }
+                                                    }
+                                                }
+                                            }
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Server ID" }
+                                                div { class: "srv-mono", "{session().server_id}" }
+                                            }
+                                        }
+
+                                        // ---- Roles & members ----
+                                        else if srv_pane() == "roles" {
+                                            if !is_admin {
+                                                div { class: "srv-note", "Only admins can change roles or ban people." }
+                                            }
+                                            for member in members() {
+                                                {
+                                                    let user = member.user.clone();
+                                                    let me = user.id == session().user.id;
+                                                    let admin_member = user.role == "admin";
+                                                    let banned = member.banned;
+                                                    rsx! {
+                                                        div { key: "{user.id}", class: "srv-row",
+                                                            UserAvatar { user: user.clone(), class: "member-avatar" }
+                                                            span { class: "srv-row-name", "{user.username}" }
+                                                            if banned {
+                                                                span { class: "role-badge banned-badge", "BANNED" }
+                                                            } else if admin_member {
+                                                                span { class: "role-badge", "ADMIN" }
+                                                            }
+                                                            span { class: "grow" }
+                                                            if is_admin && !me {
+                                                                button {
+                                                                    class: "srv-btn",
+                                                                    onclick: {
+                                                                        let username = user.username.clone();
+                                                                        let target = user.id;
+                                                                        move |_| confirm.set(Some(ConfirmAction::SetRole {
+                                                                            user_id: target,
+                                                                            username: username.clone(),
+                                                                            make_admin: !admin_member,
+                                                                        }))
+                                                                    },
+                                                                    if admin_member { "Remove admin" } else { "Make admin" }
+                                                                }
+                                                                button {
+                                                                    class: "srv-btn danger",
+                                                                    onclick: {
+                                                                        let username = user.username.clone();
+                                                                        let target = user.id;
+                                                                        move |_| confirm.set(Some(ConfirmAction::SetBan {
+                                                                            user_id: target,
+                                                                            username: username.clone(),
+                                                                            banned: !banned,
+                                                                        }))
+                                                                    },
+                                                                    if banned { "Unban" } else { "Ban" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if is_admin {
+                                                div { class: "srv-label", "Tags" }
+                                                div { class: "srv-hint",
+                                                    "Tags colour a name in chat. Assign them from someone's profile."
+                                                }
+                                                for tag in tags() {
+                                                    div { key: "t{tag.id}", class: "srv-row",
+                                                        span { class: "tag-pill", style: "background: {tag.color}", "{tag.name}" }
+                                                        span { class: "grow" }
+                                                        button {
+                                                            class: "srv-btn danger",
+                                                            onclick: {
+                                                                let (id, name) = (tag.id, tag.name.clone());
+                                                                move |_| confirm.set(Some(ConfirmAction::DeleteTag {
+                                                                    id,
+                                                                    name: name.clone(),
+                                                                }))
+                                                            },
+                                                            Icon { name: "trash", size: 13 }
+                                                        }
+                                                    }
+                                                }
+                                                div { class: "srv-create",
+                                                    input {
+                                                        class: "srv-input",
+                                                        placeholder: "new tag",
+                                                        value: "{new_tag_name}",
+                                                        oninput: move |e| new_tag_name.set(e.value()),
+                                                    }
+                                                    input {
+                                                        r#type: "color",
+                                                        class: "tag-color-input",
+                                                        value: "{new_tag_color}",
+                                                        oninput: move |e| new_tag_color.set(e.value()),
+                                                    }
+                                                    button {
+                                                        class: "srv-btn",
+                                                        disabled: new_tag_name().trim().is_empty(),
+                                                        onclick: move |_| {
+                                                            let name = new_tag_name().trim().to_string();
+                                                            if name.is_empty() {
+                                                                return;
+                                                            }
+                                                            spawn(async move {
+                                                                match api::create_tag(&session(), name, new_tag_color()).await {
+                                                                    Ok(_) => new_tag_name.set(String::new()),
+                                                                    Err(e) => status.set(e),
+                                                                }
+                                                            });
+                                                        },
+                                                        "Add"
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Permissions ----
+                                        else if srv_pane() == "permissions" {
+                                            div { class: "srv-note",
+                                                "There are two roles, and they're the same in every channel. "
+                                                "Per-channel permissions aren't built yet — ask if you want them."
+                                            }
+                                            div { class: "srv-perm",
+                                                div { class: "srv-perm-head",
+                                                    span { class: "role-badge", "ADMIN" }
+                                                    "can do everything a member can, plus:"
+                                                }
+                                                for line in [
+                                                    "Create, rename and delete channels",
+                                                    "Delete anyone's message",
+                                                    "Ban and unban people",
+                                                    "Promote and demote admins",
+                                                    "Create and delete tags, emojis and stickers",
+                                                    "Change the server name, icon and invite code",
+                                                    "Set how long uploads are kept and the storage cap",
+                                                    "Set the bot's name, avatar and personality",
+                                                ] {
+                                                    div { key: "{line}", class: "srv-perm-line",
+                                                        Icon { name: "check", size: 13 }
+                                                        "{line}"
+                                                    }
+                                                }
+                                            }
+                                            div { class: "srv-perm",
+                                                div { class: "srv-perm-head",
+                                                    span { class: "role-badge member-badge", "MEMBER" }
+                                                    "can:"
+                                                }
+                                                for line in [
+                                                    "Read and post in every channel",
+                                                    "Edit and delete their own messages",
+                                                    "React, reply and upload files",
+                                                    "Join voice, share a camera or screen",
+                                                    "Queue and control the music",
+                                                    "Start a DM or a call with anyone",
+                                                ] {
+                                                    div { key: "{line}", class: "srv-perm-line",
+                                                        Icon { name: "check", size: 13 }
+                                                        "{line}"
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Bot ----
+                                        else if srv_pane() == "bot" {
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Bot name" }
+                                                input {
+                                                    class: "srv-input",
+                                                    value: "{bot_name_draft}",
+                                                    oninput: move |e| bot_name_draft.set(e.value()),
+                                                }
+                                            }
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Personality" }
+                                                textarea {
+                                                    class: "srv-textarea",
+                                                    rows: "8",
+                                                    value: "{persona_draft}",
+                                                    spellcheck: "true",
+                                                    oncontextmenu: move |e: Event<MouseData>| {
+                                                        menu::open(ctx_menu, &e, menu::text_field_items())
+                                                    },
+                                                    oninput: move |e| persona_draft.set(e.value()),
+                                                }
+                                                div { class: "srv-hint",
+                                                    "The system prompt the bot answers with. It keeps its memory across changes."
+                                                }
+                                            }
+                                            div { class: "srv-inline",
+                                                button {
+                                                    class: "srv-btn primary",
+                                                    disabled: !persona_loaded(),
+                                                    onclick: move |_| {
+                                                        let update = shared::BotSettingsUpdate {
+                                                            persona: Some(persona_draft()),
+                                                            name: Some(bot_name_draft().trim().to_string()),
+                                                            avatar: None,
+                                                        };
+                                                        spawn(async move {
+                                                            match api::set_bot_settings(&session(), update).await {
+                                                                Ok(settings) => {
+                                                                    persona_draft.set(settings.persona);
+                                                                    bot_name_draft.set(settings.name);
+                                                                    persona_message.set("saved".into());
+                                                                }
+                                                                Err(e) => persona_message.set(e),
+                                                            }
+                                                        });
+                                                    },
+                                                    "Save"
+                                                }
+                                                button {
+                                                    class: "srv-btn",
+                                                    onclick: move |_| {
+                                                        spawn(async move {
+                                                            let Some(file) = rfd::AsyncFileDialog::new()
+                                                                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                                                .pick_file()
+                                                                .await
+                                                            else {
+                                                                return;
+                                                            };
+                                                            let bytes = file.read().await;
+                                                            match api::upload(&session(), &file.file_name(), bytes).await {
+                                                                Ok(url) => {
+                                                                    let update = shared::BotSettingsUpdate {
+                                                                        persona: None,
+                                                                        name: None,
+                                                                        avatar: Some(url),
+                                                                    };
+                                                                    if let Err(e) = api::set_bot_settings(&session(), update).await {
+                                                                        persona_message.set(e);
+                                                                    } else {
+                                                                        persona_message.set("avatar updated".into());
+                                                                    }
+                                                                }
+                                                                Err(e) => persona_message.set(e),
+                                                            }
+                                                        });
+                                                    },
+                                                    "Set avatar"
+                                                }
+                                                if !persona_message().is_empty() {
+                                                    span { class: "srv-hint", "{persona_message}" }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Storage ----
+                                        else {
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Keep uploads for" }
+                                                select {
+                                                    class: "srv-select",
+                                                    onchange: move |e| {
+                                                        let Ok(days) = e.value().parse::<i64>() else { return };
+                                                        spawn(async move {
+                                                            match api::set_retention(&session(), days).await {
+                                                                Ok(setting) => retention_days.set(setting.days),
+                                                                Err(e) => status.set(e),
+                                                            }
+                                                        });
+                                                    },
+                                                    option { value: "21", selected: retention_days() == 21, "3 weeks (default)" }
+                                                    option { value: "30", selected: retention_days() == 30, "1 month" }
+                                                    option { value: "60", selected: retention_days() == 60, "2 months" }
+                                                    option { value: "90", selected: retention_days() == 90, "3 months" }
+                                                }
+                                                div { class: "srv-hint",
+                                                    "Expired files disappear from chat. Avatars and stickers never expire."
+                                                }
+                                            }
+                                            if let Some(info) = storage_info() {
+                                                {
+                                                    let cap_bytes = (info.cap_gb.max(1) as f64) * 1e9;
+                                                    let pct = ((info.used_bytes as f64 / cap_bytes) * 100.0).clamp(0.0, 100.0);
+                                                    let used_gb = info.used_bytes as f64 / 1e9;
+                                                    rsx! {
+                                                        div { class: "srv-field",
+                                                            div { class: "srv-label", "Storage used" }
+                                                            div { class: "srv-meter",
+                                                                div {
+                                                                    class: if pct > 90.0 { "srv-meter-fill hot" } else { "srv-meter-fill" },
+                                                                    style: "width: {pct:.1}%",
+                                                                }
+                                                            }
+                                                            div { class: "srv-hint",
+                                                                "{used_gb:.2} GB of {info.cap_gb} GB"
+                                                            }
+                                                            div { class: "srv-inline",
+                                                                input {
+                                                                    class: "srv-input narrow",
+                                                                    r#type: "number",
+                                                                    min: "1",
+                                                                    value: "{info.cap_gb}",
+                                                                    onchange: move |e| {
+                                                                        let Ok(cap) = e.value().parse::<i64>() else { return };
+                                                                        spawn(async move {
+                                                                            match api::set_storage_cap(&session(), cap).await {
+                                                                                Ok(updated) => storage_info.set(Some(updated)),
+                                                                                Err(e) => status.set(e),
+                                                                            }
+                                                                        });
+                                                                    },
+                                                                }
+                                                                div { class: "srv-hint", "GB cap — uploads are refused past it" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2888,7 +3282,16 @@ fn MainView(session: api::Session) -> Element {
             }
             div { class: "main",
                 div { class: "channel-header",
-                    span { class: "channel-header-label", "{selected_label}" }
+                    button {
+                        class: "channel-header-label",
+                        title: "Server settings",
+                        // DMs have no settings of their own — open the server.
+                        onclick: move |_| {
+                            let dm = selected().is_some_and(|c| c.kind == "dm");
+                            open_server_settings(if dm { "overview" } else { "channel" });
+                        },
+                        "{selected_label}"
+                    }
                     if selected().is_some_and(|c| c.kind == "dm") {
                         button {
                             class: "call-btn",

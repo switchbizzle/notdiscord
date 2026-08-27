@@ -632,6 +632,16 @@ pub async fn set_ban(session: &Session, user_id: i64, banned: bool) -> Result<Us
     handle(resp).await
 }
 
+pub async fn rename_channel(session: &Session, channel_id: i64, name: String) -> Result<(), String> {
+    let resp = send_retry(http()
+        .patch(format!("{}/api/channels/{channel_id}", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::RenameChannelRequest { name }))
+        .await?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
+}
+
 pub async fn delete_channel(session: &Session, channel_id: i64) -> Result<(), String> {
     let resp = send_retry(http()
         .delete(format!("{}/api/channels/{channel_id}", session.base_url))

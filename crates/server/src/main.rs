@@ -235,7 +235,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users/{id}/profile", get(routes::get_profile))
         .route("/api/users/{id}/role", post(routes::set_role))
         .route("/api/users/{id}/ban", post(routes::set_ban))
-        .route("/api/channels/{id}", axum::routing::delete(routes::delete_channel))
+        .route(
+            "/api/channels/{id}",
+            axum::routing::delete(routes::delete_channel).patch(routes::rename_channel),
+        )
         .route("/api/profile", post(routes::update_profile))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))

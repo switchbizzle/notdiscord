@@ -263,6 +263,12 @@ pub struct RenameServerRequest {
     pub name: String,
 }
 
+/// Body for PATCH /api/channels/{id} — rename a text or voice channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameChannelRequest {
+    pub name: String,
+}
+
 /// How long chat uploads are kept before expiry (avatars/stickers exempt).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetentionSetting {
@@ -521,6 +527,7 @@ pub enum ServerEvent {
     StickerCreated { sticker: Sticker },
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
+    ChannelRenamed { channel_id: i64, name: String },
     ServerRenamed { name: String },
     ServerIconChanged { icon: String },
     /// Tags or assignments changed; clients refetch /api/tags and /api/users.

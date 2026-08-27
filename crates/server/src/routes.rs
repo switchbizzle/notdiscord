@@ -657,6 +657,41 @@ pub async fn voice_token(
     Ok(Json(VoiceTokenResponse { url, token, room }))
 }
 
+/// Rename a text or voice channel. DMs are named after their members, so
+/// they're left alone.
+pub async fn rename_channel(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<shared::RenameChannelRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let name = req.name.trim().trim_start_matches('#').to_lowercase();
+    if name.is_empty() || name.len() > 32 {
+        return Err(err(StatusCode::BAD_REQUEST, "channel name must be 1-32 characters"));
+    }
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    match kind.as_deref() {
+        None => return Err(err(StatusCode::NOT_FOUND, "no such channel")),
+        Some("dm") => return Err(err(StatusCode::BAD_REQUEST, "DMs can't be renamed")),
+        Some(_) => {}
+    }
+    sqlx::query("UPDATE channels SET name = ? WHERE id = ?")
+        .bind(&name)
+        .bind(channel_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::ChannelRenamed { channel_id, name: name.clone() });
+    Ok(Json(serde_json::json!({ "ok": true, "name": name })))
+}
+
 pub async fn create_channel(
     State(state): State<SharedState>,
     _user: AuthUser,
