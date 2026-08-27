@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.42.0",
+    "date": "2026-08-27",
+    "changes": [
+      "🎛️ Click the channel name at the top to open server settings: channels (rename, delete, create), the server's name/icon/invite, roles and members, the bot, and storage — all in one panel instead of a small modal",
+      "The Permissions page spells out exactly what an admin can do and what a member can do. There are still only those two roles — per-channel permissions aren't built yet, and the page says so rather than showing switches that do nothing",
+      "Channels can be renamed now (admins), and the new name reaches everyone straight away",
+      "🎵 The music queue moved to the right-hand panel, so the chat gets its height back — the player and its controls stay where they were",
+      "🔊 The music itself sounds better: it's published at 128kbps stereo instead of the 48kbps speech setting it was using, with the noise-gating that chopped quiet intros switched off, and it now pulls the artist's original file from SoundCloud where one is offered",
+      "The gear menu keeps your own settings (voice, app, account); server-wide settings live in the new panel"
+    ]
+  },
+  {
     "version": "0.41.0",
     "date": "2026-08-27",
     "changes": [
