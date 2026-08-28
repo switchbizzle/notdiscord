@@ -178,6 +178,38 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, Strin
     (images, videos, files, text_parts.join(" "))
 }
 
+/// Links in a message worth asking the server for a card about: web URLs that
+/// aren't already rendered inline as an image, video, or attachment.
+fn preview_urls(text: &str) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        if !word.starts_with("http://") && !word.starts_with("https://") {
+            continue;
+        }
+        // Trailing sentence punctuation isn't part of the link.
+        let url = word
+            .trim_end_matches(|c| matches!(c, '.' | ',' | ')' | '!' | '?' | ';' | ':' | '\''))
+            .to_owned();
+        if url.contains("/files/") || urls.contains(&url) {
+            continue;
+        }
+        urls.push(url);
+        // Two cards is plenty; a wall of them buries the conversation, and on
+        // a phone it buries it faster.
+        if urls.len() == 2 {
+            break;
+        }
+    }
+    urls
+}
+
+thread_local! {
+    /// Cards fetched this session. The server caches them too — this keeps
+    /// scrolling back through history off the network entirely.
+    static PREVIEW_CACHE: std::cell::RefCell<HashMap<String, Option<shared::LinkPreview>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 #[component]
 fn App() -> Element {
     let mut session = use_signal(load_session);
@@ -287,6 +319,10 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
 #[component]
 fn Main(session: Signal<Option<api::Session>>) -> Element {
     let sess = use_memo(move || session().expect("main renders only with a session"));
+    // Link cards fetch through the API from deep in the message list, so the
+    // session has to be reachable by context. Main is unmounted on logout, so
+    // this snapshot can't outlive the account it belongs to.
+    use_context_provider(|| Signal::new(sess()));
     let mut channels = use_signal(Vec::<Channel>::new);
     let mut members = use_signal(Vec::<UserStatus>::new);
     let mut selected = use_signal(|| None::<Channel>);
@@ -1240,6 +1276,99 @@ fn Avatar(user: User) -> Element {
     }
 }
 
+/// An OpenGraph card under a message. Everything here came from the server,
+/// so nobody's IP reaches the linked site — and where the host can be
+/// embedded (Spotify, YouTube, SoundCloud, Vimeo), the play button swaps in
+/// a real player in place of the card's art.
+#[component]
+fn LinkCard(url: String) -> Element {
+    let sess = use_context::<Signal<api::Session>>();
+    let mut card = use_signal(|| None::<shared::LinkPreview>);
+    let mut playing = use_signal(|| false);
+
+    use_future({
+        let url = url.clone();
+        move || {
+            let url = url.clone();
+            async move {
+                let hit = PREVIEW_CACHE.with(|c| c.borrow().get(&url).cloned());
+                let preview = match hit {
+                    Some(cached) => cached,
+                    None => {
+                        let fetched = api::link_preview(&sess(), &url).await;
+                        PREVIEW_CACHE.with(|c| c.borrow_mut().insert(url.clone(), fetched.clone()));
+                        fetched
+                    }
+                };
+                card.set(preview);
+            }
+        }
+    });
+
+    let Some(preview) = card() else {
+        return rsx! {};
+    };
+    let embed = preview.embed.clone();
+    // Players are tall enough to read; the card's own art is not.
+    let height = preview.embed_height.max(120);
+
+    rsx! {
+        div { class: "link-card",
+            if playing() {
+                if let Some(src) = embed.clone() {
+                    iframe {
+                        class: "link-card-player",
+                        src: "{src}",
+                        height: "{height}",
+                        allow: "autoplay; encrypted-media; clipboard-write; picture-in-picture",
+                        // A player is a stranger's page: no scripts of ours,
+                        // no reaching back out of the frame.
+                        "sandbox": "allow-scripts allow-same-origin allow-popups allow-presentation",
+                    }
+                }
+            } else {
+                if let Some(image) = preview.image.clone() {
+                    div { class: "link-card-media",
+                        img { class: "link-card-img", src: "{image}", loading: "lazy" }
+                        if embed.is_some() {
+                            button {
+                                class: "link-card-play",
+                                onclick: move |_| playing.set(true),
+                                Icon { name: "play", size: 22 }
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "link-card-body",
+                if !preview.site_name.is_empty() {
+                    div { class: "link-card-site", "{preview.site_name}" }
+                }
+                if !preview.title.is_empty() {
+                    a {
+                        class: "link-card-title",
+                        href: "{url}",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        "{preview.title}"
+                    }
+                }
+                if !preview.description.is_empty() {
+                    div { class: "link-card-desc", "{preview.description}" }
+                }
+                if embed.is_some() && !playing() && preview.image.is_none() {
+                    button {
+                        class: "link-card-playrow",
+                        onclick: move |_| playing.set(true),
+                        Icon { name: "play", size: 14 }
+                        span { "Play here" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The quick-react strip: the crew's high-traffic emojis.
 const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "🔥"];
 
@@ -1392,6 +1521,9 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
                     Icon { name: "file", size: 14 }
                     " {name}"
                 }
+            }
+            for link in preview_urls(&text) {
+                LinkCard { key: "{link}", url: link }
             }
             if !reaction_groups.is_empty() || strip_open() {
                 div { class: "reaction-row",

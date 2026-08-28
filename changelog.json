@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.67.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🖼️ Link cards on the phone. Spotify, YouTube, SoundCloud and the rest now show cover art, title and description instead of a bare URL — and where the site has a player, tapping play opens it right in the message. The server fetches all of it, so opening a channel never tells those sites who's reading",
+      "📹 Photos and videos uploaded from the phone now play in the desktop app too. The web app posts its uploads as a path rather than a full link, and the desktop app was showing those as plain text — old messages fix themselves once you're on this version (thanks switchb)"
+    ]
+  },
+  {
     "version": "0.66.0",
     "date": "2026-08-28",
     "changes": [

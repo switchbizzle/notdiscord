@@ -201,3 +201,20 @@ pub async fn upload(session: &Session, name: &str, bytes: Vec<u8>) -> Result<Str
 fn urlencode(s: &str) -> String {
     js_sys::encode_uri_component(s).as_string().unwrap_or_else(|| s.to_owned())
 }
+
+/// The server's card for a link, or None when it hasn't got one. Failures are
+/// silent: a missing preview just means no card, never an error in the chat.
+/// Everything in the card was fetched by the server, so opening a channel
+/// never tells the linked site who is reading it.
+pub async fn link_preview(session: &Session, url: &str) -> Option<shared::LinkPreview> {
+    let encoded = js_sys::encode_uri_component(url).as_string()?;
+    let resp = Request::get(&format!("/api/preview?url={encoded}"))
+        .header("Authorization", &format!("Bearer {}", session.token))
+        .send()
+        .await
+        .ok()?;
+    if !resp.ok() {
+        return None;
+    }
+    resp.json().await.ok()
+}

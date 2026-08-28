@@ -5033,9 +5033,12 @@ fn group_messages(messages: &[Message]) -> Vec<(Message, bool)> {
     out
 }
 
-/// Split a message into inline images, inline videos, file attachments, and text.
-fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<String>, String) {
-    let is_url = |w: &str| w.starts_with("http://") || w.starts_with("https://");
+/// Split a message into inline images, inline videos, file attachments, and
+/// text. `base` is this server's origin: the web app posts its uploads as
+/// server-relative paths (it has no reason to know its own hostname), so a
+/// photo shared from a phone arrives here as "/files/…" and has to be made
+/// absolute before it can be rendered — otherwise it shows as bare text.
+fn extract_media(content: &str, base: &str) -> (Vec<String>, Vec<String>, Vec<String>, String) {
     let has_ext = |w: &str, exts: &[&str]| {
         exts.iter().any(|ext| w.to_lowercase().ends_with(&format!(".{ext}")))
     };
@@ -5044,14 +5047,18 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<String>, Strin
     let mut files = Vec::new();
     let mut rest = Vec::new();
     for word in content.split_whitespace() {
-        if is_url(word) && has_ext(word, &["gif", "png", "jpg", "jpeg", "webp"]) {
-            images.push(word.to_owned());
-        } else if is_url(word) && has_ext(word, &["webm", "mp4", "mov"]) {
-            videos.push(word.to_owned());
-        } else if is_url(word) && word.contains("/files/") {
-            files.push(word.to_owned());
+        let absolute = if word.starts_with("http://") || word.starts_with("https://") {
+            Some(word.to_owned())
+        } else if word.starts_with("/files/") {
+            Some(format!("{}{word}", base.trim_end_matches('/')))
         } else {
-            rest.push(word);
+            None
+        };
+        match absolute {
+            Some(url) if has_ext(&url, &["gif", "png", "jpg", "jpeg", "webp"]) => images.push(url),
+            Some(url) if has_ext(&url, &["webm", "mp4", "mov"]) => videos.push(url),
+            Some(url) if url.contains("/files/") => files.push(url),
+            _ => rest.push(word),
         }
     }
     if images.is_empty() && videos.is_empty() && files.is_empty() {
@@ -5854,7 +5861,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let player = msg.content.strip_prefix(shared::PLAYER_MARKER).map(str::to_owned);
     let (images, videos, files, text) = match player {
         Some(_) => (Vec::new(), Vec::new(), Vec::new(), String::new()),
-        None => extract_media(&msg.content),
+        None => extract_media(&msg.content, &session().base_url),
     };
     let links = if player.is_some() { Vec::new() } else { preview_urls(&text) };
     let me_id = session().user.id;
@@ -6263,6 +6270,52 @@ fn MicMeter(level: voice::MicLevelSignal) -> Element {
         div { class: "mic-meter",
             div { class: "mic-meter-fill", style: "width: {pct}%" }
         }
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::extract_media;
+
+    const BASE: &str = "https://notdiscord.example.com";
+
+    #[test]
+    fn an_upload_from_the_phone_still_renders_as_media() {
+        // The web app posts server-relative paths; the desktop app posts
+        // absolute ones. Both have to end up as playable media, or a video
+        // shared from someone's phone shows up here as a line of text.
+        let (images, videos, files, text) =
+            extract_media("/files/abc123/clip.mp4", BASE);
+        assert_eq!(videos, vec![format!("{BASE}/files/abc123/clip.mp4")]);
+        assert!(images.is_empty() && files.is_empty() && text.is_empty());
+
+        let (images, ..) = extract_media("/files/abc123/photo.JPG", BASE);
+        assert_eq!(images, vec![format!("{BASE}/files/abc123/photo.JPG")]);
+
+        let (.., files, _) = extract_media("/files/abc123/notes.pdf", BASE);
+        assert_eq!(files, vec![format!("{BASE}/files/abc123/notes.pdf")]);
+
+        // A trailing slash on the base must not double up.
+        let (_, videos, ..) = extract_media("/files/abc/clip.mp4", "https://host/");
+        assert_eq!(videos, vec!["https://host/files/abc/clip.mp4"]);
+    }
+
+    #[test]
+    fn absolute_links_and_plain_text_are_unchanged() {
+        let absolute = format!("{BASE}/files/abc123/clip.mp4");
+        let (_, videos, _, text) = extract_media(&absolute, BASE);
+        assert_eq!(videos, vec![absolute]);
+        assert!(text.is_empty());
+
+        // Not an upload path: stays text, and never gets a host glued to it.
+        let (images, videos, files, text) = extract_media("see /files-elsewhere/x.png ok", BASE);
+        assert!(images.is_empty() && videos.is_empty() && files.is_empty());
+        assert_eq!(text, "see /files-elsewhere/x.png ok");
+
+        // Text alongside an attachment keeps the words and drops the URL.
+        let (.., videos, _, text) = extract_media("check this /files/a/b.mp4 out", BASE);
+        assert_eq!(videos.len(), 1);
+        assert_eq!(text, "check this out");
     }
 }
 
