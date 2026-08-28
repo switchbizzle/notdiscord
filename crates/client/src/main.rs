@@ -798,8 +798,10 @@ fn MainView(session: api::Session) -> Element {
     let mut email_code = use_signal(String::new);
     let mut email_sent = use_signal(|| false);
     let mut email_message = use_signal(|| (String::new(), false));
-    // Populated when the user must choose which monitor to share.
-    let mut share_picker = use_signal(|| None::<Vec<share::MonitorChoice>>);
+    // Populated when the user must choose what to share (monitors + windows).
+    let mut share_picker =
+        use_signal(|| None::<(Vec<share::MonitorChoice>, Vec<share::WindowChoice>)>);
+    use_context_provider(|| share_picker);
     let mut storage_info = use_signal(|| None::<shared::StorageInfo>);
     // None until the Server tab loads it; the draft is what's in the box.
     let mut invite_loaded = use_signal(|| false);
@@ -3527,19 +3529,40 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                             }
-                            if let Some(monitors) = share_picker() {
+                            if let Some((monitors, windows)) = share_picker() {
                                 div { class: "share-picker",
-                                    div { class: "share-picker-title", "Share which screen?" }
+                                    div { class: "share-picker-title", "Share what?" }
                                     for m in monitors {
                                         button {
-                                            key: "{m.index}",
+                                            key: "m{m.index}",
                                             class: "share-picker-option",
                                             onclick: move |_| {
-                                                voice.send(voice::VoiceCmd::StartScreenShare { monitor: Some(m.index) });
+                                                voice.send(voice::VoiceCmd::StartScreenShare {
+                                                    target: share::ShareTarget::Monitor(m.index),
+                                                });
                                                 share_picker.set(None);
                                             },
                                             Icon { name: "screen", size: 14 }
                                             "{m.label}"
+                                        }
+                                    }
+                                    if !windows.is_empty() {
+                                        div { class: "share-picker-sub", "Windows" }
+                                    }
+                                    div { class: "share-picker-windows",
+                                        for w in windows {
+                                            button {
+                                                key: "w{w.hwnd}",
+                                                class: "share-picker-option",
+                                                onclick: move |_| {
+                                                    voice.send(voice::VoiceCmd::StartScreenShare {
+                                                        target: share::ShareTarget::Window(w.hwnd),
+                                                    });
+                                                    share_picker.set(None);
+                                                },
+                                                Icon { name: "file", size: 14 }
+                                                "{w.label}"
+                                            }
                                         }
                                     }
                                     button {
@@ -3571,12 +3594,9 @@ fn MainView(session: api::Session) -> Element {
                                         } else if share_picker().is_some() {
                                             share_picker.set(None);
                                         } else {
-                                            let monitors = share::list_monitors();
-                                            if monitors.len() > 1 {
-                                                share_picker.set(Some(monitors));
-                                            } else {
-                                                voice.send(voice::VoiceCmd::StartScreenShare { monitor: None });
-                                            }
+                                            // Always offer the picker now that
+                                            // single windows are shareable.
+                                            share_picker.set(Some((share::list_monitors(), share::list_windows())));
                                         }
                                     },
                                     Icon { name: "screen" }
@@ -4836,6 +4856,8 @@ fn fmt_secs(secs: f64) -> String {
 #[component]
 fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) -> Element {
     let voice = use_coroutine_handle::<voice::VoiceCmd>();
+    let mut share_picker_ctx =
+        use_context::<Signal<Option<(Vec<share::MonitorChoice>, Vec<share::WindowChoice>)>>>();
 
     // Tiles refresh by re-requesting their frame, and the stamp that makes
     // each request unique comes from here. It used to be a JS interval that
@@ -4981,7 +5003,8 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
                             if status.peek().sharing_self {
                                 voice.send(voice::VoiceCmd::StopScreenShare);
                             } else {
-                                voice.send(voice::VoiceCmd::StartScreenShare { monitor: None });
+                                // Same monitor/window picker the sidebar uses.
+                                share_picker_ctx.set(Some((share::list_monitors(), share::list_windows())));
                             }
                         },
                         Icon { name: "screen", size: 17 }

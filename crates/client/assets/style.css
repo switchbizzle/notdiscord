@@ -1059,6 +1059,14 @@ ul.md-list { list-style-type: disc; }
     color: #b5bac1;
 }
 
+/* Window list inside the share picker: scrolls, monitors stay pinned. */
+.share-picker-sub {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    color: #949ba4; letter-spacing: 0.5px; padding: 6px 2px 2px;
+}
+.share-picker-windows { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.share-picker-windows .share-picker-option { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* ---------- Files panel (right rail swap) ---------- */
 .call-btn.active { background: #3f4248; color: #fff; }
 .files-rail { display: flex; flex-direction: column; gap: 4px; }

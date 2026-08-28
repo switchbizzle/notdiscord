@@ -25,7 +25,8 @@ async fn main() {
     let interest = frames::publish_shared("self:screen".into(), slot.clone());
     let preview = Some(share::SelfShare { slot: slot.clone(), interest });
 
-    let control = match share::start_capture(source, None, preview) {
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let control = match share::start_capture(source, share::ShareTarget::PrimaryMonitor, preview, closed) {
         Ok(control) => control,
         Err(e) => {
             println!("FAIL: could not start capture: {e}");

@@ -67,8 +67,7 @@ pub enum VoiceCmd {
     SetVoiceMode { mode: String, key: String },
     /// Voice-activity gate threshold (RMS, 0 = always transmit).
     SetVadThreshold(f32),
-    /// monitor: 1-based index from share::list_monitors; None = primary.
-    StartScreenShare { monitor: Option<usize> },
+    StartScreenShare { target: crate::share::ShareTarget },
     StopScreenShare,
     /// Open a viewer window for this participant's screen share.
     WatchScreen { identity: String },
@@ -740,9 +739,12 @@ pub async fn voice_task(
                             if snapshot.sharing_self {
                                 VoiceCmd::StopScreenShare
                             } else {
-                                VoiceCmd::StartScreenShare { monitor: None }
+                                VoiceCmd::StartScreenShare {
+                                    target: crate::share::ShareTarget::PrimaryMonitor,
+                                }
                             }
                         }
+                        crate::share::CallAction::ShareEnded => VoiceCmd::StopScreenShare,
                         crate::share::CallAction::Leave => VoiceCmd::Leave,
                     }
                 }
@@ -813,7 +815,7 @@ pub async fn voice_task(
                 status.set(VoiceStatus::default());
                 mic_level.set(0.0);
             }
-            VoiceCmd::StartScreenShare { monitor } => {
+            VoiceCmd::StartScreenShare { target } => {
                 if let Some(active) = call.as_mut() {
                     if active.share.is_none() {
                         let source = NativeVideoSource::new(
@@ -848,7 +850,28 @@ pub async fn voice_task(
                                 call_state.lock().unwrap().self_share =
                                     Some((slot.clone(), interest.clone()));
                                 let preview = Some(crate::share::SelfShare { slot, interest });
-                                match crate::share::start_capture(source, monitor, preview) {
+                                let closed = Arc::new(AtomicBool::new(false));
+                                // Watch for the capture ending on its own (the
+                                // shared window was closed): unpublish instead
+                                // of streaming a frozen last frame. The watcher
+                                // exits quietly once the capture is dropped.
+                                {
+                                    let closed = closed.clone();
+                                    let ended_tx = action_tx.clone();
+                                    tokio::spawn(async move {
+                                        loop {
+                                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                            if closed.load(Ordering::Relaxed) {
+                                                let _ = ended_tx.send(crate::share::CallAction::ShareEnded);
+                                                break;
+                                            }
+                                            if Arc::strong_count(&closed) == 1 {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                }
+                                match crate::share::start_capture(source, target, preview, closed) {
                                 Ok(control) => {
                                     active.share = Some((control, publication.sid()));
                                     let mut s = status.write();

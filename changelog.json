@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.54.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🪟 Share a single window! The share button now always opens a picker: your monitors on top, every open window below — share just the game or just the browser instead of your whole screen. If the shared window closes, the share ends itself instead of freezing on the last frame",
+      "NotDiscord's own windows aren't offered for sharing (the hall-of-mirrors special is no more)"
+    ]
+  },
+  {
     "version": "0.53.0",
     "date": "2026-08-28",
     "changes": [

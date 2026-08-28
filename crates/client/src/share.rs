@@ -37,11 +37,14 @@ pub struct SelfShare {
 pub struct CaptureFlags {
     pub source: NativeVideoSource,
     pub preview: Option<SelfShare>,
+    /// Set when the capture ends on its own (the shared window closed).
+    pub closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct Capturer {
     source: NativeVideoSource,
     preview: Option<SelfShare>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
     scratch: Vec<u8>,
     last: std::time::Instant,
     last_preview: std::time::Instant,
@@ -58,10 +61,16 @@ impl GraphicsCaptureApiHandler for Capturer {
         Ok(Self {
             source: ctx.flags.source,
             preview: ctx.flags.preview,
+            closed: ctx.flags.closed,
             scratch: Vec::new(),
             last: long_ago,
             last_preview: long_ago,
         })
+    }
+
+    fn on_closed(&mut self) -> Result<(), Self::Error> {
+        self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     fn on_frame_arrived(
@@ -135,11 +144,49 @@ fn tee_preview(data: &[u8], width: u32, height: u32, slot: &SharedFrame) {
 
 pub type ShareControl = windows_capture::capture::CaptureControl<Capturer, CapError>;
 
+/// What to capture: a whole monitor, or a single window (by HWND, carried as
+/// isize so it can cross thread/channel boundaries).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShareTarget {
+    PrimaryMonitor,
+    Monitor(usize),
+    Window(isize),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorChoice {
     /// 1-based index for `Monitor::from_index`.
     pub index: usize,
     pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowChoice {
+    pub hwnd: isize,
+    pub label: String,
+}
+
+/// Capturable top-level windows for the share picker. Our own windows are
+/// excluded (sharing the app you're watching the share in is a hall of
+/// mirrors), as are empty titles.
+pub fn list_windows() -> Vec<WindowChoice> {
+    windows_capture::window::Window::enumerate()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|window| {
+            let title = window.title().ok()?;
+            let title = title.trim();
+            if title.is_empty() || title.starts_with("NotDiscord") {
+                return None;
+            }
+            let mut label: String = title.chars().take(60).collect();
+            if label.len() < title.len() {
+                label.push('…');
+            }
+            Some(WindowChoice { hwnd: window.as_raw_hwnd() as isize, label })
+        })
+        .take(30)
+        .collect()
 }
 
 /// All monitors, primary first, labeled for the share picker.
@@ -163,28 +210,52 @@ pub fn list_monitors() -> Vec<MonitorChoice> {
     choices.into_iter().map(|(_, c)| c).collect()
 }
 
-/// Start capturing a monitor into `source` (primary when `monitor` is None).
-/// `preview` also receives a scaled copy, so the sharer can see their own tile.
+/// Start capturing a monitor or a single window into `source`. `preview`
+/// also receives a scaled copy, so the sharer can see their own tile.
+/// `closed` is set by the capture when it ends on its own (window closed).
 pub fn start_capture(
     source: NativeVideoSource,
-    monitor: Option<usize>,
+    target: ShareTarget,
     preview: Option<SelfShare>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<ShareControl, String> {
-    let monitor = match monitor {
-        Some(index) => Monitor::from_index(index).map_err(|e| format!("monitor {index} not found: {e}"))?,
-        None => Monitor::primary().map_err(|e| format!("no primary monitor: {e}"))?,
-    };
-    let settings = Settings::new(
-        monitor,
-        CursorCaptureSettings::WithCursor,
-        DrawBorderSettings::Default,
-        SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
-        DirtyRegionSettings::Default,
-        ColorFormat::Rgba8,
-        CaptureFlags { source, preview },
-    );
-    Capturer::start_free_threaded(settings).map_err(|e| format!("screen capture failed: {e}"))
+    let flags = CaptureFlags { source, preview, closed };
+    macro_rules! settings {
+        ($item:expr) => {
+            Settings::new(
+                $item,
+                CursorCaptureSettings::WithCursor,
+                DrawBorderSettings::Default,
+                SecondaryWindowSettings::Default,
+                MinimumUpdateIntervalSettings::Default,
+                DirtyRegionSettings::Default,
+                ColorFormat::Rgba8,
+                flags,
+            )
+        };
+    }
+    match target {
+        ShareTarget::Monitor(index) => {
+            let monitor = Monitor::from_index(index)
+                .map_err(|e| format!("monitor {index} not found: {e}"))?;
+            Capturer::start_free_threaded(settings!(monitor))
+        }
+        ShareTarget::PrimaryMonitor => {
+            let monitor = Monitor::primary().map_err(|e| format!("no primary monitor: {e}"))?;
+            Capturer::start_free_threaded(settings!(monitor))
+        }
+        ShareTarget::Window(hwnd) => {
+            let window =
+                windows_capture::window::Window::from_raw_hwnd(hwnd as *mut std::ffi::c_void);
+            // The picker list can be stale; a closed window fails here with a
+            // decent message instead of a capture panic.
+            if !window.is_valid() {
+                return Err("that window is gone — pick another".into());
+            }
+            Capturer::start_free_threaded(settings!(window))
+        }
+    }
+    .map_err(|e| format!("screen capture failed: {e}"))
 }
 
 // ---------- Viewer (everyone else) ----------
@@ -250,6 +321,9 @@ pub enum CallAction {
     Camera,
     Screen,
     Leave,
+    /// The capture ended on its own (shared window was closed) — the share
+    /// should unpublish rather than stream a frozen last frame.
+    ShareEnded,
 }
 
 /// A request for the viewer loop to open a window.
