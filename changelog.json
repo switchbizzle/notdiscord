@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.48.1",
+    "date": "2026-08-27",
+    "changes": [
+      "📹 Turning on your camera no longer pops open the separate call window — your preview lives in the Video tab like everything else. The pop-out window still exists for whoever wants it: the Watch buttons in the voice list open it"
+    ]
+  },
+  {
     "version": "0.48.0",
     "date": "2026-08-27",
     "changes": [

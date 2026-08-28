@@ -916,15 +916,15 @@ pub async fn voice_task(
                             .await
                         {
                             Ok(publication) => {
-                                // Show yourself what you're broadcasting, as a
-                                // picture-in-picture in the call window.
+                                // Show yourself what you're broadcasting: the
+                                // same preview slot feeds your Video-tab tile
+                                // and (if someone pops it open via Watch) the
+                                // call window PiP. The window no longer opens
+                                // itself — the Video tab is where video lives.
                                 let slot: crate::share::SharedFrame = Default::default();
                                 let alive = Arc::new(AtomicBool::new(true));
                                 call_state.lock().unwrap().self_preview = Some(slot.clone());
-                                // Your own tile in the Video tab comes from the
-                                // same preview slot, not off the wire.
                                 crate::frames::publish_shared("self:camera".into(), slot.clone());
-                                let _ = crate::share::open_call_window(call_state.clone(), action_tx.clone());
                                 let preview = Some((slot, alive));
                                 // Opening the webcam can take seconds; don't
                                 // stall the voice command loop while it does.
