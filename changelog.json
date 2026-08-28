@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.70.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🎨 Code blocks are syntax highlighted. Put a language on the fence — ```rust, ```python, ```sql, ```js, ```json, ```bash and friends — and comments, strings, numbers, keywords and types each get their own colour. A fence with no language looks exactly as it always did",
+      "🐛 Fixed while adding it: the phone app was collapsing every message onto one line, so anything multi-line — a code block, a list, a paragraph with a line break — arrived as a run-on. Line breaks and indentation are kept now, in both apps"
+    ]
+  },
+  {
     "version": "0.69.0",
     "date": "2026-08-28",
     "changes": [

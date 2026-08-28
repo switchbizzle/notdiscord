@@ -13,7 +13,9 @@ pub enum MdNode {
     Italic(Vec<MdNode>),
     Strike(Vec<MdNode>),
     Code(String),
-    CodeBlock(String),
+    /// A fenced block, with the language from its fence (empty when the
+    /// fence didn't name one). The language decides the colouring.
+    CodeBlock { lang: String, code: String },
     Link { url: String, children: Vec<MdNode> },
     Break,
     Para(Vec<MdNode>),
@@ -71,7 +73,13 @@ fn close_tag(tag: Tag, children: Vec<MdNode>) -> Option<MdNode> {
         Tag::BlockQuote(_) => MdNode::Quote(children),
         Tag::List(start) => MdNode::List { start, items: children },
         Tag::Item => MdNode::Item(children),
-        Tag::CodeBlock(_) => MdNode::CodeBlock(flatten_text(&children)),
+        Tag::CodeBlock(kind) => MdNode::CodeBlock {
+            lang: match kind {
+                pulldown_cmark::CodeBlockKind::Fenced(lang) => lang.to_string(),
+                pulldown_cmark::CodeBlockKind::Indented => String::new(),
+            },
+            code: flatten_text(&children),
+        },
         Tag::Link { dest_url, .. } => {
             let url = dest_url.to_string();
             if url.starts_with("http://") || url.starts_with("https://") {
@@ -94,7 +102,8 @@ fn flatten_text(nodes: &[MdNode]) -> String {
     let mut out = String::new();
     for node in nodes {
         match node {
-            MdNode::Text(t) | MdNode::Code(t) | MdNode::CodeBlock(t) => out.push_str(t),
+            MdNode::Text(t) | MdNode::Code(t) => out.push_str(t),
+            MdNode::CodeBlock { code, .. } => out.push_str(code),
             MdNode::Break => out.push('\n'),
             MdNode::Bold(c) | MdNode::Italic(c) | MdNode::Strike(c) | MdNode::Para(c)
             | MdNode::Span(c) | MdNode::Quote(c) | MdNode::List { items: c, .. }
@@ -121,7 +130,13 @@ fn MdOne(node: MdNode) -> Element {
         MdNode::Italic(c) => rsx! { em { Md { nodes: c } } },
         MdNode::Strike(c) => rsx! { del { Md { nodes: c } } },
         MdNode::Code(t) => rsx! { code { class: "md-code", "{t}" } },
-        MdNode::CodeBlock(t) => rsx! { pre { class: "md-pre", "{t}" } },
+        MdNode::CodeBlock { lang, code } => rsx! {
+            pre { class: "md-pre",
+                for (i, span) in shared::highlight::highlight(&lang, &code).into_iter().enumerate() {
+                    span { key: "{i}", class: span.kind.class(), "{span.text}" }
+                }
+            }
+        },
         MdNode::Link { url, children } => rsx! {
             a { class: "md-link", href: "{url}", target: "_blank", rel: "noopener",
                 Md { nodes: children }

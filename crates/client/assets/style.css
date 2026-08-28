@@ -2628,3 +2628,12 @@ ul.md-list { list-style-type: disc; }
     align-self: center;
 }
 .login-switch:hover { color: #dbdee1; text-decoration: underline; }
+
+/* Code colours. Muted on purpose — a snippet sits inside a conversation, and
+   a full IDE theme in the middle of chat shouts louder than the person who
+   pasted it. Comments recede, the literals lead. */
+.t-c { color: #7c828d; font-style: italic; }
+.t-s { color: #a8cc8c; }
+.t-n { color: #d4a76a; }
+.t-k { color: #cf8ee0; }
+.t-t { color: #6cb6ff; }

@@ -5138,27 +5138,45 @@ fn extract_media(content: &str, base: &str) -> (Vec<String>, Vec<String>, Vec<St
     let mut images = Vec::new();
     let mut videos = Vec::new();
     let mut files = Vec::new();
-    let mut rest = Vec::new();
-    for word in content.split_whitespace() {
-        let absolute = if word.starts_with("http://") || word.starts_with("https://") {
-            Some(word.to_owned())
-        } else if word.starts_with("/files/") {
-            Some(format!("{}{word}", base.trim_end_matches('/')))
-        } else {
-            None
-        };
-        match absolute {
-            Some(url) if has_ext(&url, &["gif", "png", "jpg", "jpeg", "webp"]) => images.push(url),
-            Some(url) if has_ext(&url, &["webm", "mp4", "mov"]) => videos.push(url),
-            Some(url) if url.contains("/files/") => files.push(url),
-            _ => rest.push(word),
+    let mut lines: Vec<String> = Vec::new();
+
+    // Line by line, keeping untouched lines verbatim: rebuilding the message
+    // out of whitespace-separated words flattens it, and a code block posted
+    // alongside a screenshot loses every newline and indent it had.
+    for line in content.lines() {
+        let mut kept: Vec<&str> = Vec::new();
+        let mut pulled = false;
+        for word in line.split_whitespace() {
+            let absolute = if word.starts_with("http://") || word.starts_with("https://") {
+                Some(word.to_owned())
+            } else if word.starts_with("/files/") {
+                Some(format!("{}{word}", base.trim_end_matches('/')))
+            } else {
+                None
+            };
+            match absolute {
+                Some(url) if has_ext(&url, &["gif", "png", "jpg", "jpeg", "webp"]) => {
+                    images.push(url);
+                    pulled = true;
+                }
+                Some(url) if has_ext(&url, &["webm", "mp4", "mov"]) => {
+                    videos.push(url);
+                    pulled = true;
+                }
+                Some(url) if url.contains("/files/") => {
+                    files.push(url);
+                    pulled = true;
+                }
+                _ => kept.push(word),
+            }
+        }
+        match (pulled, kept.is_empty()) {
+            (false, _) => lines.push(line.to_owned()),
+            (true, true) => {}
+            (true, false) => lines.push(kept.join(" ")),
         }
     }
-    if images.is_empty() && videos.is_empty() && files.is_empty() {
-        (images, videos, files, content.to_owned())
-    } else {
-        (images, videos, files, rest.join(" "))
-    }
+    (images, videos, files, lines.join("\n").trim().to_owned())
 }
 
 /// Links in a message worth asking the server for a card about: bare web URLs
@@ -6392,6 +6410,36 @@ mod media_tests {
         // A trailing slash on the base must not double up.
         let (_, videos, ..) = extract_media("/files/abc/clip.mp4", "https://host/");
         assert_eq!(videos, vec!["https://host/files/abc/clip.mp4"]);
+    }
+
+    #[test]
+    fn a_message_keeps_its_shape() {
+        // The bug this guards: rebuilding the text out of whitespace-split
+        // words flattened every message onto one line, so a code block
+        // pasted next to a screenshot lost its newlines and its indenting.
+        let code = "look:
+```rust
+fn main() {
+    let x = 1;
+}
+```";
+        let (.., text) = extract_media(code, BASE);
+        assert_eq!(text, code, "a message with no attachments is untouched");
+
+        let with_image = format!("{code}
+/files/abc/shot.png");
+        let (images, _, _, text) = extract_media(&with_image, BASE);
+        assert_eq!(images.len(), 1);
+        assert_eq!(text, code, "the picture goes, the formatting stays");
+
+        // A line that mixes words and an attachment keeps its words.
+        let (_, videos, _, text) = extract_media("first
+see this /files/a/b.mp4 clip
+last", BASE);
+        assert_eq!(videos.len(), 1);
+        assert_eq!(text, "first
+see this clip
+last");
     }
 
     #[test]

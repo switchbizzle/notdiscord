@@ -361,3 +361,12 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
     width: 100%;
 }
 .login-switch:active { color: #dbdee1; }
+
+/* Code colours. Muted on purpose — a snippet sits inside a conversation, and
+   a full IDE theme in the middle of chat shouts louder than the person who
+   pasted it. Comments recede, the literals lead. */
+.t-c { color: #7c828d; font-style: italic; }
+.t-s { color: #a8cc8c; }
+.t-n { color: #d4a76a; }
+.t-k { color: #cf8ee0; }
+.t-t { color: #6cb6ff; }

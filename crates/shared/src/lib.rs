@@ -1,6 +1,8 @@
 //! Types shared between the NotDiscord server and client: REST DTOs and the
 //! WebSocket event protocol. Timestamps are unix milliseconds (UTC).
 
+pub mod highlight;
+
 use serde::{Deserialize, Serialize};
 
 // ---------- Core entities ----------

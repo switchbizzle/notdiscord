@@ -153,29 +153,49 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, Strin
     let mut images = Vec::new();
     let mut videos = Vec::new();
     let mut files = Vec::new();
-    let mut text_parts: Vec<&str> = Vec::new();
-    for token in content.split_whitespace() {
-        let is_url = token.starts_with("http://") || token.starts_with("https://") || token.starts_with("/files/");
-        if is_url {
-            let lower = token.to_lowercase();
-            let path = lower.split(['?', '#']).next().unwrap_or("");
-            if [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| path.ends_with(e)) {
-                images.push(token.to_owned());
-                continue;
+    let mut lines: Vec<String> = Vec::new();
+
+    // Line by line, and untouched lines are kept verbatim: joining every word
+    // with a single space collapsed the whole message onto one line, which
+    // turned code blocks into a run-on and ate every indent in them.
+    for line in content.lines() {
+        let mut kept: Vec<&str> = Vec::new();
+        let mut pulled = false;
+        for token in line.split_whitespace() {
+            let is_url = token.starts_with("http://")
+                || token.starts_with("https://")
+                || token.starts_with("/files/");
+            if is_url {
+                let lower = token.to_lowercase();
+                let path = lower.split(['?', '#']).next().unwrap_or("");
+                if [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| path.ends_with(e)) {
+                    images.push(token.to_owned());
+                    pulled = true;
+                    continue;
+                }
+                if [".mp4", ".webm", ".mov"].iter().any(|e| path.ends_with(e)) {
+                    videos.push(token.to_owned());
+                    pulled = true;
+                    continue;
+                }
+                if token.starts_with("/files/") {
+                    let name = token.rsplit('/').next().unwrap_or("file").to_owned();
+                    files.push((token.to_owned(), name));
+                    pulled = true;
+                    continue;
+                }
             }
-            if [".mp4", ".webm", ".mov"].iter().any(|e| path.ends_with(e)) {
-                videos.push(token.to_owned());
-                continue;
-            }
-            if token.starts_with("/files/") {
-                let name = token.rsplit('/').next().unwrap_or("file").to_owned();
-                files.push((token.to_owned(), name));
-                continue;
-            }
+            kept.push(token);
         }
-        text_parts.push(token);
+        match (pulled, kept.is_empty()) {
+            // Nothing was taken out of this line, so it stands as written.
+            (false, _) => lines.push(line.to_owned()),
+            // The line was only an attachment; drop it rather than leave a gap.
+            (true, true) => {}
+            (true, false) => lines.push(kept.join(" ")),
+        }
     }
-    (images, videos, files, text_parts.join(" "))
+    (images, videos, files, lines.join("\n").trim().to_owned())
 }
 
 /// Links in a message worth asking the server for a card about: web URLs that
