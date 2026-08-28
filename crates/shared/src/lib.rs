@@ -482,6 +482,20 @@ pub struct MusicQueueRequest {
     pub ids: Vec<u64>,
 }
 
+/// One attachment found in a channel's history (GET /api/channels/{id}/files).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// Server-relative /files/... URL.
+    pub url: String,
+    pub name: String,
+    /// Bytes on disk right now.
+    pub size: i64,
+    pub created_at: i64,
+    /// The message it was posted in, for jump-to.
+    pub message_id: i64,
+    pub uploader: String,
+}
+
 /// Unread state for one channel (GET /api/unread).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnreadInfo {

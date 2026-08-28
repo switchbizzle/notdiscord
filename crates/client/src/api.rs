@@ -600,6 +600,10 @@ pub async fn channel_pins(session: &Session, channel_id: i64) -> Result<Vec<Mess
     get(session, format!("channels/{channel_id}/pins")).await
 }
 
+pub async fn channel_files(session: &Session, channel_id: i64) -> Result<Vec<shared::FileEntry>, String> {
+    get(session, format!("channels/{channel_id}/files")).await
+}
+
 /// Queue a link without posting it to chat (the Music tab's composer).
 pub async fn music_play(session: &Session, channel_id: i64, url: String) -> Result<(), String> {
     let resp = send_retry(http()

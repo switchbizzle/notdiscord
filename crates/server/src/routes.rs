@@ -2074,6 +2074,84 @@ pub async fn channel_messages(
     Ok(Json(messages))
 }
 
+/// Every attachment ever posted in a channel, newest first — the Files panel.
+/// Files are found by scanning message content for /files/ links (that's the
+/// only way attachments exist), and anything retention already deleted from
+/// disk is silently skipped.
+pub async fn channel_files(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+) -> ApiResult<Json<Vec<shared::FileEntry>>> {
+    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    if recipients.is_some_and(|ids| !ids.contains(&user.id)) {
+        return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+    }
+    let rows = sqlx::query(
+        "SELECT m.id, m.content, m.created_at, u.username \
+         FROM messages m JOIN users u ON u.id = m.author_id \
+         WHERE m.channel_id = ? AND m.content LIKE '%/files/%' \
+         ORDER BY m.id DESC LIMIT 400",
+    )
+    .bind(channel_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+
+    let uploads = crate::uploads_dir();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for row in rows {
+        let (message_id, content, created_at, uploader): (i64, String, i64, String) =
+            (row.get(0), row.get(1), row.get(2), row.get(3));
+        for token in content.split_whitespace() {
+            let Some(idx) = token.find("/files/") else { continue };
+            // A bare /files/ path or one inside an http(s) URL; anything else
+            // is prose that happens to contain the string.
+            if idx != 0 && !(token.starts_with("http://") || token.starts_with("https://")) {
+                continue;
+            }
+            let rel = &token[idx..];
+            if !seen.insert(rel.to_owned()) {
+                continue;
+            }
+            // Message content is user text: re-validate exactly like the
+            // serving endpoints before touching the filesystem.
+            let segments: Vec<&str> = rel.trim_start_matches("/files/").split('/').collect();
+            let (disk, name) = match segments[..] {
+                [id, name] => {
+                    let id_ok = id.len() == 32
+                        && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+                    if !id_ok || name.is_empty() || name != sanitize_filename(name) {
+                        continue;
+                    }
+                    (uploads.join(id).join(name), name)
+                }
+                [single] => {
+                    let valid = single.len() < 40
+                        && single.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
+                        && single.matches('.').count() == 1;
+                    if !valid {
+                        continue;
+                    }
+                    (uploads.join(single), single)
+                }
+                _ => continue,
+            };
+            let Ok(meta) = std::fs::metadata(&disk) else { continue };
+            out.push(shared::FileEntry {
+                url: rel.to_owned(),
+                name: name.to_owned(),
+                size: meta.len() as i64,
+                created_at,
+                message_id,
+                uploader: uploader.clone(),
+            });
+        }
+    }
+    Ok(Json(out))
+}
+
 /// Pin rights: admins anywhere; in a DM, either participant (a DM has no
 /// admin). Returns the message's channel and the event audience.
 async fn pin_target(

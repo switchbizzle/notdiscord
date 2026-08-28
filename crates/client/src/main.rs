@@ -636,6 +636,10 @@ fn MainView(session: api::Session) -> Element {
 
     // Open a channel: remember where the reader left off (for the NEW line),
     // clear its badge, load history, and report the new read position.
+    // The Files panel: Some(list) swaps the right rail for the channel's
+    // attachment explorer (Jon's spec). Declared before open_channel so a
+    // channel switch can close it.
+    let mut files_open = use_signal(|| None::<Vec<shared::FileEntry>>);
     let mut open_channel = move |channel: Channel| {
         let previous = unread.write().remove(&channel.id);
         divider_at.set(
@@ -643,6 +647,7 @@ fn MainView(session: api::Session) -> Element {
                 .filter(|(count, _, _)| *count > 0)
                 .map(|(_, _, last_read)| last_read),
         );
+        files_open.set(None);
         selected.set(Some(channel.clone()));
         messages.set(Vec::new());
         has_more.set(false);
@@ -3709,6 +3714,24 @@ fn MainView(session: api::Session) -> Element {
                         },
                         Icon { name: "pin", size: 16 }
                     }
+                    button {
+                        class: if files_open().is_some() { "call-btn active" } else { "call-btn" },
+                        title: "Files in this channel",
+                        onclick: move |_| {
+                            if files_open().is_some() {
+                                files_open.set(None);
+                                return;
+                            }
+                            let Some(channel) = selected() else { return };
+                            spawn(async move {
+                                match api::channel_files(&session(), channel.id).await {
+                                    Ok(files) => files_open.set(Some(files)),
+                                    Err(e) => status.set(e),
+                                }
+                            });
+                        },
+                        Icon { name: "file", size: 16 }
+                    }
                     input {
                         class: "search-input",
                         placeholder: "search messages…",
@@ -3781,6 +3804,13 @@ fn MainView(session: api::Session) -> Element {
                         "music" => "messages music-chat",
                         "video" => "messages video-chat",
                         _ => "messages",
+                    },
+                    // Jon's spec: clicking back into the chat body dismisses
+                    // the Files panel.
+                    onclick: move |_| {
+                        if files_open.peek().is_some() {
+                            files_open.set(None);
+                        }
                     },
                     // column-reverse container keeps the view pinned to the
                     // newest message, so render newest first.
@@ -4402,11 +4432,73 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
             }
-            // The rail carries the queue while the Music tab is open, and the
-            // member list the rest of the time.
+            // The rail carries the queue while the Music tab is open, the
+            // Files explorer while it's toggled on, and the member list the
+            // rest of the time.
             if view_tab() == "music" {
                 div { class: "members rail-queue",
                     MusicQueue { music, picked: music_picked }
+                }
+            } else if let Some(files) = files_open() {
+                div { class: "members files-rail",
+                    div { class: "members-title", "Files" }
+                    if files.is_empty() {
+                        div { class: "files-empty", "no files in this channel yet" }
+                    }
+                    for f in files {
+                        {
+                            let abs = format!("{}{}", session().base_url, f.url);
+                            let is_img = {
+                                let lower = f.name.to_lowercase();
+                                [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| lower.ends_with(e))
+                            };
+                            let kind_icon = file_kind_icon(&f.name);
+                            let abs_open = abs.clone();
+                            let abs_menu = abs.clone();
+                            let msg_id = f.message_id;
+                            rsx! {
+                                div {
+                                    key: "{f.url}",
+                                    class: "file-row",
+                                    title: "{f.name}",
+                                    onclick: move |_| {
+                                        if is_img {
+                                            lightbox.set(Some(abs_open.clone()));
+                                        } else {
+                                            let _ = open::that(&abs_open);
+                                        }
+                                    },
+                                    oncontextmenu: move |e: Event<MouseData>| {
+                                        let abs = abs_menu.clone();
+                                        let abs2 = abs_menu.clone();
+                                        menu::open(ctx_menu, &e, vec![
+                                            menu::item("Jump to message", "reply", move || {
+                                                let mut jump = jump_to;
+                                                jump.set(Some(msg_id));
+                                                let mut files = files_open;
+                                                files.set(None);
+                                            }),
+                                            menu::item("Save as…", "download", move || menu::save_url_as(abs.clone())),
+                                            menu::item("Copy link", "link", move || menu::copy_to_clipboard(abs2.clone())),
+                                        ]);
+                                    },
+                                    if is_img {
+                                        img { class: "file-thumb", src: "{abs}", loading: "lazy" }
+                                    } else {
+                                        div { class: "file-thumb file-thumb-icon",
+                                            Icon { name: kind_icon, size: 20 }
+                                        }
+                                    }
+                                    div { class: "file-meta",
+                                        div { class: "file-name", "{f.name}" }
+                                        div { class: "file-sub",
+                                            "{f.uploader} · {format_date(f.created_at)} · {human_size(f.size)}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
             div { class: "members",
@@ -5937,6 +6029,30 @@ fn apply_self_update(new_exe_bytes: Vec<u8>) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("update installed but relaunch failed: {e}"))?;
     std::process::exit(0);
+}
+
+/// "3.2 MB"-style byte counts for the Files panel.
+fn human_size(bytes: i64) -> String {
+    let b = bytes as f64;
+    if b >= 1e9 {
+        format!("{:.1} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.1} MB", b / 1e6)
+    } else if b >= 1e3 {
+        format!("{:.0} KB", b / 1e3)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Placeholder icon for a non-previewable attachment, by extension.
+fn file_kind_icon(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "webm" | "mov" | "mkv" | "avi" => "camera",
+        "mp3" | "wav" | "ogg" | "flac" | "m4a" => "music",
+        _ => "file",
+    }
 }
 
 fn format_date(unix_ms: i64) -> String {

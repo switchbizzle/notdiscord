@@ -1059,6 +1059,32 @@ ul.md-list { list-style-type: disc; }
     color: #b5bac1;
 }
 
+/* ---------- Files panel (right rail swap) ---------- */
+.call-btn.active { background: #3f4248; color: #fff; }
+.files-rail { display: flex; flex-direction: column; gap: 4px; }
+.files-empty { color: #949ba4; font-size: 12px; font-style: italic; padding: 4px 2px; }
+.file-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 4px; border-radius: 6px; cursor: pointer; min-width: 0;
+}
+.file-row:hover { background: #35373c; }
+.file-thumb {
+    width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex: 0 0 auto;
+    background: #1e1f22;
+}
+.file-thumb-icon {
+    display: flex; align-items: center; justify-content: center; color: #949ba4;
+}
+.file-meta { flex: 1; min-width: 0; }
+.file-name {
+    color: #dbdee1; font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-sub {
+    color: #80848e; font-size: 10.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .members {
     width: 200px;
     background: #2b2d31;

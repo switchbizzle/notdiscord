@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.52.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🗂️ The Files panel (Jon's spec): a new button next to the pin swaps the right sidebar for every file ever posted in the channel — image thumbnails, type icons for the rest, with name, who posted it, when, and size. Click to open, right-click to jump to its message, save, or copy the link. Click it again or click back into chat to bring the members back"
+    ]
+  },
+  {
     "version": "0.51.0",
     "date": "2026-08-28",
     "changes": [
