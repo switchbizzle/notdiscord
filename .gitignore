@@ -36,3 +36,9 @@ Thumbs.db
 
 # Screenshots the visual harnesses take of themselves
 /callwindow-*.png
+
+# Self-hosting kit: an operator's own state and secrets, created by
+# `docker compose up` inside a clone.
+deploy/.env
+deploy/data/
+deploy/client/
