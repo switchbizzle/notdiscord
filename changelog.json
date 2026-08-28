@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.54.1",
+    "date": "2026-08-28",
+    "changes": [
+      "🐛 Fixed: clicking another server in the far-left rail did nothing — you stayed logged into the one you were on. Turns out nobody had ever actually had two servers until today. Switching works now, both directions"
+    ]
+  },
+  {
     "version": "0.54.0",
     "date": "2026-08-28",
     "changes": [

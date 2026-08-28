@@ -318,7 +318,15 @@ fn App() -> Element {
                     Some(s) if !adding() => rsx! {
                         div { class: "shell",
                             ServerRail { adding }
-                            MainView { key: "{s.base_url}", session: s }
+                            // The one-element loop is load-bearing: a `key` only
+                            // forces a REMOUNT inside list diffing. Bare in this
+                            // position, switching servers just swapped the prop,
+                            // and MainView's use_signal(|| session) never reads
+                            // props again — the rail looked dead (you stayed
+                            // logged into the old server).
+                            for s in [s] {
+                                MainView { key: "{s.base_url}", session: s.clone() }
+                            }
                         }
                     },
                     _ => rsx! {
