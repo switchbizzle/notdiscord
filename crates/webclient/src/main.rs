@@ -4,6 +4,7 @@
 
 mod api;
 mod icons;
+mod md;
 
 use std::collections::HashMap;
 
@@ -25,6 +26,10 @@ extern "C" {
     fn voice_leave_js() -> js_sys::Promise;
     #[wasm_bindgen(js_name = setMuted)]
     fn voice_set_muted_js(muted: bool) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = setDeafened)]
+    fn voice_set_deafened_js(deafened: bool) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = setVolume)]
+    fn voice_set_volume_js(identity: &str, volume: f64);
     #[wasm_bindgen(js_name = getState)]
     fn voice_get_state_js() -> String;
 }
@@ -43,6 +48,8 @@ struct VoiceGlue {
     connecting: bool,
     error: String,
     muted: bool,
+    #[serde(default)]
+    deafened: bool,
     participants: Vec<VoicePeer>,
 }
 
@@ -237,6 +244,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // glue's live view of the room.
     let mut voice_conn = use_signal(|| None::<(i64, String)>);
     let mut voice_glue = use_signal(VoiceGlue::default);
+    // channel_id -> unread count, for drawer badges.
+    let mut unread = use_signal(HashMap::<i64, i64>::new);
+    // The message being replied to, shared with MessageRow via context.
+    let replying = use_context_provider(|| Signal::new(None::<Message>));
+    let mut replying = replying;
     let me_id = sess().user.id;
 
 
@@ -262,6 +274,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
 
     let mut open_channel = move |channel: Channel| {
         let id = channel.id;
+        unread.write().remove(&id);
+        replying.set(None);
         selected.set(Some(channel));
         drawer.set(false);
         messages.set(Vec::new());
@@ -301,6 +315,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
             if let Ok(list) = api::users(&sess()).await {
                 members.set(list);
+            }
+            if let Ok(list) = api::unread(&sess()).await {
+                unread.set(list.into_iter().filter(|u| u.count > 0).map(|u| (u.channel_id, u.count)).collect());
             }
         });
     });
@@ -361,6 +378,22 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     let (id, chan) = (message.id, message.channel_id);
                                     messages.write().push(message);
                                     spawn(async move { api::mark_read(&sess(), chan, id).await });
+                                } else if message.author.id != me_id {
+                                    *unread.write().entry(message.channel_id).or_insert(0) += 1;
+                                }
+                            }
+                            ServerEvent::ReactionAdded { channel_id, message_id, emoji, user_id } => {
+                                if selected.peek().as_ref().map(|c| c.id) == Some(channel_id) {
+                                    if let Some(m) = messages.write().iter_mut().find(|m| m.id == message_id) {
+                                        m.reactions.push(shared::ReactionEntry { emoji, user_id });
+                                    }
+                                }
+                            }
+                            ServerEvent::ReactionRemoved { channel_id, message_id, emoji, user_id } => {
+                                if selected.peek().as_ref().map(|c| c.id) == Some(channel_id) {
+                                    if let Some(m) = messages.write().iter_mut().find(|m| m.id == message_id) {
+                                        m.reactions.retain(|r| !(r.emoji == emoji && r.user_id == user_id));
+                                    }
                                 }
                             }
                             ServerEvent::MessageEdited { channel_id, message_id, content, edited_at } => {
@@ -514,7 +547,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             });
             return;
         }
-        ws.send(ClientEvent::SendMessage { channel_id: channel.id, content, reply_to: None });
+        let reply_to = replying.peek().as_ref().map(|m| m.id);
+        replying.set(None);
+        ws.send(ClientEvent::SendMessage { channel_id: channel.id, content, reply_to });
     };
 
     let load_older = move |_| {
@@ -532,6 +567,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     };
 
     let mic_icon: &'static str = if voice_glue().muted { "mic-off" } else { "mic" };
+    let deafen_icon: &'static str = if voice_glue().deafened { "headphones-off" } else { "headphones" };
     let selected_label = match selected() {
         Some(c) if c.kind == "dm" => format!("@{}", dm_peer(&c, me_id)),
         Some(c) => format!("# {}", c.name),
@@ -541,7 +577,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     rsx! {
         div { class: "app",
             header { class: "topbar",
-                button { class: "burger", onclick: move |_| drawer.set(!drawer()), Icon { name: "menu", size: 20 } }
+                button { class: "burger", onclick: move |_| drawer.set(!drawer()),
+                    Icon { name: "menu", size: 20 }
+                    if !unread().is_empty() {
+                        span { class: "live-dot unread-dot" }
+                    }
+                }
                 div { class: "topbar-title", "{selected_label}" }
                 button {
                     class: if tab() == "music" { "topbtn active" } else { "topbtn" },
@@ -578,7 +619,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 let channel = channel.clone();
                                 move |_| open_channel(channel.clone())
                             },
-                            "# {channel.name}"
+                            span { class: "grow", "# {channel.name}" }
+                            if let Some(n) = unread().get(&channel.id).copied() {
+                                span { class: "unread-badge", "{n}" }
+                            }
                         }
                     }
                     div { class: "drawer-section", "Voice" }
@@ -636,6 +680,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             span { class: "person-name", "{member.user.username}" }
                             if let Some(text) = member.status.clone() {
                                 span { class: "person-status", "{text}" }
+                            }
+                            // Unread on the DM with this person, if one exists.
+                            if let Some(n) = channels()
+                                .iter()
+                                .find(|c| c.kind == "dm" && c.dm_members.iter().any(|u| u.id == member.user.id))
+                                .and_then(|c| unread().get(&c.id).copied())
+                            {
+                                span { class: "unread-badge", "{n}" }
                             }
                         }
                     }
@@ -760,7 +812,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 main { class: "messages",
                     // column-reverse pins the view to the newest message.
                     for msg in messages().into_iter().rev() {
-                        MessageRow { key: "{msg.id}", msg }
+                        MessageRow { key: "{msg.id}", msg, me_id }
                     }
                     if has_more() {
                         button { class: "load-older", onclick: load_older, "Load older messages" }
@@ -797,31 +849,59 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
 
             if let Some((_, chan_name)) = voice_conn() {
                 div { class: "voice-bar",
-                    Icon { name: "volume", size: 16 }
-                    div { class: "voice-bar-info",
+                    div { class: "voice-bar-top",
+                        Icon { name: "volume", size: 16 }
                         div { class: "voice-bar-chan", "{chan_name}" }
-                        div { class: "voice-bar-peers",
-                            for p in voice_glue().participants {
-                                span {
-                                    key: "{p.identity}",
-                                    class: if p.speaking { "peer speaking" } else { "peer" },
-                                    "{p.name}"
+                        span { class: "grow" }
+                        button {
+                            class: if voice_glue().muted { "vbtn muted" } else { "vbtn" },
+                            onclick: move |_| {
+                                let now_muted = !voice_glue.peek().muted;
+                                spawn(async move {
+                                    let _ = wasm_bindgen_futures::JsFuture::from(voice_set_muted_js(now_muted)).await;
+                                });
+                            },
+                            Icon { name: mic_icon, size: 16 }
+                        }
+                        button {
+                            class: if voice_glue().deafened { "vbtn muted" } else { "vbtn" },
+                            onclick: move |_| {
+                                let now = !voice_glue.peek().deafened;
+                                spawn(async move {
+                                    let _ = wasm_bindgen_futures::JsFuture::from(voice_set_deafened_js(now)).await;
+                                });
+                            },
+                            Icon { name: deafen_icon, size: 16 }
+                        }
+                        button { class: "vbtn leave", onclick: leave_voice,
+                            Icon { name: "phone-off", size: 16 }
+                        }
+                    }
+                    div { class: "voice-bar-peers",
+                        for p in voice_glue().participants {
+                            div {
+                                key: "{p.identity}",
+                                class: if p.speaking { "peer-row speaking" } else { "peer-row" },
+                                span { class: "peer-name", "{p.name}" }
+                                if !p.local {
+                                    input {
+                                        r#type: "range",
+                                        class: "peer-volume",
+                                        min: "0",
+                                        max: "200",
+                                        value: "100",
+                                        oninput: {
+                                            let identity = p.identity.clone();
+                                            move |e: Event<FormData>| {
+                                                if let Ok(v) = e.value().parse::<f64>() {
+                                                    voice_set_volume_js(&identity, v / 100.0);
+                                                }
+                                            }
+                                        },
+                                    }
                                 }
                             }
                         }
-                    }
-                    button {
-                        class: if voice_glue().muted { "vbtn muted" } else { "vbtn" },
-                        onclick: move |_| {
-                            let now_muted = !voice_glue.peek().muted;
-                            spawn(async move {
-                                let _ = wasm_bindgen_futures::JsFuture::from(voice_set_muted_js(now_muted)).await;
-                            });
-                        },
-                        Icon { name: mic_icon, size: 16 }
-                    }
-                    button { class: "vbtn leave", onclick: leave_voice,
-                        Icon { name: "phone-off", size: 16 }
                     }
                 }
             }
@@ -830,6 +910,17 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 div { class: "statusbar", "{status}" }
             }
 
+            if let Some(target) = replying() {
+                div { class: "reply-bar",
+                    Icon { name: "reply", size: 13 }
+                    span { class: "reply-bar-text",
+                        "Replying to {target.author.username}: {target.content.chars().take(50).collect::<String>()}"
+                    }
+                    button { class: "reply-bar-x", onclick: move |_| replying.set(None),
+                        Icon { name: "x", size: 13 }
+                    }
+                }
+            }
             footer { class: "composer",
                 label { class: "attach",
                     input {
@@ -895,8 +986,16 @@ fn Avatar(user: User) -> Element {
     }
 }
 
+/// The quick-react strip: the crew's high-traffic emojis.
+const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "🔥"];
+
 #[component]
-fn MessageRow(msg: Message) -> Element {
+fn MessageRow(msg: Message, me_id: i64) -> Element {
+    let ws = use_coroutine_handle::<ClientEvent>();
+    let mut replying = use_context::<Signal<Option<Message>>>();
+    let mut strip_open = use_signal(|| false);
+    let msg_id = msg.id;
+
     // The bot's music-player card is a desktop thing.
     if msg.content.starts_with(shared::PLAYER_MARKER) {
         return rsx! {
@@ -906,17 +1005,46 @@ fn MessageRow(msg: Message) -> Element {
         };
     }
     let (images, videos, files, text) = extract_media(&msg.content);
+
+    // Aggregate raw reaction entries into (emoji, count, reacted-by-me).
+    let mut reaction_groups: Vec<(String, usize, bool)> = Vec::new();
+    for entry in &msg.reactions {
+        match reaction_groups.iter_mut().find(|(e, _, _)| *e == entry.emoji) {
+            Some(g) => {
+                g.1 += 1;
+                g.2 |= entry.user_id == me_id;
+            }
+            None => reaction_groups.push((entry.emoji.clone(), 1, entry.user_id == me_id)),
+        }
+    }
+
     rsx! {
         div { class: "msg",
             div { class: "msg-head",
                 span { class: "msg-author", "{msg.author.username}" }
                 span { class: "msg-time", {format_time(msg.created_at)} }
+                span { class: "grow" }
+                button {
+                    class: "msg-act",
+                    onclick: move |_| strip_open.set(!strip_open()),
+                    Icon { name: "smile", size: 14 }
+                }
+                button {
+                    class: "msg-act",
+                    onclick: {
+                        let msg_for_reply = msg.clone();
+                        move |_| replying.set(Some(msg_for_reply.clone()))
+                    },
+                    Icon { name: "reply", size: 14 }
+                }
             }
             if let Some(preview) = msg.reply_preview.clone() {
                 div { class: "reply-ref", "↩ {preview.author}: {preview.content.chars().take(60).collect::<String>()}" }
             }
             if !text.is_empty() {
-                div { class: "msg-body", "{text}" }
+                div { class: "msg-body",
+                    md::Md { nodes: md::parse_markdown(&text) }
+                }
             }
             for (i, src) in images.into_iter().enumerate() {
                 img { key: "{i}", class: "msg-img", src: "{src}", loading: "lazy" }
@@ -928,6 +1056,34 @@ fn MessageRow(msg: Message) -> Element {
                 a { key: "f{i}", class: "msg-file", href: "{url}", target: "_blank",
                     Icon { name: "file", size: 14 }
                     " {name}"
+                }
+            }
+            if !reaction_groups.is_empty() || strip_open() {
+                div { class: "reaction-row",
+                    for (emoji, count, mine) in reaction_groups {
+                        button {
+                            key: "{emoji}",
+                            class: if mine { "reaction-pill mine" } else { "reaction-pill" },
+                            onclick: {
+                                let emoji = emoji.clone();
+                                move |_| ws.send(ClientEvent::ToggleReaction { message_id: msg_id, emoji: emoji.clone() })
+                            },
+                            "{emoji} {count}"
+                        }
+                    }
+                    if strip_open() {
+                        for quick in QUICK_REACTIONS {
+                            button {
+                                key: "q{quick}",
+                                class: "reaction-pill quick",
+                                onclick: move |_| {
+                                    strip_open.set(false);
+                                    ws.send(ClientEvent::ToggleReaction { message_id: msg_id, emoji: quick.to_string() });
+                                },
+                                "{quick}"
+                            }
+                        }
+                    }
                 }
             }
         }

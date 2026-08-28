@@ -98,6 +98,10 @@ pub async fn create_dm(session: &Session, user_id: i64) -> Result<shared::Channe
     handle(resp).await
 }
 
+pub async fn unread(session: &Session) -> Result<Vec<shared::UnreadInfo>, String> {
+    get(session, "unread").await
+}
+
 pub async fn mark_read(session: &Session, channel_id: i64, message_id: i64) {
     if let Ok(req) = Request::post("/api/read")
         .header("Authorization", &format!("Bearer {}", session.token))

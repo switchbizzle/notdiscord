@@ -9298,6 +9298,7 @@ dependencies = [
  "gloo-storage",
  "gloo-timers",
  "js-sys",
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "shared",

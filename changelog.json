@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.53.0",
+    "date": "2026-08-28",
+    "changes": [
+      "📱 The phone app grows up: messages render real formatting (bold, lists, code, quotes, links, @mentions), you can react (😊 button for the quick six, tap a pill to join in) and reply (↩ on any message), and unread badges show on channels, people, and the menu button so you know something's waiting",
+      "📱 In calls: a deafen button, and a volume slider per person — turn a loud friend down without leaving the couch"
+    ]
+  },
+  {
     "version": "0.52.1",
     "date": "2026-08-28",
     "changes": [

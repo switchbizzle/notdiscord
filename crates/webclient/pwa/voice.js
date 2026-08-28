@@ -8,6 +8,7 @@ window.ndVoice = (() => {
     connecting: false,
     error: "",
     muted: false,
+    deafened: false,
     participants: [], // {identity, name, speaking, local}
   };
   const audioEls = new Map();
@@ -36,12 +37,16 @@ window.ndVoice = (() => {
     state.error = "";
     try {
       const r = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
-      r.on("trackSubscribed", (track, pub) => {
+      r.on("trackSubscribed", (track, pub, participant) => {
         if (track.kind === "audio") {
           const el = track.attach();
           el.style.display = "none";
+          el.muted = state.deafened;
           document.body.appendChild(el);
           audioEls.set(pub.trackSid, el);
+          // A saved per-friend volume applies as soon as their track lands.
+          const v = volumes[participant.identity];
+          if (v !== undefined && track.setVolume) track.setVolume(v);
         }
       });
       r.on("trackUnsubscribed", (track, pub) => {
@@ -93,6 +98,7 @@ window.ndVoice = (() => {
     audioEls.forEach((el) => el.remove());
     audioEls.clear();
     state.connected = false;
+    state.deafened = false;
     state.participants = [];
     state.error = "";
   }
@@ -107,6 +113,26 @@ window.ndVoice = (() => {
     }
   }
 
+  // Deafen: silence every attached remote element (and future ones), and
+  // mute the mic too — deafen implies muted, like every voice app.
+  async function setDeafened(d) {
+    state.deafened = d;
+    audioEls.forEach((el) => (el.muted = d));
+    if (d && !state.muted) await setMuted(true);
+  }
+
+  // Per-friend volume, 0..2 (>1 boosts via the track's own gain).
+  function setVolume(identity, v) {
+    if (!room) return;
+    const p = room.remoteParticipants.get(identity);
+    if (!p) return;
+    p.audioTrackPublications.forEach((pub) => {
+      if (pub.track && pub.track.setVolume) pub.track.setVolume(v);
+    });
+    volumes[identity] = v;
+  }
+  const volumes = {};
+
   function getState() {
     refresh();
     return JSON.stringify(state);
@@ -114,5 +140,5 @@ window.ndVoice = (() => {
 
   // _room is for diagnostics (dev tooling publishes synthetic tracks
   // through it); not part of the app's API.
-  return { join, leave, setMuted, getState, _room: () => room };
+  return { join, leave, setMuted, setDeafened, setVolume, getState, _room: () => room };
 })();
