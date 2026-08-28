@@ -1,0 +1,20 @@
+[package]
+name = "webclient"
+version = "0.1.0"
+edition = "2021"
+
+# The phone/browser client: a lean Dioxus web build that speaks the same API
+# and WebSocket protocol as the desktop client. Text + images first; voice
+# needs the browser's WebRTC path and comes later.
+
+[dependencies]
+shared = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+dioxus = { version = "0.7", features = ["web"] }
+gloo-net = { version = "0.6", default-features = false, features = ["http", "websocket", "json"] }
+gloo-storage = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"

@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.47.0"
+version = "0.47.1"
 edition = "2021"
 
 [dependencies]
@@ -33,4 +33,4 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 fontdue = "0.9.4"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror"] }
+winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase"] }

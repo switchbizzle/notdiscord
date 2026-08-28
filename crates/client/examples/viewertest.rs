@@ -10,7 +10,10 @@ fn fill(latest: &client_share::SharedFrame, color: u32) {
     *latest.lock().unwrap() = Some((w, h, vec![color; (w * h) as usize]));
 }
 
-// The example links the binary crate's module directly.
+// The example links the binary crate's modules directly. share.rs reaches
+// for crate::frames (the capture tee), so that module rides along.
+#[path = "../src/frames.rs"]
+pub mod frames;
 #[path = "../src/share.rs"]
 mod client_share_impl;
 use client_share_impl as client_share;

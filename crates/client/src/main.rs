@@ -57,6 +57,20 @@ fn main() {
     // first setter wins) — otherwise tray menu clicks go nowhere.
     tray::claim_event_handlers();
 
+    // Hold the COM multithreaded apartment open for the process's whole life:
+    // cpal caches WASAPI objects (device enumerator) in the apartment of the
+    // thread that first created them, and if that apartment ever tears down,
+    // later audio opens fail. This parked thread guarantees it never does.
+    std::thread::Builder::new()
+        .name("com-mta-anchor".into())
+        .spawn(|| {
+            voice::com_init_mta();
+            loop {
+                std::thread::park();
+            }
+        })
+        .ok();
+
     // Clean up binaries left behind by self-updates. Old versions staged as
     // NotDiscord.old.exe; current ones use unique names (NotDiscord.old-*.exe)
     // so a locked leftover can never block the next update.
@@ -2056,6 +2070,18 @@ fn MainView(session: api::Session) -> Element {
                                         },
                                     }
                                     " Noise suppression"
+                                }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().auto_gain,
+                                        onchange: move |e| {
+                                            let enabled = e.checked();
+                                            audio_settings.write().auto_gain = enabled;
+                                            voice.send(voice::VoiceCmd::SetAutoGain(enabled));
+                                        },
+                                    }
+                                    " Auto mic level (boosts quiet microphones)"
                                 }
                                 label { "Output volume · {(audio_settings().output_volume * 100.0) as i32}%" }
                                 input {

@@ -60,6 +60,8 @@ pub enum VoiceCmd {
     SetMicVolume(f32),
     SetMasterVolume(f32),
     SetNoiseSuppression(bool),
+    /// Automatic mic gain on/off.
+    SetAutoGain(bool),
     ToggleDeafen,
     /// mode: "vad" | "ptt"; key: device_query Keycode name.
     SetVoiceMode { mode: String, key: String },
@@ -99,6 +101,165 @@ pub const PTT_KEY_CHOICES: &[&str] = &[
 /// ~10x/sec while in a call (the UI maps it to dB). Kept separate from
 /// VoiceStatus so only the meter widget re-renders on ticks.
 pub type MicLevelSignal = Signal<f32, SyncStorage>;
+
+/// WASAPI opens the *default* audio device through ActivateAudioInterfaceAsync,
+/// which Windows only allows from a multithreaded-apartment (MTA) COM thread.
+/// cpal initializes bare threads as STA, so any thread of ours that touches
+/// audio must claim MTA first — otherwise "System default" devices fail with
+/// "Cannot change thread mode after it is set" (RPC_E_CHANGED_MODE).
+#[cfg(windows)]
+pub fn com_init_mta() {
+    use winapi::um::combaseapi::CoInitializeEx;
+    use winapi::um::objbase::COINIT_MULTITHREADED;
+    // Deliberately never CoUninitialize: these are audio worker threads whose
+    // COM use lasts their whole life. An already-STA thread returns
+    // RPC_E_CHANGED_MODE, which we can't fix here — ignore and let the caller
+    // fail with its own error if it comes to that.
+    unsafe {
+        let _ = CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn com_init_mta() {}
+
+/// Runs `f` on a fresh MTA thread and returns its result. For cpal calls made
+/// from async contexts (tokio workers), where we must not leave a COM
+/// apartment mode behind on a shared pooled thread.
+fn on_mta_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std_mpsc::channel();
+    std::thread::spawn(move || {
+        com_init_mta();
+        let _ = tx.send(f());
+    });
+    rx.recv().expect("mta helper thread died")
+}
+
+/// Automatic mic gain: slowly walks quiet speech up toward a comfortable
+/// level, the way every mainstream voice app does. Only adapts on frames
+/// that contain real signal, so silence never gets boosted into hiss.
+pub struct AutoGain {
+    gain: f32,
+}
+
+/// Where speech should sit after AGC, in i16 RMS (≈ -20.7 dBFS).
+const AGC_TARGET_RMS: f64 = 3000.0;
+const AGC_MAX_GAIN: f32 = 16.0;
+/// Frames quieter than this are silence/hiss and never drive adaptation.
+const AGC_SIGNAL_FLOOR: f64 = 60.0;
+
+impl AutoGain {
+    pub fn new() -> Self {
+        Self { gain: 1.0 }
+    }
+
+    /// Feed one 10ms frame's RMS (pre-AGC); returns the gain to apply to it.
+    pub fn feed(&mut self, rms: f64) -> f32 {
+        if rms > AGC_SIGNAL_FLOOR {
+            let boosted = rms * self.gain as f64;
+            if boosted < AGC_TARGET_RMS {
+                // ~6 dB/s upward at 100 frames/s: fast enough to converge in
+                // a few sentences, slow enough not to pump.
+                self.gain = (self.gain * 1.007).min(AGC_MAX_GAIN);
+            } else if boosted > AGC_TARGET_RMS * 2.5 {
+                // Overshot toward clipping — come down much faster.
+                self.gain = (self.gain * 0.97).max(1.0);
+            }
+        }
+        self.gain
+    }
+}
+
+/// Downmix interleaved device channels to mono by taking the STRONGEST
+/// channel over the chunk. Averaging is the obvious move, but some laptop
+/// mic arrays ship out-of-phase channel pairs that cancel to near-silence
+/// when averaged — measured as "my mic barely picks anything up".
+fn downmix_strongest(chunk: &[i16], channels: usize) -> Vec<f32> {
+    if channels <= 1 {
+        return chunk.iter().map(|s| *s as f32).collect();
+    }
+    let mut energy = vec![0f64; channels];
+    for frame in chunk.chunks(channels) {
+        for (ch, s) in frame.iter().enumerate() {
+            energy[ch] += (*s as f64).abs();
+        }
+    }
+    let strongest = energy
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    chunk.chunks(channels).map(|f| *f.get(strongest).unwrap_or(&0) as f32).collect()
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    #[test]
+    fn antiphase_channels_survive_downmix() {
+        // A stereo array sending +x / -x: averaging yields silence, the
+        // strongest-channel downmix keeps the signal whole.
+        let chunk: Vec<i16> = (0..480).flat_map(|i| {
+            let s = (8000.0 * (i as f32 * 0.1).sin()) as i16;
+            [s, -s]
+        }).collect();
+        let mono = downmix_strongest(&chunk, 2);
+        let rms = (mono.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / mono.len() as f64).sqrt();
+        assert!(rms > 4000.0, "signal lost in downmix: rms {rms}");
+    }
+
+    #[test]
+    fn quiet_channel_is_ignored() {
+        // Loud on ch1, near-silent on ch0: pick ch1.
+        let chunk: Vec<i16> = (0..480).flat_map(|_| [10i16, 6000i16]).collect();
+        let mono = downmix_strongest(&chunk, 2);
+        assert!(mono.iter().all(|s| *s == 6000.0));
+    }
+
+    #[test]
+    fn mono_passes_through() {
+        let chunk = vec![100i16, -100, 50];
+        assert_eq!(downmix_strongest(&chunk, 1), vec![100.0, -100.0, 50.0]);
+    }
+
+    #[test]
+    fn agc_boosts_quiet_speech_and_holds_target() {
+        let mut agc = AutoGain::new();
+        // A quiet laptop mic: speech at RMS 250. Feed ~15s of speech frames.
+        let mut gain = 1.0;
+        for _ in 0..1500 {
+            gain = agc.feed(250.0);
+        }
+        let level = 250.0 * gain as f64;
+        assert!(gain > 4.0, "gain only reached {gain}");
+        assert!(level > AGC_TARGET_RMS * 0.6 && level < AGC_TARGET_RMS * 2.5,
+            "landed at {level}");
+    }
+
+    #[test]
+    fn agc_ignores_silence() {
+        let mut agc = AutoGain::new();
+        for _ in 0..2000 {
+            agc.feed(20.0); // below the signal floor
+        }
+        assert_eq!(agc.feed(20.0), 1.0);
+    }
+
+    #[test]
+    fn agc_backs_off_loud_input() {
+        let mut agc = AutoGain::new();
+        for _ in 0..500 {
+            agc.feed(500.0); // gain climbs
+        }
+        let peak = agc.feed(500.0);
+        for _ in 0..500 {
+            agc.feed(20000.0); // suddenly shouting into a hot mic
+        }
+        assert!(agc.feed(20000.0) < peak.min(1.5), "did not back off");
+    }
+}
 
 /// The voice-activity gate, fed one 10ms frame at a time. Opening takes
 /// ATTACK_FRAMES consecutive frames above the threshold (so a keyboard click
@@ -313,6 +474,7 @@ struct ActiveCall {
     mic_gain: Arc<AtomicU32>,
     master_gain: Arc<AtomicU32>,
     ns_enabled: Arc<AtomicBool>,
+    agc_enabled: Arc<AtomicBool>,
     deafened: Arc<AtomicBool>,
     /// True when voice mode is push-to-talk.
     ptt_mode: Arc<AtomicBool>,
@@ -865,6 +1027,14 @@ pub async fn voice_task(
                 settings.noise_suppression = enabled;
                 crate::api::save_settings(&settings);
             }
+            VoiceCmd::SetAutoGain(enabled) => {
+                if let Some(active) = &call {
+                    active.agc_enabled.store(enabled, Ordering::Relaxed);
+                }
+                let mut settings = crate::api::load_settings();
+                settings.auto_gain = enabled;
+                crate::api::save_settings(&settings);
+            }
             VoiceCmd::SetMicVolume(volume) => {
                 let volume = volume.clamp(0.0, 2.0);
                 if let Some(active) = &call {
@@ -908,13 +1078,20 @@ async fn connect(
 
     // ---- Microphone capture ----
     let settings = crate::api::load_settings();
-    let host = cpal::default_host();
-    let mic = pick_input_device(&host, &settings.input_device)
-        .ok_or_else(|| anyhow::anyhow!("no microphone found"))?;
-    let mic_name = device_name(&mic).unwrap_or_else(|| "unknown".into());
-    let mic_config = mic
-        .default_input_config()
-        .map_err(|e| anyhow::anyhow!("cannot open mic '{mic_name}': {e}"))?;
+    // Device + config acquisition happens on an MTA thread: for the default
+    // device this activates WASAPI through a COM call that Windows rejects
+    // from the STA mode cpal would otherwise pin this pooled thread to.
+    let preferred_mic = settings.input_device.clone();
+    let (mic, mic_name, mic_config) = on_mta_thread(move || {
+        let host = cpal::default_host();
+        let mic = pick_input_device(&host, &preferred_mic)
+            .ok_or_else(|| anyhow::anyhow!("no microphone found"))?;
+        let mic_name = device_name(&mic).unwrap_or_else(|| "unknown".into());
+        let mic_config = mic
+            .default_input_config()
+            .map_err(|e| anyhow::anyhow!("cannot open mic '{mic_name}': {e}"))?;
+        Ok::<_, anyhow::Error>((mic, mic_name, mic_config))
+    })?;
     let sample_rate: u32 = mic_config.sample_rate();
     let channels = mic_config.channels() as u32;
 
@@ -945,6 +1122,7 @@ async fn connect(
     let (mic_stop_tx, mic_stop_rx) = std_mpsc::channel::<()>();
     let mic_status = status;
     std::thread::spawn(move || {
+        com_init_mta();
         match build_capture_stream(&mic, &mic_config, frame_tx, mic_status) {
             Ok(stream) => match stream.play() {
                 Ok(()) => {
@@ -970,6 +1148,7 @@ async fn connect(
     let mic_gain = Arc::new(AtomicU32::new(settings.input_volume.clamp(0.0, 2.0).to_bits()));
     let master_gain = Arc::new(AtomicU32::new(settings.output_volume.clamp(0.0, 2.0).to_bits()));
     let ns_enabled = Arc::new(AtomicBool::new(settings.noise_suppression));
+    let agc_enabled = Arc::new(AtomicBool::new(settings.auto_gain));
     let deafened = Arc::new(AtomicBool::new(false));
     let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
     let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
@@ -1009,6 +1188,7 @@ async fn connect(
     let mut pump_status = status;
     let pump_gain = mic_gain.clone();
     let pump_ns = ns_enabled.clone();
+    let pump_agc = agc_enabled.clone();
     let pump_ptt_mode = ptt_mode.clone();
     let pump_ptt_active = ptt_active.clone();
     let pump_vad = vad_threshold.clone();
@@ -1021,16 +1201,14 @@ async fn connect(
         let mut last_sample: f32 = 0.0;
         let step = sample_rate as f64 / NS_RATE as f64;
         let mut gate = VadGate::new();
+        let mut agc = AutoGain::new();
         let mut speaking = false;
         let mut last_meter = std::time::Instant::now() - METER_INTERVAL;
         let mut meter_peak: f64 = 0.0;
 
         while let Some(chunk) = frame_rx.recv().await {
             // Downmix interleaved device channels to mono f32 (i16 scale).
-            let mono: Vec<f32> = chunk
-                .chunks(channels.max(1) as usize)
-                .map(|frame| frame.iter().map(|s| *s as f32).sum::<f32>() / frame.len() as f32)
-                .collect();
+            let mono = downmix_strongest(&chunk, channels.max(1) as usize);
 
             // Resample device rate -> 48kHz (linear; identity when already 48k).
             if sample_rate == NS_RATE {
@@ -1055,6 +1233,21 @@ async fn connect(
                 if (gain - 1.0).abs() > f32::EPSILON {
                     for s in frame.iter_mut() {
                         *s = (*s * gain).clamp(-32768.0, 32767.0);
+                    }
+                }
+
+                // Auto gain runs after the manual knob and before denoise, so
+                // a quiet laptop mic reaches RNNoise (and the gate, and the
+                // wire) at normal speech level.
+                if pump_agc.load(Ordering::Relaxed) {
+                    let raw_rms = (frame.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
+                        / frame.len() as f64)
+                        .sqrt();
+                    let boost = agc.feed(raw_rms);
+                    if boost > 1.0 {
+                        for s in frame.iter_mut() {
+                            *s = (*s * boost).clamp(-32768.0, 32767.0);
+                        }
                     }
                 }
 
@@ -1231,6 +1424,7 @@ async fn connect(
         mic_gain,
         master_gain,
         ns_enabled,
+        agc_enabled,
         deafened,
         ptt_mode,
         vad_threshold,
@@ -1291,6 +1485,7 @@ pub fn default_output_name() -> Option<String> {
 pub fn play_samples_on_voice_output(samples: Vec<f32>, rate: u32) {
     std::thread::spawn(move || {
         use cpal::traits::{DeviceTrait, StreamTrait};
+        com_init_mta();
         let host = cpal::default_host();
         let preferred = crate::api::load_settings().output_device;
         let Some(device) = pick_output_device(&host, &preferred) else {
@@ -1420,6 +1615,7 @@ fn spawn_playback(
     });
 
     std::thread::spawn(move || {
+        com_init_mta();
         let host = cpal::default_host();
         let Some(device) = pick_output_device(&host, &output_device) else {
             status.write().error = "no audio output device found".into();

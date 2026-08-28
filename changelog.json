@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.47.1",
+    "date": "2026-08-27",
+    "changes": [
+      "🎚️ Auto mic level: quiet laptop mics get boosted toward normal speech volume automatically, like Discord does. On by default; toggle in Settings → Voice if you prefer raw",
+      "🎙️ Laptop mic arrays that ship out-of-phase stereo channels no longer cancel themselves to near-silence — we now take the strongest channel instead of averaging",
+      "🔊 Fixed for Jon: \"audio output failed to open: Cannot change thread mode after it is set\". Opening the System-default speaker touches a Windows API that demands a specific COM thread mode, and on some Windows builds it refuses — our audio threads now claim the right mode up front"
+    ]
+  },
+  {
     "version": "0.47.0",
     "date": "2026-08-27",
     "changes": [

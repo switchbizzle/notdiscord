@@ -317,6 +317,10 @@ pub struct Settings {
     /// RNNoise ML noise suppression on the microphone.
     #[serde(default = "yes")]
     pub noise_suppression: bool,
+    /// Automatic mic gain: slowly normalizes quiet mics toward a
+    /// comfortable speech level, like every other voice app.
+    #[serde(default = "yes")]
+    pub auto_gain: bool,
     /// "vad" (voice activity) or "ptt" (push to talk).
     #[serde(default = "vad")]
     pub voice_mode: String,
@@ -369,6 +373,7 @@ pub fn load_settings() -> Settings {
             input_volume: 1.0,
             output_volume: 1.0,
             noise_suppression: true,
+            auto_gain: true,
             voice_mode: vad(),
             ptt_key: default_ptt_key(),
             vad_threshold: default_vad_threshold(),
