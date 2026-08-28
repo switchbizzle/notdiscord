@@ -4,10 +4,12 @@
 
 mod api;
 
+use std::collections::HashMap;
+
 use dioxus::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use gloo_storage::Storage;
-use shared::{Channel, ClientEvent, Message, ServerEvent, UserStatus};
+use shared::{Channel, ClientEvent, Message, MusicState, ServerEvent, User, UserStatus};
 
 const CSS: Asset = asset!("/assets/style.css");
 const SESSION_KEY: &str = "nd_session";
@@ -186,7 +188,34 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut draft = use_signal(String::new);
     let mut status = use_signal(String::new);
     let mut uploading = use_signal(|| false);
+    // The right-side members panel, collapsed by default on a phone.
+    let mut members_open = use_signal(|| false);
+    // "chat" | "music" — the phone works as a remote for the music bot.
+    let mut tab = use_signal(|| "chat");
+    let mut music = use_signal(MusicState::default);
+    // user_id -> voice channel_id, for the 🔊 pills in the members panel.
+    let mut voice_users = use_signal(HashMap::<i64, i64>::new);
     let me_id = sess().user.id;
+
+    let refresh_music = move || {
+        spawn(async move {
+            if let Ok(state) = api::music_state(&sess()).await {
+                music.set(state);
+            }
+        });
+    };
+
+    // While the music tab is up, keep position/queue roughly current.
+    use_future(move || async move {
+        loop {
+            gloo_timers::future::TimeoutFuture::new(4000).await;
+            if *tab.peek() == "music" {
+                if let Ok(state) = api::music_state(&sess()).await {
+                    music.set(state);
+                }
+            }
+        }
+    });
 
     let mut open_channel = move |channel: Channel| {
         let id = channel.id;
@@ -321,6 +350,24 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     m.status = text;
                                 }
                             }
+                            ServerEvent::UserUpdated { user } => {
+                                if let Some(m) = members.write().iter_mut().find(|m| m.user.id == user.id) {
+                                    m.user = user;
+                                }
+                            }
+                            ServerEvent::VoiceSnapshot { entries } => {
+                                voice_users.set(entries.into_iter().map(|e| (e.user.id, e.channel_id)).collect());
+                            }
+                            ServerEvent::VoiceStateChanged { user, channel_id, .. } => {
+                                match channel_id {
+                                    Some(id) => {
+                                        voice_users.write().insert(user.id, id);
+                                    }
+                                    None => {
+                                        voice_users.write().remove(&user.id);
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -339,6 +386,21 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             return;
         }
         draft.set(String::new());
+        // On the music tab a bare link queues instead of chatting, exactly
+        // like the desktop music tab (no spam in the channel).
+        let is_link = (content.starts_with("http://") || content.starts_with("https://"))
+            && !content.contains(' ');
+        if *tab.peek() == "music" && is_link {
+            spawn(async move {
+                if let Err(e) = api::music_play(&sess(), channel.id, content).await {
+                    status.set(e);
+                }
+                if let Ok(s) = api::music_state(&sess()).await {
+                    music.set(s);
+                }
+            });
+            return;
+        }
         ws.send(ClientEvent::SendMessage { channel_id: channel.id, content, reply_to: None });
     };
 
@@ -367,6 +429,23 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             header { class: "topbar",
                 button { class: "burger", onclick: move |_| drawer.set(!drawer()), "☰" }
                 div { class: "topbar-title", "{selected_label}" }
+                button {
+                    class: if tab() == "music" { "topbtn active" } else { "topbtn" },
+                    onclick: move |_| {
+                        if tab() == "music" {
+                            tab.set("chat");
+                        } else {
+                            tab.set("music");
+                            refresh_music();
+                        }
+                    },
+                    if music().active && !music().paused { "🎵•" } else { "🎵" }
+                }
+                button {
+                    class: if members_open() { "topbtn active" } else { "topbtn" },
+                    onclick: move |_| members_open.set(!members_open()),
+                    "👥"
+                }
             }
 
             if drawer() {
@@ -424,13 +503,147 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
             }
 
-            main { class: "messages",
-                // column-reverse pins the view to the newest message.
-                for msg in messages().into_iter().rev() {
-                    MessageRow { key: "{msg.id}", msg }
+            if tab() == "music" {
+                main { class: "music-view",
+                    {
+                        let state = music();
+                        rsx! {
+                            div { class: "np-card",
+                                if let Some(track) = state.now_playing.clone() {
+                                    if let Some(art) = track.art.clone() {
+                                        img { class: "np-art", src: "{art}" }
+                                    }
+                                    div { class: "np-text",
+                                        div { class: "np-title", "{track.title}" }
+                                        if !track.artist.is_empty() {
+                                            div { class: "np-artist", "{track.artist}" }
+                                        }
+                                        if let Some(total) = track.duration {
+                                            div { class: "np-progress",
+                                                div {
+                                                    class: "np-progress-fill",
+                                                    style: "width: {(state.position / total * 100.0).clamp(0.0, 100.0)}%",
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    div { class: "np-empty",
+                                        "Nothing playing — paste a link below. The music plays in the voice channel, so this works as a remote."
+                                    }
+                                }
+                            }
+                            if state.active {
+                                div { class: "music-controls",
+                                    button {
+                                        class: "mbtn",
+                                        onclick: move |_| {
+                                            let action = if music.peek().paused { "resume" } else { "pause" };
+                                            spawn(async move {
+                                                if let Err(e) = api::music_control(&sess(), action).await {
+                                                    status.set(e);
+                                                }
+                                                if let Ok(s) = api::music_state(&sess()).await {
+                                                    music.set(s);
+                                                }
+                                            });
+                                        },
+                                        if state.paused { "▶" } else { "⏸" }
+                                    }
+                                    button {
+                                        class: "mbtn",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                let _ = api::music_control(&sess(), "skip").await;
+                                                if let Ok(s) = api::music_state(&sess()).await {
+                                                    music.set(s);
+                                                }
+                                            });
+                                        },
+                                        "⏭"
+                                    }
+                                    button {
+                                        class: "mbtn stop",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                let _ = api::music_control(&sess(), "stop").await;
+                                                if let Ok(s) = api::music_state(&sess()).await {
+                                                    music.set(s);
+                                                }
+                                            });
+                                        },
+                                        "⏹"
+                                    }
+                                }
+                            }
+                            div { class: "queue-head", "Up next" }
+                            if state.queue.is_empty() {
+                                div { class: "np-empty", "queue's empty" }
+                            }
+                            for track in state.queue.clone() {
+                                div { key: "{track.id}", class: "queue-row",
+                                    div { class: "queue-title", "{track.title}" }
+                                    button {
+                                        class: "queue-x",
+                                        onclick: {
+                                            let id = track.id;
+                                            move |_| {
+                                                spawn(async move {
+                                                    let _ = api::music_queue(&sess(), shared::MusicQueueRequest {
+                                                        action: "remove".into(),
+                                                        id: None,
+                                                        offset: None,
+                                                        ids: vec![id],
+                                                    }).await;
+                                                    if let Ok(s) = api::music_state(&sess()).await {
+                                                        music.set(s);
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        "✕"
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                if has_more() {
-                    button { class: "load-older", onclick: load_older, "Load older messages" }
+            } else {
+                main { class: "messages",
+                    // column-reverse pins the view to the newest message.
+                    for msg in messages().into_iter().rev() {
+                        MessageRow { key: "{msg.id}", msg }
+                    }
+                    if has_more() {
+                        button { class: "load-older", onclick: load_older, "Load older messages" }
+                    }
+                }
+            }
+
+            if members_open() {
+                div { class: "drawer-overlay", onclick: move |_| members_open.set(false) }
+                aside { class: "members-panel",
+                    div { class: "drawer-section", "Members" }
+                    for member in members() {
+                        div { key: "m{member.user.id}", class: "member-row",
+                            Avatar { user: member.user.clone() }
+                            div { class: "member-col",
+                                div { class: "member-line",
+                                    span { class: "member-name", "{member.user.username}" }
+                                    if member.user.role == "admin" {
+                                        span { class: "role-badge", "ADMIN" }
+                                    }
+                                    if voice_users().contains_key(&member.user.id) {
+                                        span { class: "voice-pill", "🔊" }
+                                    }
+                                }
+                                if let Some(text) = member.status.clone() {
+                                    div { class: "member-status", "{text}" }
+                                }
+                            }
+                            span { class: if member.online { "dot online" } else { "dot" } }
+                        }
+                    }
                 }
             }
 
@@ -469,7 +682,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
                 input {
                     class: "draft",
-                    placeholder: "Message",
+                    placeholder: if tab() == "music" { "Paste a link to queue it" } else { "Message" },
                     value: "{draft}",
                     oninput: move |e| draft.set(e.value()),
                     onkeydown: move |e| {
@@ -481,6 +694,21 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 button { class: "send", onclick: move |_| send(()), "➤" }
             }
         }
+    }
+}
+
+#[component]
+fn Avatar(user: User) -> Element {
+    let hue = (user.id * 137) % 360;
+    match user.avatar.clone() {
+        Some(url) => rsx! { img { class: "avatar", src: "{url}" } },
+        None => rsx! {
+            div {
+                class: "avatar initial",
+                style: "background: hsl({hue}, 55%, 45%)",
+                {user.username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()}
+            }
+        },
     }
 }
 

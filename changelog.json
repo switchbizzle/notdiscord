@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.49.0",
+    "date": "2026-08-28",
+    "changes": [
+      "📱 Web app round two: the 👥 button slides in a members panel (avatars, ADMIN badges, statuses, online dots, and a 🔊 for whoever's in voice), and the 🎵 button opens a Music tab — now playing with art and progress, pause/skip/stop, the queue with remove, and paste-a-link-to-queue. Your phone is now the couch remote for the music bot",
+      "Voice on the phone is the next big one — it needs the browser's own WebRTC stack, so it gets its own release"
+    ]
+  },
+  {
     "version": "0.48.1",
     "date": "2026-08-27",
     "changes": [

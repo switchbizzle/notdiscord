@@ -107,6 +107,42 @@ pub async fn mark_read(session: &Session, channel_id: i64, message_id: i64) {
     }
 }
 
+pub async fn music_state(session: &Session) -> Result<shared::MusicState, String> {
+    get(session, "music/state").await
+}
+
+async fn post_ok(session: &Session, path: &str, body: &impl serde::Serialize, fallback: &str) -> Result<(), String> {
+    let resp = Request::post(&format!("/api/{path}"))
+        .header("Authorization", &format!("Bearer {}", session.token))
+        .json(body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.ok() {
+        Ok(())
+    } else {
+        match resp.json::<ApiError>().await {
+            Ok(e) => Err(e.error),
+            Err(_) => Err(fallback.into()),
+        }
+    }
+}
+
+/// Queue a link (the bot announces it in the given channel).
+pub async fn music_play(session: &Session, channel_id: i64, url: String) -> Result<(), String> {
+    post_ok(session, "music/play", &shared::MusicPlayRequest { channel_id, url }, "could not queue that link").await
+}
+
+/// "pause", "resume", "skip", "stop".
+pub async fn music_control(session: &Session, action: &str) -> Result<(), String> {
+    post_ok(session, "music/control", &shared::MusicControlRequest { action: action.into() }, "control failed").await
+}
+
+pub async fn music_queue(session: &Session, req: shared::MusicQueueRequest) -> Result<(), String> {
+    post_ok(session, "music/queue", &req, "queue edit failed").await
+}
+
 /// Raw-bytes upload; returns the server-relative /files/ URL.
 pub async fn upload(session: &Session, name: &str, bytes: Vec<u8>) -> Result<String, String> {
     let array = js_sys::Uint8Array::from(bytes.as_slice());
