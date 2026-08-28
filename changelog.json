@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.52.1",
+    "date": "2026-08-28",
+    "changes": [
+      "Stickers and custom emojis no longer clutter the Files panel — it lists files people actually shared. (And no, sending a sticker never made a new file: the image uploads once when the sticker is created, every send reuses it)"
+    ]
+  },
+  {
     "version": "0.52.0",
     "date": "2026-08-28",
     "changes": [

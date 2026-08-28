@@ -2098,6 +2098,18 @@ pub async fn channel_files(
     .await
     .map_err(internal)?;
 
+    // Stickers and custom emojis live in /files/ too, but they're decoration,
+    // not shared files — using one shouldn't put it in the Files panel.
+    let mut decoration = std::collections::HashSet::new();
+    for table in ["SELECT url FROM stickers", "SELECT url FROM custom_emojis"] {
+        for row in sqlx::query(table).fetch_all(&state.db).await.map_err(internal)? {
+            let url: String = row.get(0);
+            if let Some(idx) = url.find("/files/") {
+                decoration.insert(url[idx..].to_owned());
+            }
+        }
+    }
+
     let uploads = crate::uploads_dir();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -2112,7 +2124,7 @@ pub async fn channel_files(
                 continue;
             }
             let rel = &token[idx..];
-            if !seen.insert(rel.to_owned()) {
+            if decoration.contains(rel) || !seen.insert(rel.to_owned()) {
                 continue;
             }
             // Message content is user text: re-validate exactly like the
