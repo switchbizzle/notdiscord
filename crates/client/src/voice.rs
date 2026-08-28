@@ -1202,7 +1202,6 @@ async fn connect(
         let step = sample_rate as f64 / NS_RATE as f64;
         let mut gate = VadGate::new();
         let mut agc = AutoGain::new();
-        let mut speaking = false;
         let mut last_meter = std::time::Instant::now() - METER_INTERVAL;
         let mut meter_peak: f64 = 0.0;
 
@@ -1270,7 +1269,11 @@ async fn connect(
                     meter_peak = 0.0;
                 }
                 let gate_threshold = f32::from_bits(pump_vad.load(Ordering::Relaxed)) as f64;
-                let (vad_open, voice_recent) = gate.feed(rms, gate_threshold, now);
+                // The gate only decides what gets TRANSMITTED. The speaking
+                // ring (yours included) comes from LiveKit's ActiveSpeakers,
+                // judged from the audio that actually goes out — so the ring
+                // can never disagree with what people hear.
+                let (vad_open, _voice_recent) = gate.feed(rms, gate_threshold, now);
                 let muted = pump_status.peek().muted;
                 let gate_open = if pump_ptt_mode.load(Ordering::Relaxed) {
                     pump_ptt_active.load(Ordering::Relaxed)
@@ -1278,14 +1281,6 @@ async fn connect(
                     vad_open
                 };
                 let transmitting = !muted && gate_open;
-                let now_speaking = transmitting && voice_recent;
-                if now_speaking != speaking {
-                    speaking = now_speaking;
-                    let mut s = pump_status.write();
-                    if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
-                        me.speaking = speaking;
-                    }
-                }
 
                 // In PTT mode with the key up, send nothing at all.
                 if !transmitting {
@@ -1400,8 +1395,12 @@ async fn connect(
                         speakers.iter().map(|p| p.identity().to_string()).collect();
                     let mut s = status;
                     let mut st = s.write();
-                    // Local speaking is driven by the mic-level detector.
-                    for p in st.participants.iter_mut().filter(|p| !p.is_me) {
+                    // EVERY ring — including your own — follows LiveKit's
+                    // read of the audio actually on the wire. The local
+                    // mic-gate heuristic used to drive the self ring and
+                    // kept disagreeing with what people really heard; the
+                    // web client always did it this way and was right.
+                    for p in st.participants.iter_mut() {
                         p.speaking = speaking.contains(&p.identity);
                     }
                 }

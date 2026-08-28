@@ -112,5 +112,7 @@ window.ndVoice = (() => {
     return JSON.stringify(state);
   }
 
-  return { join, leave, setMuted, getState };
+  // _room is for diagnostics (dev tooling publishes synthetic tracks
+  // through it); not part of the app's API.
+  return { join, leave, setMuted, getState, _room: () => room };
 })();

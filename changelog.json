@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.50.1",
+    "date": "2026-08-28",
+    "changes": [
+      "💚 Speaking rings on desktop now work like the phone's (which switchb noticed were more accurate): every ring — including your own — follows the server's reading of the audio actually being transmitted, instead of a local guess. If your ring is lit, people can hear you; if it isn't, they can't. Measured: lights ~0.7s after you start talking, clears ~1.2s after you stop"
+    ]
+  },
+  {
     "version": "0.50.0",
     "date": "2026-08-28",
     "changes": [
