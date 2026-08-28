@@ -111,6 +111,10 @@ pub async fn music_state(session: &Session) -> Result<shared::MusicState, String
     get(session, "music/state").await
 }
 
+pub async fn voice_token(session: &Session, channel_id: i64) -> Result<shared::VoiceTokenResponse, String> {
+    get(session, &format!("voice/token?channel_id={channel_id}")).await
+}
+
 async fn post_ok(session: &Session, path: &str, body: &impl serde::Serialize, fallback: &str) -> Result<(), String> {
     let resp = Request::post(&format!("/api/{path}"))
         .header("Authorization", &format!("Bearer {}", session.token))

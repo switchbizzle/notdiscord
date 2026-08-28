@@ -3,13 +3,48 @@
 //! later. Served by the server itself at /app, installable as a PWA.
 
 mod api;
+mod icons;
 
 use std::collections::HashMap;
 
 use dioxus::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use gloo_storage::Storage;
+use icons::Icon;
+use serde::Deserialize;
 use shared::{Channel, ClientEvent, Message, MusicState, ServerEvent, User, UserStatus};
+use wasm_bindgen::prelude::*;
+
+// The voice glue (pwa/voice.js) wraps livekit-client; state comes back as
+// JSON by polling, so nothing async crosses the wasm boundary except calls.
+#[wasm_bindgen(js_namespace = ndVoice)]
+extern "C" {
+    #[wasm_bindgen(js_name = join)]
+    fn voice_join_js(url: &str, token: &str) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = leave)]
+    fn voice_leave_js() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = setMuted)]
+    fn voice_set_muted_js(muted: bool) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = getState)]
+    fn voice_get_state_js() -> String;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+struct VoicePeer {
+    identity: String,
+    name: String,
+    speaking: bool,
+    local: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+struct VoiceGlue {
+    connected: bool,
+    connecting: bool,
+    error: String,
+    muted: bool,
+    participants: Vec<VoicePeer>,
+}
 
 const CSS: Asset = asset!("/assets/style.css");
 const SESSION_KEY: &str = "nd_session";
@@ -96,6 +131,9 @@ fn App() -> Element {
         document::Script {
             "if ('serviceWorker' in navigator) {{ navigator.serviceWorker.register('/app/sw.js', {{ scope: '/app/' }}); }}"
         }
+        // livekit-client + our glue, self-hosted next to the bundle.
+        document::Script { src: "/app/livekit-client.umd.min.js" }
+        document::Script { src: "/app/voice.js" }
         if session().is_some() {
             Main { session }
         } else {
@@ -195,7 +233,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut music = use_signal(MusicState::default);
     // user_id -> voice channel_id, for the 🔊 pills in the members panel.
     let mut voice_users = use_signal(HashMap::<i64, i64>::new);
+    // The voice channel THIS device is connected to (id, name), plus the
+    // glue's live view of the room.
+    let mut voice_conn = use_signal(|| None::<(i64, String)>);
+    let mut voice_glue = use_signal(VoiceGlue::default);
     let me_id = sess().user.id;
+
 
     let refresh_music = move || {
         spawn(async move {
@@ -284,6 +327,17 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             };
             status.set(String::new());
             let (mut sink, stream) = socket.split();
+            // A reconnect wiped our server-side voice presence (it's
+            // connection-scoped) — re-announce if we're still in a call.
+            if let Some((id, _)) = voice_conn.peek().clone() {
+                if let Ok(text) = serde_json::to_string(&ClientEvent::VoiceState {
+                    channel_id: Some(id),
+                    sharing: false,
+                    camera: false,
+                }) {
+                    let _ = sink.send(gloo_net::websocket::Message::Text(text)).await;
+                }
+            }
             // select! needs fused streams; the coroutine receiver already is.
             let mut stream = stream.fuse();
             loop {
@@ -379,6 +433,65 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         }
     });
 
+    // Poll the JS glue while in a call: speaking rings, errors, and dropped
+    // connections all surface here.
+    use_future(move || async move {
+        loop {
+            gloo_timers::future::TimeoutFuture::new(700).await;
+            if voice_conn.peek().is_none() {
+                continue;
+            }
+            let Ok(state) = serde_json::from_str::<VoiceGlue>(&voice_get_state_js()) else {
+                continue;
+            };
+            let dropped = !state.connected && !state.connecting;
+            if *voice_glue.peek() != state {
+                voice_glue.set(state);
+            }
+            if dropped {
+                voice_conn.set(None);
+                status.set("voice disconnected".into());
+                ws.send(ClientEvent::VoiceState { channel_id: None, sharing: false, camera: false });
+            }
+        }
+    });
+
+    let join_voice = move |channel: Channel| {
+        spawn(async move {
+            status.set(String::new());
+            match api::voice_token(&sess(), channel.id).await {
+                Ok(grant) => {
+                    let _ = wasm_bindgen_futures::JsFuture::from(voice_join_js(&grant.url, &grant.token)).await;
+                    let state: VoiceGlue =
+                        serde_json::from_str(&voice_get_state_js()).unwrap_or_default();
+                    if state.connected {
+                        voice_conn.set(Some((channel.id, channel.name.clone())));
+                        drawer.set(false);
+                        ws.send(ClientEvent::VoiceState {
+                            channel_id: Some(channel.id),
+                            sharing: false,
+                            camera: false,
+                        });
+                    }
+                    if !state.error.is_empty() {
+                        status.set(state.error.clone());
+                    }
+                    voice_glue.set(state);
+                }
+                Err(e) => status.set(e),
+            }
+        });
+    };
+
+    let leave_voice = move |_| {
+        spawn(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(voice_leave_js()).await;
+            voice_conn.set(None);
+            voice_glue.set(VoiceGlue::default());
+            ws.send(ClientEvent::VoiceState { channel_id: None, sharing: false, camera: false });
+        });
+    };
+
     let mut send = move |_| {
         let content = draft().trim().to_owned();
         let Some(channel) = selected() else { return };
@@ -418,6 +531,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         });
     };
 
+    let mic_icon: &'static str = if voice_glue().muted { "mic-off" } else { "mic" };
     let selected_label = match selected() {
         Some(c) if c.kind == "dm" => format!("@{}", dm_peer(&c, me_id)),
         Some(c) => format!("# {}", c.name),
@@ -427,7 +541,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     rsx! {
         div { class: "app",
             header { class: "topbar",
-                button { class: "burger", onclick: move |_| drawer.set(!drawer()), "☰" }
+                button { class: "burger", onclick: move |_| drawer.set(!drawer()), Icon { name: "menu", size: 20 } }
                 div { class: "topbar-title", "{selected_label}" }
                 button {
                     class: if tab() == "music" { "topbtn active" } else { "topbtn" },
@@ -439,12 +553,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             refresh_music();
                         }
                     },
-                    if music().active && !music().paused { "🎵•" } else { "🎵" }
+                    Icon { name: "music", size: 18 }
+                    if music().active && !music().paused {
+                        span { class: "live-dot" }
+                    }
                 }
                 button {
                     class: if members_open() { "topbtn active" } else { "topbtn" },
                     onclick: move |_| members_open.set(!members_open()),
-                    "👥"
+                    Icon { name: "user", size: 18 }
                 }
             }
 
@@ -462,6 +579,36 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 move |_| open_channel(channel.clone())
                             },
                             "# {channel.name}"
+                        }
+                    }
+                    div { class: "drawer-section", "Voice" }
+                    for channel in channels().into_iter().filter(|c| c.kind == "voice") {
+                        {
+                            let here: Vec<String> = voice_users()
+                                .iter()
+                                .filter(|(_, chan)| **chan == channel.id)
+                                .filter_map(|(uid, _)| {
+                                    members().iter().find(|m| m.user.id == *uid).map(|m| m.user.username.clone())
+                                })
+                                .collect();
+                            let in_this = voice_conn().map(|(id, _)| id) == Some(channel.id);
+                            let channel_for_join = channel.clone();
+                            rsx! {
+                                button {
+                                    key: "v{channel.id}",
+                                    class: if in_this { "drawer-chan active" } else { "drawer-chan" },
+                                    onclick: move |_| {
+                                        if voice_conn.peek().as_ref().map(|(id, _)| *id) != Some(channel_for_join.id) {
+                                            join_voice(channel_for_join.clone());
+                                        }
+                                    },
+                                    Icon { name: "volume", size: 15 }
+                                    span { class: "person-name", "{channel.name}" }
+                                    if !here.is_empty() {
+                                        span { class: "person-status", {here.join(", ")} }
+                                    }
+                                }
+                            }
                         }
                     }
                     div { class: "drawer-section", "People" }
@@ -507,6 +654,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 main { class: "music-view",
                     {
                         let state = music();
+                        let play_icon: &'static str = if state.paused { "play" } else { "pause" };
                         rsx! {
                             div { class: "np-card",
                                 if let Some(track) = state.now_playing.clone() {
@@ -548,7 +696,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 }
                                             });
                                         },
-                                        if state.paused { "▶" } else { "⏸" }
+                                        Icon { name: play_icon, size: 18 }
                                     }
                                     button {
                                         class: "mbtn",
@@ -560,7 +708,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 }
                                             });
                                         },
-                                        "⏭"
+                                        Icon { name: "skip", size: 18 }
                                     }
                                     button {
                                         class: "mbtn stop",
@@ -572,7 +720,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 }
                                             });
                                         },
-                                        "⏹"
+                                        Icon { name: "stop", size: 18 }
                                     }
                                 }
                             }
@@ -601,7 +749,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 });
                                             }
                                         },
-                                        "✕"
+                                        Icon { name: "x", size: 14 }
                                     }
                                 }
                             }
@@ -634,7 +782,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         span { class: "role-badge", "ADMIN" }
                                     }
                                     if voice_users().contains_key(&member.user.id) {
-                                        span { class: "voice-pill", "🔊" }
+                                        span { class: "voice-pill", Icon { name: "volume", size: 13 } }
                                     }
                                 }
                                 if let Some(text) = member.status.clone() {
@@ -643,6 +791,37 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                             span { class: if member.online { "dot online" } else { "dot" } }
                         }
+                    }
+                }
+            }
+
+            if let Some((_, chan_name)) = voice_conn() {
+                div { class: "voice-bar",
+                    Icon { name: "volume", size: 16 }
+                    div { class: "voice-bar-info",
+                        div { class: "voice-bar-chan", "{chan_name}" }
+                        div { class: "voice-bar-peers",
+                            for p in voice_glue().participants {
+                                span {
+                                    key: "{p.identity}",
+                                    class: if p.speaking { "peer speaking" } else { "peer" },
+                                    "{p.name}"
+                                }
+                            }
+                        }
+                    }
+                    button {
+                        class: if voice_glue().muted { "vbtn muted" } else { "vbtn" },
+                        onclick: move |_| {
+                            let now_muted = !voice_glue.peek().muted;
+                            spawn(async move {
+                                let _ = wasm_bindgen_futures::JsFuture::from(voice_set_muted_js(now_muted)).await;
+                            });
+                        },
+                        Icon { name: mic_icon, size: 16 }
+                    }
+                    button { class: "vbtn leave", onclick: leave_voice,
+                        Icon { name: "phone-off", size: 16 }
                     }
                 }
             }
@@ -678,7 +857,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             });
                         },
                     }
-                    if uploading() { "…" } else { "+" }
+                    if uploading() {
+                        "…"
+                    } else {
+                        Icon { name: "plus", size: 18 }
+                    }
                 }
                 input {
                     class: "draft",
@@ -691,7 +874,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         }
                     },
                 }
-                button { class: "send", onclick: move |_| send(()), "➤" }
+                button { class: "send", onclick: move |_| send(()), Icon { name: "send", size: 16 } }
             }
         }
     }
@@ -742,7 +925,10 @@ fn MessageRow(msg: Message) -> Element {
                 video { key: "v{i}", class: "msg-video", src: "{src}", controls: true, preload: "metadata" }
             }
             for (i, (url, name)) in files.into_iter().enumerate() {
-                a { key: "f{i}", class: "msg-file", href: "{url}", target: "_blank", "📎 {name}" }
+                a { key: "f{i}", class: "msg-file", href: "{url}", target: "_blank",
+                    Icon { name: "file", size: 14 }
+                    " {name}"
+                }
             }
         }
     }

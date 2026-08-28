@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.50.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🎙️ VOICE ON YOUR PHONE. The web app's menu has a Voice section — tap the channel, allow the mic, and you're in the call with everyone on desktop. A bar above the message box shows who's talking, with mute and hang-up. If you deny the mic you still join listening-only",
+      "📱 The web app now uses the same icons as the desktop app (Jon's ask) — menu, music, members, send, transport, all of it. One icon set, one app",
+      "Phone voice is audio-only for now: no screen share or camera from the browser yet, and no music-bot volume slider — those are next"
+    ]
+  },
+  {
     "version": "0.49.0",
     "date": "2026-08-28",
     "changes": [
