@@ -7,6 +7,7 @@ mod preview;
 mod push;
 mod ratelimit;
 mod routes;
+mod spotify;
 mod thumbs;
 mod voice_sync;
 mod ws;

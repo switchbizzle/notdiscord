@@ -45,6 +45,11 @@ struct Track {
     /// Seconds, when yt-dlp knows.
     #[serde(default)]
     duration: Option<f64>,
+    /// True when the metadata above came from somewhere better than the
+    /// audio source — a Spotify link knows the real title, and whatever
+    /// SoundCloud upload we end up playing shouldn't rename it.
+    #[serde(default)]
+    meta_locked: bool,
 }
 
 fn next_track_id() -> u64 {
@@ -111,20 +116,8 @@ fn music_bitrate() -> u64 {
         .unwrap_or(128_000)
 }
 
-/// A SoundCloud cookie file (Netscape format), which is what the crew's old
-/// bot used and worth having.
-///
-/// Measured, because the mechanism isn't the obvious one: signing in does NOT
-/// add higher streaming renditions — 160k AAC is the public ceiling either
-/// way. What it adds, on tracks where the artist enabled downloads, is the
-/// `download` format: the artist's original file. On the Flume re-work of
-/// Seekae's "Test & Recognise" that's 13.2 MB against 5.8 MB for the best
-/// public rendition, so roughly 320k against 160k. yt-dlp's own "bestaudio"
-/// picks it without help. Tracks with downloads disabled see no difference,
-/// which is why a single track is a bad way to test this.
-/// A cookie file handed over by the server (admins paste one in settings),
-/// written to disk once so yt-dlp can read it. Falls back to the file named
-/// by SOUNDCLOUD_COOKIES, which is how our own deployment supplies it.
+/// A cookie file handed over by the server (admins paste one into settings),
+/// written to disk once so yt-dlp can read it.
 static COOKIE_FILE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
     std::sync::OnceLock::new();
 
@@ -151,6 +144,18 @@ fn set_cookies(contents: Option<&str>) {
     }
 }
 
+/// The `--cookies` arguments for yt-dlp, if this server has a SoundCloud
+/// login to offer: the one an admin pasted, else the file named by
+/// SOUNDCLOUD_COOKIES, which is how our own deployment supplies it.
+///
+/// Worth having, though the mechanism isn't the obvious one — measured:
+/// signing in does NOT add higher streaming renditions, since 160k AAC is the
+/// public ceiling either way. What it adds, on tracks where the artist enabled
+/// downloads, is the `download` format: the artist's original file. On the
+/// Flume re-work of Seekae's "Test & Recognise" that's 13.2 MB against 5.8 MB
+/// for the best public rendition, so roughly 320k against 160k. yt-dlp's own
+/// "bestaudio" picks it without help. Tracks with downloads disabled see no
+/// difference, which is why a single track is a bad way to test this.
 fn cookie_args() -> Vec<String> {
     if let Some(path) = cookie_slot().lock().unwrap().clone() {
         if path.exists() {
@@ -221,6 +226,24 @@ struct PlayRequest {
     /// server rather than baked into this container.
     #[serde(default)]
     cookies: Option<String>,
+    /// Tracks the server already worked out (Spotify links), to queue
+    /// instead of asking yt-dlp what `url` is. Each carries a search phrase;
+    /// the audio is found on SoundCloud when the track comes up.
+    #[serde(default)]
+    plan: Vec<PlannedTrack>,
+}
+
+/// One song the server knows about but hasn't found audio for yet.
+#[derive(Deserialize)]
+struct PlannedTrack {
+    query: String,
+    title: String,
+    #[serde(default)]
+    artist: String,
+    #[serde(default)]
+    art: Option<String>,
+    #[serde(default)]
+    duration: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -236,9 +259,13 @@ async fn play(
     // The server owns this setting; every request restates it, so clearing
     // it in settings takes effect on the next song.
     set_cookies(req.cookies.as_deref());
-    let tracks = resolve_tracks(&req.url)
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("could not resolve that link: {e}")))?;
+    let tracks = if req.plan.is_empty() {
+        resolve_tracks(&req.url)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("could not resolve that link: {e}")))?
+    } else {
+        req.plan.iter().map(planned_to_track).collect()
+    };
     if tracks.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "no playable tracks in that link".into()));
     }
@@ -434,6 +461,7 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
                 artist: entry["uploader"].as_str().unwrap_or_default().to_owned(),
                 art: best_thumbnail(entry),
                 duration: entry["duration"].as_f64(),
+                meta_locked: false,
             });
         }
     } else {
@@ -444,9 +472,107 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
             artist: info["uploader"].as_str().unwrap_or_default().to_owned(),
             art: best_thumbnail(&info),
             duration: info["duration"].as_f64(),
+            meta_locked: false,
         });
     }
     Ok(tracks)
+}
+
+/// A song the server described becomes a queue entry whose "url" is a search
+/// to run later. Resolving every track up front would make a 50-song playlist
+/// take a minute to start, and most of that work would be for songs nobody
+/// waits around for.
+fn planned_to_track(planned: &PlannedTrack) -> Track {
+    Track {
+        id: next_track_id(),
+        url: format!("{SEARCH_PREFIX}{}", planned.query),
+        title: planned.title.clone(),
+        artist: planned.artist.clone(),
+        art: planned.art.clone(),
+        duration: planned.duration,
+        meta_locked: true,
+    }
+}
+
+/// Marks a queue entry as "find this on SoundCloud when it comes up".
+const SEARCH_PREFIX: &str = "ndsearch:";
+
+/// How many search hits to consider, and how many we will try to play before
+/// giving up on a song.
+/// Ten, not five: the top hits for anything on a label are SoundCloud's own
+/// Go+ uploads, which are DRM protected and refuse to play. The playable
+/// copies of a well-known song sit further down the list. Measured on
+/// "deadmau5 Strobe": positions 0-2 are all DRM, the first playable copy of
+/// the right length is number six.
+const SEARCH_WIDTH: usize = 10;
+const SEARCH_ATTEMPTS: usize = 4;
+
+/// How far a candidate's length may sit from the one we're looking for and
+/// still be the same song. Wide enough for a fade-out or a tacked-on outro,
+/// narrow enough to reject the 8-minute remix and the 30-second preview.
+const DURATION_TOLERANCE: f64 = 20.0;
+
+/// Find a SoundCloud page for a song we only know by name. Length is the
+/// tiebreaker: the top text match is often a cover, a sped-up edit, or a
+/// mix that happens to mention the title, and all of those miss badly.
+async fn search_soundcloud(query: &str, want: Option<f64>) -> anyhow::Result<Vec<String>> {
+    let cmd = ytdlp_cmd();
+    let output = Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .args(cookie_args())
+        .args(["-J", "--flat-playlist", "--no-warnings", &format!("scsearch{SEARCH_WIDTH}:{query}")])
+        .stdin(Stdio::null())
+        .output()
+        .await?;
+    if !output.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("search failed"));
+    }
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let ranked = rank_candidates(&search_candidates(&info), want);
+    if ranked.is_empty() {
+        anyhow::bail!("nothing on SoundCloud for that");
+    }
+    Ok(ranked)
+}
+
+/// The (url, seconds) pairs a flat search returns.
+fn search_candidates(info: &serde_json::Value) -> Vec<(String, Option<f64>)> {
+    info["entries"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|e| {
+                    let url = e["url"].as_str().or(e["webpage_url"].as_str())?;
+                    Some((url.to_owned(), e["duration"].as_f64()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Order the search hits by how likely each is to be the song we asked for.
+/// When the length is known, uploads that match it lead — the top text hit is
+/// so often a sped-up edit or an hour-long mix that mentions the title. The
+/// rest follow in the search engine's own order, because a candidate can
+/// still fall over at play time: SoundCloud's Go+ catalogue is DRM protected,
+/// and the caller works down this list until something actually plays.
+fn rank_candidates(candidates: &[(String, Option<f64>)], want: Option<f64>) -> Vec<String> {
+    let Some(want) = want else {
+        return candidates.iter().map(|(url, _)| url.clone()).collect();
+    };
+    let delta = |d: Option<f64>| (d.unwrap_or(f64::INFINITY) - want).abs();
+    let mut close: Vec<&(String, Option<f64>)> =
+        candidates.iter().filter(|(_, d)| delta(*d) <= DURATION_TOLERANCE).collect();
+    close.sort_by(|a, b| delta(a.1).total_cmp(&delta(b.1)));
+    let mut ranked: Vec<String> = close.iter().map(|(url, _)| url.clone()).collect();
+    let rest: Vec<String> = candidates
+        .iter()
+        .filter(|(url, _)| !ranked.contains(url))
+        .map(|(url, _)| url.clone())
+        .collect();
+    ranked.extend(rest);
+    ranked
 }
 
 /// The biggest thumbnail that isn't enormous — cover art for the music tab.
@@ -514,6 +640,19 @@ async fn ytdlp_resolve(page_url: &str, cookies: Vec<String>) -> anyhow::Result<s
         .stdin(Stdio::null())
         .output()
         .await?)
+}
+
+/// Work down a candidate list until one actually plays. The best guess can
+/// still be a DRM protected Go+ upload or a dead link, and the next one
+/// usually is not.
+async fn first_playable(candidates: &[String]) -> Option<(String, Resolved)> {
+    for page_url in candidates.iter().take(SEARCH_ATTEMPTS) {
+        match resolve_stream(page_url).await {
+            Ok(resolved) => return Some((page_url.clone(), resolved)),
+            Err(e) => tracing::warn!("candidate unplayable ({page_url}): {e}"),
+        }
+    }
+    None
 }
 
 /// Resolve one track page to (title, direct stream URL).
@@ -603,28 +742,46 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         let Some(track) = next else { break };
 
         controls.skip.store(false, Ordering::Relaxed);
-        // Resolve the stream (and the real title — flat playlist entries
-        // often only carry URLs) before announcing.
-        match resolve_stream(&track.url).await {
-            Ok(resolved) => {
+        // A planned track only knows what to search for; find pages for it.
+        let candidates = match track.url.strip_prefix(SEARCH_PREFIX) {
+            None => Ok(vec![track.url.clone()]),
+            Some(query) => search_soundcloud(query, track.duration).await,
+        };
+        let candidates = match candidates {
+            Ok(urls) => urls,
+            Err(e) => {
+                tracing::warn!("could not find {}: {e}", track.title);
+                continue;
+            }
+        };
+        match first_playable(&candidates).await {
+            Some((page_url, resolved)) => {
+                // A Spotify link already knew the title; whatever upload we
+                // found shouldn't rename the song mid-queue.
                 let playing = Track {
                     id: track.id,
-                    url: track.url.clone(),
-                    title: resolved.title.clone(),
-                    artist: if resolved.artist.is_empty() { track.artist.clone() } else { resolved.artist },
-                    art: resolved.art.or(track.art.clone()),
+                    url: page_url.clone(),
+                    title: if track.meta_locked { track.title.clone() } else { resolved.title.clone() },
+                    artist: if track.meta_locked || !track.artist.is_empty() && resolved.artist.is_empty() {
+                        track.artist.clone()
+                    } else {
+                        resolved.artist
+                    },
+                    art: if track.meta_locked { track.art.clone().or(resolved.art) } else { resolved.art.or(track.art.clone()) },
                     duration: resolved.duration.or(track.duration),
+                    meta_locked: track.meta_locked,
                 };
+                let announce = playing.title.clone();
                 controls.position_ms.store(0, Ordering::Relaxed);
                 if let Some(session) = state.session.lock().unwrap().as_mut() {
                     session.now_playing = Some(playing);
                 }
-                tracing::info!("playing: {}", resolved.title);
+                tracing::info!("playing: {announce}");
                 if let Err(e) = stream_pcm(&source, &resolved.stream, &controls).await {
-                    tracing::warn!("track failed ({}): {e}", resolved.title);
+                    tracing::warn!("track failed ({announce}): {e}");
                 }
             }
-            Err(e) => tracing::warn!("could not resolve {}: {e}", track.url),
+            None => tracing::warn!("gave up on {}", track.title),
         }
     }
 
@@ -731,5 +888,80 @@ mod tests {
         set_cookies(Some("something"));
         set_cookies(None);
         assert!(cookie_args().is_empty());
+    }
+
+    fn candidates() -> Vec<(String, Option<f64>)> {
+        vec![
+            // What SoundCloud's text ranking loves: a sped-up edit and an hour
+            // long mix that both mention the song by name.
+            ("https://soundcloud.com/x/sped-up".into(), Some(140.0)),
+            ("https://soundcloud.com/x/dj-mix-2024".into(), Some(3600.0)),
+            ("https://soundcloud.com/x/the-actual-song".into(), Some(238.0)),
+            ("https://soundcloud.com/x/extended".into(), Some(255.0)),
+        ]
+    }
+
+    #[test]
+    fn length_decides_which_upload_is_the_song() {
+        let c = candidates();
+        // 240s from Spotify: the real thing leads, not the edit at the top.
+        assert_eq!(rank_candidates(&c, Some(240.0))[0], "https://soundcloud.com/x/the-actual-song");
+        // Knowing nothing, defer to the search ranking.
+        assert_eq!(rank_candidates(&c, None)[0], "https://soundcloud.com/x/sped-up");
+        // Nothing close enough: still offer something rather than nothing.
+        assert_eq!(rank_candidates(&c, Some(30.0))[0], "https://soundcloud.com/x/sped-up");
+        // Ties within tolerance go to the nearer length.
+        assert_eq!(rank_candidates(&c, Some(250.0))[0], "https://soundcloud.com/x/extended");
+        // Durationless entries cannot outrank one that matches.
+        let mut unknown = c.clone();
+        unknown.insert(0, ("https://soundcloud.com/x/mystery".into(), None));
+        assert_eq!(rank_candidates(&unknown, Some(240.0))[0], "https://soundcloud.com/x/the-actual-song");
+        assert!(rank_candidates(&[], Some(240.0)).is_empty());
+    }
+
+    #[test]
+    fn every_hit_stays_on_the_list_as_a_fallback() {
+        // The best guess can be DRM protected or dead, so nothing may be
+        // dropped — just reordered, once each.
+        let c = candidates();
+        let ranked = rank_candidates(&c, Some(240.0));
+        assert_eq!(ranked.len(), c.len());
+        let unique: std::collections::HashSet<_> = ranked.iter().collect();
+        assert_eq!(unique.len(), c.len(), "a candidate was listed twice");
+        for (url, _) in &c {
+            assert!(ranked.contains(url), "{url} was dropped");
+        }
+    }
+
+    #[test]
+    fn a_planned_track_queues_as_a_search() {
+        let track = planned_to_track(&PlannedTrack {
+            query: "deadmau5 Strobe".into(),
+            title: "Strobe".into(),
+            artist: "deadmau5".into(),
+            art: Some("https://i.example/cover.jpg".into()),
+            duration: Some(637.0),
+        });
+        assert_eq!(track.url, "ndsearch:deadmau5 Strobe");
+        // Spotify knew the title; whatever upload wins must not rename it.
+        assert!(track.meta_locked);
+        assert_eq!(track.title, "Strobe");
+    }
+
+    /// Hits SoundCloud, so it stays out of the normal run:
+    ///   YTDLP_CMD="python -m yt_dlp" cargo test -p music-bot -- --ignored
+    /// It checks the assumption the rule above rests on — that a flat search
+    /// really does come back with durations to compare.
+    #[tokio::test]
+    #[ignore]
+    async fn a_real_search_returns_comparable_durations() {
+        let urls = search_soundcloud("deadmau5 Strobe", Some(637.0)).await.expect("search");
+        assert!(urls.len() > 1, "need fallbacks, got {urls:?}");
+        // What actually matters, through the same call the player makes:
+        // one of these plays. (SoundCloud's own copies of anything on a label
+        // are DRM protected, so the first few usually don't.)
+        let (url, resolved) = first_playable(&urls).await.expect("no candidate resolved");
+        println!("played {url} -> {} ({:?}s)", resolved.title, resolved.duration);
+        assert!(!resolved.stream.is_empty());
     }
 }

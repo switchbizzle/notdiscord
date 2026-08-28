@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.65.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🎧 Spotify links play! Paste a track, album, or playlist link (or a spotify: URI) and the bot queues it — with Spotify's titles, artists, and cover art",
+      "The audio still comes from SoundCloud, because Spotify's API won't stream to a bot. The bot matches by song length so it finds the real track and not a sped-up edit — for big-label songs that may be a fan upload, since SoundCloud's own copies are DRM protected",
+      "Playlists queue up to 100 tracks, and the bot says so when it stops there",
+      "Needs Spotify credentials in Server settings → Bot (any Spotify developer app; ask Jon nicely)"
+    ]
+  },
+  {
     "version": "0.64.0",
     "date": "2026-08-28",
     "changes": [

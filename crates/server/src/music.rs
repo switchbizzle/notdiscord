@@ -30,6 +30,11 @@ pub enum MusicCmd {
     Ask,
 }
 
+/// Something we'd try to play: a web link, or a Spotify URI.
+pub fn is_link(word: &str) -> bool {
+    word.starts_with("http://") || word.starts_with("https://") || word.starts_with("spotify:")
+}
+
 /// Parse a bot command from a message: either "@bot play …" or "/play …".
 /// None means it isn't a command at all.
 pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
@@ -49,7 +54,8 @@ pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
     let verb = words.next()?.to_lowercase();
     let verb = verb.trim_matches(|c: char| c.is_ascii_punctuation());
     match verb {
-        "play" | "p" => match words.find(|w| w.starts_with("http://") || w.starts_with("https://")) {
+        // "spotify:track:..." is what the desktop app's Copy Spotify URI gives.
+        "play" | "p" => match words.find(|w| is_link(w)) {
             Some(url) => Some(MusicCmd::Play(url.to_owned())),
             None => Some(MusicCmd::PlayUsage),
         },
@@ -79,7 +85,7 @@ pub async fn play_endpoint(
     axum::Json(req): axum::Json<shared::MusicPlayRequest>,
 ) -> StatusCode {
     let url = req.url.trim().to_owned();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    if !is_link(&url) {
         return StatusCode::BAD_REQUEST;
     }
     handle_command(state, user, req.channel_id, MusicCmd::Play(url));
@@ -271,7 +277,7 @@ async fn run_command(
 ) -> anyhow::Result<String> {
     let http = reqwest::Client::new();
     match cmd {
-        MusicCmd::PlayUsage => Ok("give me a link, senpai: `play <soundcloud track or playlist url>`".into()),
+        MusicCmd::PlayUsage => Ok("give me a link, senpai: `play <soundcloud or spotify url>` 🎧".into()),
         MusicCmd::Play(url) => {
             // The requester must be sitting in a (non-DM) voice channel.
             let voice_channel = state.voice.lock().unwrap().get(&user.id).map(|(ch, ..)| *ch);
@@ -280,6 +286,41 @@ async fn run_command(
             };
             if crate::dm_recipients(&state.db, vc).await?.is_some() {
                 return Ok("I can't DJ private calls — use a voice channel".into());
+            }
+
+            // A Spotify link is a list of songs, not something playable:
+            // resolve it to search phrases the sidecar can find audio for.
+            let mut plan = Vec::new();
+            let mut spotify_note = String::new();
+            if crate::spotify::is_spotify_url(&url) {
+                if crate::creds::get(state, "spotify").await.is_none() {
+                    return Ok("I can read Spotify links once an admin adds Spotify credentials in \
+                               Server settings → Bot 🎧 (SoundCloud links work either way)"
+                        .into());
+                }
+                match crate::spotify::resolve(state, &url).await {
+                    Ok(resolved) if resolved.tracks.is_empty() => {
+                        return Ok(format!("\"{}\" is empty — nothing to queue 🫥", resolved.name));
+                    }
+                    Ok(resolved) => {
+                        if resolved.tracks.len() > 1 {
+                            spotify_note = format!(
+                                "🎧 from Spotify: {}{}",
+                                resolved.name,
+                                if resolved.truncated {
+                                    format!(" (first {} tracks)", resolved.tracks.len())
+                                } else {
+                                    String::new()
+                                }
+                            );
+                        }
+                        plan = resolved.tracks;
+                    }
+                    Err(e) => {
+                        tracing::warn!("spotify resolve failed: {e}");
+                        return Ok(format!("couldn't read that Spotify link — {e}"));
+                    }
+                }
             }
 
             let (lk_url, token) = mint_bot_token(state, vc)?;
@@ -292,6 +333,9 @@ async fn run_command(
                     "url": url,
                     // Per-server HD credentials, if an admin configured any.
                     "cookies": crate::creds::get(state, "soundcloud").await,
+                    // Non-empty for Spotify: the sidecar queues these instead
+                    // of asking yt-dlp what the link is.
+                    "plan": plan,
                 }))
                 .timeout(std::time::Duration::from_secs(60))
                 .send()
@@ -309,11 +353,15 @@ async fn run_command(
             if started {
                 join_roster(state, vc);
                 spawn_status_watch(state.clone(), text_channel);
-                Ok(if queued > 1 {
+                Ok(if !spotify_note.is_empty() {
+                    format!("{spotify_note} — {queued} tracks queued!")
+                } else if queued > 1 {
                     format!("🎶 coming right up — {queued} tracks queued!")
                 } else {
                     String::new() // the player card appears momentarily
                 })
+            } else if !spotify_note.is_empty() {
+                Ok(format!("{spotify_note} — added {queued} to the queue 🎵"))
             } else {
                 Ok(format!("added to the queue (+{queued}) 🎵"))
             }
@@ -461,4 +509,26 @@ fn spawn_status_watch(state: SharedState, text_channel: i64) {
         }
         *state.music_watch.lock().unwrap() = false;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_spotify_link_is_a_play_command_like_any_other() {
+        let play = |s: &str| parse_command(s, "NotBot");
+        assert_eq!(
+            play("/play https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=x"),
+            Some(MusicCmd::Play("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=x".into()))
+        );
+        // "Copy Spotify URI" in the desktop app gives this instead of a link.
+        assert_eq!(
+            play("@notbot play spotify:album:1ATL5GLyefJaxhQzSPVrLX please"),
+            Some(MusicCmd::Play("spotify:album:1ATL5GLyefJaxhQzSPVrLX".into()))
+        );
+        assert_eq!(play("/play"), Some(MusicCmd::PlayUsage));
+        // Talking about Spotify isn't asking for anything.
+        assert_eq!(play("spotify is down again"), None);
+    }
 }
