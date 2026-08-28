@@ -1,5 +1,10 @@
-# NotDiscord self-hosting stack: server + LiveKit (voice/video) + Caddy (auto-HTTPS).
-# Copy .env.example to .env, fill it in, then: docker compose up -d
+# NotDiscord self-hosting stack: server + music bot + LiveKit (voice/video)
+# + Caddy (auto-HTTPS). Copy .env.example to .env, fill in four values, then:
+#   docker compose up -d --build
+#
+# Keys for the bot (OpenRouter, GIPHY, SoundCloud, Spotify) are NOT set here.
+# They live in the app, under Server settings → Bot, so changing one doesn't
+# mean editing a file and restarting a container.
 services:
   notdiscord:
     build:
@@ -7,21 +12,23 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      NOTDISCORD_INVITE: ${NOTDISCORD_INVITE}
-      NOTDISCORD_GIPHY_KEY: ${NOTDISCORD_GIPHY_KEY:-}
-      NOTDISCORD_OPENROUTER_KEY: ${NOTDISCORD_OPENROUTER_KEY:-}
-      NOTDISCORD_BOT_MODEL: ${NOTDISCORD_BOT_MODEL:-}
       NOTDISCORD_PUBLIC_URL: https://${DOMAIN}
       NOTDISCORD_MUSIC_URL: http://music:3001
       NOTDISCORD_LIVEKIT_API_URL: http://livekit:7880
       LIVEKIT_URL: wss://${LIVEKIT_DOMAIN}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      # Optional: lets the server send verification and password-reset mail.
+      # Without it, accounts simply have no email attached.
+      NOTDISCORD_SMTP_ADDR: ${NOTDISCORD_SMTP_ADDR:-}
+      NOTDISCORD_MAIL_FROM: ${NOTDISCORD_MAIL_FROM:-}
     volumes:
       - ./data:/data
       - ./client:/data/client
 
-  # The DJ: joins voice channels and streams SoundCloud audio on request.
+  # The DJ: joins voice channels and streams audio on request. Its control
+  # API is unauthenticated, so it is never published to the host — only the
+  # server, on this network, can reach it.
   music:
     build:
       context: ..
@@ -29,7 +36,8 @@ services:
     restart: unless-stopped
 
   livekit:
-    image: livekit/livekit-server:v1.8
+    # Matches the version NotDiscord is developed against.
+    image: livekit/livekit-server:v1.13
     restart: unless-stopped
     command: --config /etc/livekit.yaml
     environment:
