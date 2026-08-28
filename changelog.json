@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.55.0",
+    "date": "2026-08-28",
+    "changes": [
+      "📅 Day dividers in chat: a quiet \"Today\", \"Yesterday\", or full date line between days, so scrollback stops running together",
+      "⤓ \"Back to now\": scroll up into history — or land there from a search hit or a pin — and a chip floats above the composer to take you back to the newest message in one click"
+    ]
+  },
+  {
     "version": "0.54.1",
     "date": "2026-08-28",
     "changes": [

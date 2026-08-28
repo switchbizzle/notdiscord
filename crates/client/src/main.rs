@@ -789,6 +789,9 @@ fn MainView(session: api::Session) -> Element {
     let mut search_query = use_signal(String::new);
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
     let mut pins_open = use_signal(|| None::<Vec<Message>>);
+    // True while the message list is scrolled away from the newest message,
+    // which is when the "back to now" chip earns its place.
+    let mut scrolled_up = use_signal(|| false);
     let mut highlight_msg = use_signal(|| None::<i64>);
     let mut bio_draft = use_signal(String::new);
     let mut editing_bio = use_signal(|| false);
@@ -3833,11 +3836,21 @@ fn MainView(session: api::Session) -> Element {
                         "video" => "messages video-chat",
                         _ => "messages",
                     },
+                    id: "message-list",
                     // Jon's spec: clicking back into the chat body dismisses
                     // the Files panel.
                     onclick: move |_| {
                         if files_open.peek().is_some() {
                             files_open.set(None);
+                        }
+                    },
+                    // column-reverse puts scrollTop 0 at the NEWEST message;
+                    // browsers disagree on the sign when you scroll away from
+                    // it, so distance is what matters, not direction.
+                    onscroll: move |e: Event<ScrollData>| {
+                        let away = e.scroll_top().abs() > 220.0;
+                        if away != *scrolled_up.peek() {
+                            scrolled_up.set(away);
                         }
                     },
                     // column-reverse container keeps the view pinned to the
@@ -3852,11 +3865,24 @@ fn MainView(session: api::Session) -> Element {
                         // either side of a DM (a DM has no admin).
                         let can_pin = session().user.role == "admin"
                             || selected().is_some_and(|c| c.kind == "dm");
+                        // Messages that open a new day, so a date divider can go
+                        // above them (rendered after, in this flipped list).
+                        let day_starts: std::collections::HashSet<i64> = {
+                            let list = messages();
+                            list.iter()
+                                .enumerate()
+                                .filter(|(i, m)| {
+                                    *i == 0 || different_day(list[i - 1].created_at, m.created_at)
+                                })
+                                .map(|(_, m)| m.id)
+                                .collect()
+                        };
                         rsx! {
                             for (msg, compact) in group_messages(&messages()).into_iter().rev() {
                                 {
                                     let is_target = highlight_msg() == Some(msg.id);
                                     let divider_here = Some(msg.id) == first_unread;
+                                    let day_here = day_starts.contains(&msg.id).then(|| day_label(msg.created_at));
                                     let msg_id = msg.id;
                                     rsx! {
                                         div { class: if is_target { "hit-wrap" } else { "" },
@@ -3864,6 +3890,9 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                         if divider_here {
                                             div { class: "new-divider", span { class: "new-pill", "NEW" } }
+                                        }
+                                        if let Some(label) = day_here {
+                                            div { class: "day-divider", span { class: "day-pill", "{label}" } }
                                         }
                                     }
                                 }
@@ -3877,6 +3906,24 @@ fn MainView(session: api::Session) -> Element {
                             onclick: load_older,
                             if loading_older() { "loading…" } else { "Load older messages" }
                         }
+                    }
+                }
+                // Deep in history (or just jumped to a pin/search hit) — one
+                // click back to the present instead of scrolling for it.
+                if scrolled_up() && view_tab() == "chat" {
+                    button {
+                        class: "jump-present",
+                        onclick: move |_| {
+                            highlight_msg.set(None);
+                            scrolled_up.set(false);
+                            // Newest lives at scrollTop 0 in a column-reverse list.
+                            dioxus::document::eval(
+                                "const el = document.getElementById('message-list'); \
+                                 if (el) el.scrollTo({top: 0, behavior: 'smooth'});",
+                            );
+                        },
+                        Icon { name: "chevron-down", size: 14 }
+                        "Back to now"
                     }
                 }
                 if gif_open() {
@@ -6083,6 +6130,32 @@ fn file_kind_icon(name: &str) -> &'static str {
         "mp4" | "webm" | "mov" | "mkv" | "avi" => "camera",
         "mp3" | "wav" | "ogg" | "flac" | "m4a" => "music",
         _ => "file",
+    }
+}
+
+/// Divider label for the day a message was sent: "Today", "Yesterday", or
+/// the full date. Local time, so it matches the timestamps beside names.
+fn day_label(unix_ms: i64) -> String {
+    let Some(dt) = chrono::DateTime::from_timestamp_millis(unix_ms) else {
+        return String::new();
+    };
+    let date = dt.with_timezone(&chrono::Local).date_naive();
+    let today = chrono::Local::now().date_naive();
+    match (today - date).num_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ => date.format("%B %-d, %Y").to_string(),
+    }
+}
+
+/// True when two timestamps fall on different local days.
+fn different_day(a: i64, b: i64) -> bool {
+    let day = |ms: i64| {
+        chrono::DateTime::from_timestamp_millis(ms).map(|dt| dt.with_timezone(&chrono::Local).date_naive())
+    };
+    match (day(a), day(b)) {
+        (Some(x), Some(y)) => x != y,
+        _ => false,
     }
 }
 
