@@ -1047,7 +1047,16 @@ fn MessageRow(msg: Message, me_id: i64) -> Element {
                 }
             }
             for (i, src) in images.into_iter().enumerate() {
-                img { key: "{i}", class: "msg-img", src: "{src}", loading: "lazy" }
+                {
+                    // Phones especially shouldn't pull full-size photos to
+                    // draw a 340px image.
+                    let shown = if src.contains("/files/") { format!("{src}?thumb=1") } else { src.clone() };
+                    rsx! {
+                        a { key: "{i}", href: "{src}", target: "_blank",
+                            img { class: "msg-img", src: "{shown}", loading: "lazy" }
+                        }
+                    }
+                }
             }
             for (i, src) in videos.into_iter().enumerate() {
                 video { key: "v{i}", class: "msg-video", src: "{src}", controls: true, preload: "metadata" }

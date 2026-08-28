@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.59.0",
+    "date": "2026-08-28",
+    "changes": [
+      "⚡ Images load a lot faster: the server now makes a small preview of every uploaded picture, and chat and the Files panel use it instead of pulling the full-size original (a test photo went from 682 KB to 14 KB — 46× less). Clicking still opens the real thing, and older uploads get previews the first time anyone views them. Phones and slow wifi feel this the most",
+      "↔️ The channel and member sidebars now grow with the window — fullscreen on a big monitor no longer leaves usernames truncated next to a giant chat column"
+    ]
+  },
+  {
     "version": "0.58.0",
     "date": "2026-08-28",
     "changes": [

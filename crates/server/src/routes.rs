@@ -1082,7 +1082,12 @@ pub(crate) async fn save_bytes_to_uploads(name: &str, bytes: &[u8]) -> anyhow::R
 
     let dir = crate::uploads_dir().join(&id);
     tokio::fs::create_dir_all(&dir).await?;
-    tokio::fs::write(dir.join(&name), bytes).await?;
+    let path = dir.join(&name);
+    tokio::fs::write(&path, bytes).await?;
+    // Build the thumbnail now so the first person to see the message isn't
+    // the one who pays for it. Failure is fine: readers fall back to the
+    // original, and ensure() will try again on demand.
+    crate::thumbs::ensure(path).await;
     Ok(format!("/files/{id}/{name}"))
 }
 
@@ -1090,6 +1095,8 @@ pub(crate) async fn save_bytes_to_uploads(name: &str, bytes: &[u8]) -> anyhow::R
 pub struct FileQuery {
     /// When present, force a download even for inline-renderable images.
     pub dl: Option<String>,
+    /// When present, serve the small preview instead of the original.
+    pub thumb: Option<String>,
 }
 
 /// Outcome of applying a Range header to a file of known length.
@@ -1281,7 +1288,24 @@ pub async fn serve_file(
     if !id_ok || name != sanitize_filename(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    file_response(crate::uploads_dir().join(&id).join(&name), &name, q.dl.is_some(), range_of(&headers)).await
+    let original = crate::uploads_dir().join(&id).join(&name);
+    // ?thumb wants the small version; anything without one (small images,
+    // videos, files that predate this and fail to decode) serves as usual.
+    if q.thumb.is_some() && q.dl.is_none() {
+        if let Some(thumb) = crate::thumbs::ensure(original.clone()).await {
+            return stream_file(
+                thumb,
+                vec![
+                    (header::CONTENT_TYPE, "image/jpeg".to_owned()),
+                    (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                ],
+                None,
+            )
+            .await;
+        }
+    }
+    file_response(original, &name, q.dl.is_some(), range_of(&headers)).await
 }
 
 /// Legacy format from the first uploads release: /files/{32-hex}.{ext}.

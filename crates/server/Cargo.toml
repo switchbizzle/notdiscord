@@ -22,6 +22,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 jsonwebtoken = "9"
 tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
+# Thumbnails. Decoders only for the formats we accept inline; no SVG/AVIF
+# surface, and decoding runs under explicit memory limits.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
 [dev-dependencies]
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }

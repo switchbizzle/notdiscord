@@ -139,8 +139,16 @@ input:focus { border-color: #5865f2; }
 .login-cancel:hover { color: #fff; }
 .settings-mono { font-family: Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
 
+/* Rails scale with the window: on a laptop they stay compact, and
+   fullscreen on a big monitor they take a fair share instead of leaving
+   usernames truncated beside an enormous chat column. */
+:root {
+    --sidebar-w: clamp(230px, 15vw, 300px);
+    --rail-w: clamp(200px, 15vw, 300px);
+}
+
 .sidebar {
-    width: 230px;
+    width: var(--sidebar-w);
     background: #2b2d31;
     display: flex;
     flex-direction: column;
@@ -1132,7 +1140,7 @@ ul.md-list { list-style-type: disc; }
 }
 
 .members {
-    width: 200px;
+    width: var(--rail-w);
     background: #2b2d31;
     padding: 8px;
     overflow-y: auto;
@@ -1761,7 +1769,7 @@ ul.md-list { list-style-type: disc; }
 .members.rail-queue {
     /* Exactly the members rail's outer width, so swapping Chat <-> Music
        never shifts the middle panel. */
-    width: 200px;
+    width: var(--rail-w);
     padding: 0;
     overflow: hidden;
     display: flex;

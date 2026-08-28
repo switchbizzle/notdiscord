@@ -4,6 +4,7 @@ mod mail;
 mod music;
 mod preview;
 mod routes;
+mod thumbs;
 mod voice_sync;
 mod ws;
 

@@ -4760,7 +4760,9 @@ fn MainView(session: api::Session) -> Element {
                                         ]);
                                     },
                                     if is_img {
-                                        img { class: "file-thumb", src: "{abs}", loading: "lazy" }
+                                        // ?thumb: a 40px tile shouldn't pull a
+                                        // 12 MB photo over the wire.
+                                        img { class: "file-thumb", src: "{abs}?thumb=1", loading: "lazy" }
                                     } else {
                                         div { class: "file-thumb file-thumb-icon",
                                             Icon { name: kind_icon, size: 20 }
@@ -5816,7 +5818,11 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                     img {
                         key: "{i}",
                         class: "msg-img",
-                        src: "{src}",
+                        // Inline images render at ~340px, so the thumbnail is
+                        // all anyone sees; the lightbox still opens the
+                        // original. Uploads from other hosts pass through
+                        // unchanged — ?thumb is only ours to answer.
+                        src: if src.contains("/files/") { format!("{src}?thumb=1") } else { src.clone() },
                         loading: "lazy",
                         onclick: {
                             let src = src.clone();
