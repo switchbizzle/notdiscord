@@ -1,0 +1,9 @@
+[application]
+
+[web.app]
+# Served by the NotDiscord server under /app.
+base_path = "app"
+
+[web.resource]
+
+[web.resource.dev]

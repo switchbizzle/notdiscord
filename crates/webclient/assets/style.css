@@ -1,0 +1,99 @@
+/* NotDiscord web: one dark theme, phone-first, desktop-tolerant. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+    background: #313338;
+    color: #dbdee1;
+    font: 15px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input { font: inherit; color: inherit; border: 0; outline: none; }
+
+/* ---------- login ---------- */
+.login-wrap { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 20px; background: #1e1f22; }
+.login-card { width: 100%; max-width: 360px; background: #313338; border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 6px; }
+.login-card h1 { font-size: 22px; color: #fff; }
+.login-sub { color: #949ba4; font-size: 13px; margin-bottom: 10px; }
+.login-card label { font-size: 11px; text-transform: uppercase; color: #b5bac1; font-weight: 600; margin-top: 8px; }
+.login-card input { background: #1e1f22; border-radius: 6px; padding: 10px 12px; }
+.login-error { color: #fa777c; font-size: 13px; margin-top: 8px; }
+.login-buttons { display: flex; gap: 8px; margin-top: 14px; }
+.login-buttons button { flex: 1; padding: 10px; border-radius: 6px; background: #4e5058; color: #fff; }
+.login-buttons .primary { background: #5865f2; }
+
+/* ---------- shell ---------- */
+.app { height: 100dvh; display: flex; flex-direction: column; }
+.topbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top));
+    background: #1e1f22; color: #fff; font-weight: 700;
+    flex: 0 0 auto;
+}
+.burger { font-size: 20px; padding: 2px 8px; color: #b5bac1; }
+.topbar-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- drawer ---------- */
+.drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40; }
+.drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; width: min(78vw, 300px);
+    background: #2b2d31; z-index: 50; display: flex; flex-direction: column;
+    padding: 12px; padding-top: calc(12px + env(safe-area-inset-top));
+    gap: 2px; overflow-y: auto;
+}
+.drawer-head { font-weight: 700; color: #fff; padding: 6px 8px 12px; font-size: 17px; }
+.drawer-section { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #949ba4; padding: 12px 8px 4px; }
+.drawer-chan {
+    text-align: left; padding: 9px 10px; border-radius: 6px; color: #949ba4;
+    font-size: 15px; display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.drawer-chan.active { background: #3f4248; color: #fff; }
+.drawer-chan:active { background: #35373c; }
+.person-name { color: #dbdee1; }
+.person-status { color: #80848e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #4e5058; flex: 0 0 auto; }
+.dot.online { background: #23a55a; }
+.drawer-logout { margin-top: auto; padding: 12px 10px; color: #949ba4; text-align: left; font-size: 14px; }
+
+/* ---------- messages ---------- */
+.messages {
+    flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column-reverse;
+    padding: 10px 12px; gap: 10px;
+}
+.msg { display: flex; flex-direction: column; gap: 2px; }
+.msg-head { display: flex; align-items: baseline; gap: 8px; }
+.msg-author { font-weight: 600; color: #f2f3f5; font-size: 14px; }
+.msg-time { font-size: 11px; color: #949ba4; }
+.msg-body { overflow-wrap: anywhere; white-space: pre-wrap; }
+.msg-body.dim { color: #949ba4; font-style: italic; }
+.reply-ref { color: #949ba4; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-img { max-width: min(100%, 340px); max-height: 320px; border-radius: 8px; margin-top: 2px; }
+.msg-video { max-width: 100%; max-height: 320px; border-radius: 8px; margin-top: 2px; }
+.msg-file { color: #00a8fc; text-decoration: none; font-size: 14px; }
+.load-older {
+    align-self: center; color: #949ba4; font-size: 13px; padding: 8px 14px;
+    background: #2b2d31; border-radius: 14px; margin: 6px 0;
+}
+
+.statusbar { flex: 0 0 auto; background: #3b2a2c; color: #fa777c; font-size: 12px; padding: 4px 12px; }
+
+/* ---------- composer ---------- */
+.composer {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    background: #383a40;
+}
+.attach {
+    width: 36px; height: 36px; border-radius: 50%; background: #4e5058; color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+    flex: 0 0 auto; cursor: pointer;
+}
+.attach input[type="file"] { display: none; }
+.draft { flex: 1 1 auto; min-width: 0; background: #1e1f22; border-radius: 18px; padding: 9px 14px; }
+.send { width: 36px; height: 36px; border-radius: 50%; background: #5865f2; color: #fff; flex: 0 0 auto; }
+
+/* Big screens: keep the phone layout (the desktop app is the real client),
+   just stop the text column from getting comically wide. */
+@media (min-width: 900px) {
+    .messages, .composer { padding-left: max(12px, calc((100vw - 860px) / 2)); padding-right: max(12px, calc((100vw - 860px) / 2)); }
+}

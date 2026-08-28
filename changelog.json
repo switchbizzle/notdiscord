@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.48.0",
+    "date": "2026-08-27",
+    "changes": [
+      "📱 NotDiscord on your phone: open notdiscord.switchbhost.com/app in your phone's browser, log in, and chat — text, images, DMs, live updates. On Android Chrome hit ⋮ → \"Add to Home screen\" (iPhone: Share → \"Add to Home Screen\") and it installs like an app, icon and all",
+      "The web app is chat-first for now: voice, video, and music stay on the desktop app while we teach the browser to do WebRTC"
+    ]
+  },
+  {
     "version": "0.47.1",
     "date": "2026-08-27",
     "changes": [

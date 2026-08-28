@@ -1788,6 +1788,76 @@ pub async fn changelog() -> Response {
     }
 }
 
+/// Where the built web app (dx output + PWA files) lives on disk.
+fn webapp_dir() -> std::path::PathBuf {
+    std::env::var("NOTDISCORD_WEBAPP_DIR").unwrap_or_else(|_| "./webapp".into()).into()
+}
+
+fn webapp_content_type(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css",
+        "js" => "text/javascript",
+        // The right type matters: browsers only streaming-compile wasm
+        // served as application/wasm.
+        "wasm" => "application/wasm",
+        "webmanifest" => "application/manifest+json",
+        "json" => "application/json",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+/// The web app shell. No caching: it references content-hashed assets, so a
+/// fresh index is what makes deploys take effect.
+pub async fn webapp_index() -> Response {
+    stream_file(
+        webapp_dir().join("index.html"),
+        vec![
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned()),
+            (header::CACHE_CONTROL, "no-cache".to_owned()),
+        ],
+        None,
+    )
+    .await
+}
+
+pub async fn webapp_asset(
+    Path(path): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Flat allowlist of path characters; no traversal, no hidden files.
+    let ok = !path.is_empty()
+        && path.len() < 200
+        && !path.starts_with('.')
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_'))
+        && !path.contains("..");
+    if !ok {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let name = path.rsplit('/').next().unwrap_or("");
+    // dx content-hashes everything under assets/ — those can cache forever.
+    // The mutable files (sw.js, manifest, icons) revalidate.
+    let cache = if path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    stream_file(
+        webapp_dir().join(&path),
+        vec![
+            (header::CONTENT_TYPE, webapp_content_type(name).to_owned()),
+            (header::CACHE_CONTROL, cache.to_owned()),
+        ],
+        range_of(&headers),
+    )
+    .await
+}
+
 /// Public: download the current client build (streamed). Range support means
 /// a dropped update download can resume where it left off.
 pub async fn download_client(headers: axum::http::HeaderMap) -> Response {
