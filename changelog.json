@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.63.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🔔 Phone notifications! Install NotDiscord to your Home Screen, open ☰ → Settings, and turn on notifications for that device — messages reach you with the app closed",
+      "⚙️ The web app has a Settings sheet now, with a choice of what to be notified about: everything, mentions & DMs (the default), or nothing. DMs always notify their participants",
+      "Notifications only fire when you're not already connected — if the app is open, you'd just see the message"
+    ]
+  },
+  {
     "version": "0.62.0",
     "date": "2026-08-28",
     "changes": [

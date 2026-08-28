@@ -3,6 +3,7 @@ mod bot;
 mod mail;
 mod music;
 mod preview;
+mod push;
 mod ratelimit;
 mod routes;
 mod thumbs;
@@ -252,6 +253,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/email/verify", post(routes::email_verify))
         .route("/api/users", get(routes::list_users))
         .route("/api/status", post(routes::set_status))
+        .route("/api/notify", get(routes::get_notify_prefs).post(routes::set_notify_level))
+        .route(
+            "/api/push/subscribe",
+            post(routes::push_subscribe).delete(routes::push_unsubscribe),
+        )
         .route("/api/users/{id}/profile", get(routes::get_profile))
         .route("/api/users/{id}/role", post(routes::set_role))
         .route("/api/users/{id}/ban", post(routes::set_ban))

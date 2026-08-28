@@ -22,6 +22,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 jsonwebtoken = "9"
 tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
+# Web Push (RFC 8291 encryption + RFC 8292 VAPID), implemented directly:
+# the web-push crate drags in OpenSSL, which we are not adding to a
+# pure-Rust server. These are all RustCrypto, no C toolchain.
+p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
+hkdf = "0.12"
+sha2 = "0.10"
+aes-gcm = "0.10"
 # Thumbnails. Decoders only for the formats we accept inline; no SVG/AVIF
 # surface, and decoding runs under explicit memory limits.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }

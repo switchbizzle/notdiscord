@@ -10,6 +10,72 @@ use crate::auth::AuthUser;
 use crate::{dm_recipients, now_ms, SharedState};
 
 /// Broadcast to a DM's participants when `recipients` is Some, else to all.
+/// Fan a new message out to subscribed devices whose owner isn't connected.
+/// Runs detached: a slow push service must never hold up chat.
+fn push_notify(state: SharedState, message: Message, dm_members: Option<Vec<i64>>) {
+    tokio::spawn(async move {
+        // Who this message pings, by the same rule the clients use.
+        let lower = message.content.to_lowercase();
+        let everyone = lower.contains("@everyone");
+        let mentioned: Vec<i64> = match sqlx::query("SELECT id, username FROM users").fetch_all(&state.db).await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|r| {
+                    let id: i64 = r.get(0);
+                    let name: String = r.get(1);
+                    let hit = everyone || lower.contains(&format!("@{}", name.to_lowercase()));
+                    hit.then_some(id)
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        let targets = match crate::push::recipients(&state, &message, &mentioned, dm_members.as_deref()).await {
+            Ok(targets) if !targets.is_empty() => targets,
+            _ => return,
+        };
+        let Ok(vapid) = crate::push::vapid(&state).await else { return };
+
+        // Where the notification says it came from.
+        let place: Option<String> = sqlx::query_scalar("SELECT name FROM channels WHERE id = ?")
+            .bind(message.channel_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+        let title = match (&dm_members, place) {
+            (Some(_), _) => message.author.username.clone(),
+            (None, Some(channel)) => format!("{} · #{channel}", message.author.username),
+            (None, None) => message.author.username.clone(),
+        };
+        let body: String = message.content.chars().take(140).collect();
+        let subject = std::env::var("NOTDISCORD_MAIL_FROM")
+            .map(|from| format!("mailto:{from}"))
+            .unwrap_or_else(|_| "mailto:admin@notdiscord.invalid".into());
+        let payload = serde_json::json!({
+            "title": title,
+            "body": body,
+            "channel_id": message.channel_id,
+            "message_id": message.id,
+        });
+
+        for (user_id, sub) in targets {
+            match crate::push::send(&vapid, &sub, &payload, &subject).await {
+                // Dead subscription: the browser is gone. Forget it, or we'd
+                // retry this forever on every message.
+                Ok(false) => {
+                    let _ = sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = ?")
+                        .bind(&sub.endpoint)
+                        .execute(&state.db)
+                        .await;
+                }
+                Ok(true) => {}
+                Err(e) => tracing::warn!("push to user {user_id} failed: {e}"),
+            }
+        }
+    });
+}
+
 fn send_scoped(state: &SharedState, recipients: &Option<Vec<i64>>, event: ServerEvent) {
     match recipients {
         Some(ids) => state.broadcast_only(ids.clone(), event),
@@ -274,7 +340,10 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 reply_preview,
                 pinned: false,
             };
-            send_scoped(state, &recipients, ServerEvent::MessageCreated { message });
+            send_scoped(state, &recipients, ServerEvent::MessageCreated { message: message.clone() });
+
+            // Phones that aren't connected get a push notification instead.
+            push_notify(state.clone(), message, recipients.clone());
 
             // Summoned? Music commands are deterministic and free; questions
             // (and /ask, /image) go to the LLM. Both run in the background.

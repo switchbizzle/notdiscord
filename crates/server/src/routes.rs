@@ -2136,6 +2136,102 @@ pub async fn channel_messages(
     Ok(Json(messages))
 }
 
+/// What this person wants pushed, plus the key their browser needs to
+/// subscribe. `endpoint` identifies the calling device, if it has one.
+pub async fn get_notify_prefs(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<NotifyQuery>,
+) -> ApiResult<Json<shared::NotifyPrefs>> {
+    let level: Option<String> = sqlx::query_scalar("SELECT notify_level FROM users WHERE id = ?")
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?
+        .flatten();
+    let subscribed = match q.endpoint {
+        Some(endpoint) => sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND user_id = ?",
+        )
+        .bind(&endpoint)
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?
+        .is_some(),
+        None => false,
+    };
+    let vapid_key = crate::push::vapid(&state).await.map_err(internal)?.public_b64;
+    Ok(Json(shared::NotifyPrefs {
+        level: level.unwrap_or_else(|| "mentions".into()),
+        subscribed,
+        vapid_key,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct NotifyQuery {
+    pub endpoint: Option<String>,
+}
+
+pub async fn set_notify_level(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::SetNotifyLevel>,
+) -> ApiResult<StatusCode> {
+    if !matches!(req.level.as_str(), "all" | "mentions" | "none") {
+        return Err(err(StatusCode::BAD_REQUEST, "unknown notification level"));
+    }
+    sqlx::query("UPDATE users SET notify_level = ? WHERE id = ?")
+        .bind(&req.level)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn push_subscribe(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::PushSubscribeRequest>,
+) -> ApiResult<StatusCode> {
+    if req.endpoint.len() > 800 || !req.endpoint.starts_with("https://") {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid push endpoint"));
+    }
+    // The endpoint is the primary key: re-subscribing the same device (or a
+    // different account on it) replaces rather than duplicates.
+    sqlx::query(
+        "INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, \
+             p256dh = excluded.p256dh, auth = excluded.auth",
+    )
+    .bind(&req.endpoint)
+    .bind(user.id)
+    .bind(&req.p256dh)
+    .bind(&req.auth)
+    .bind(now_ms())
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn push_unsubscribe(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::PushSubscribeRequest>,
+) -> ApiResult<StatusCode> {
+    sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?")
+        .bind(&req.endpoint)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Every attachment ever posted in a channel, newest first — the Files panel.
 /// Files are found by scanning message content for /files/ links (that's the
 /// only way attachments exist), and anything retention already deleted from

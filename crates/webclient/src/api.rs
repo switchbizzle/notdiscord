@@ -115,6 +115,39 @@ pub async fn music_state(session: &Session) -> Result<shared::MusicState, String
     get(session, "music/state").await
 }
 
+pub async fn notify_prefs(session: &Session, endpoint: &str) -> Result<shared::NotifyPrefs, String> {
+    let query = if endpoint.is_empty() {
+        String::new()
+    } else {
+        format!("?endpoint={}", js_sys::encode_uri_component(endpoint).as_string().unwrap_or_default())
+    };
+    get(session, &format!("notify{query}")).await
+}
+
+pub async fn set_notify_level(session: &Session, level: &str) -> Result<(), String> {
+    post_ok(session, "notify", &shared::SetNotifyLevel { level: level.into() }, "could not save that")
+        .await
+}
+
+pub async fn push_subscribe(session: &Session, sub: shared::PushSubscribeRequest) -> Result<(), String> {
+    post_ok(session, "push/subscribe", &sub, "could not turn notifications on").await
+}
+
+pub async fn push_unsubscribe(session: &Session, sub: shared::PushSubscribeRequest) -> Result<(), String> {
+    let resp = Request::delete("/api/push/subscribe")
+        .header("Authorization", &format!("Bearer {}", session.token))
+        .json(&sub)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.ok() {
+        Ok(())
+    } else {
+        Err("could not turn notifications off".into())
+    }
+}
+
 pub async fn voice_token(session: &Session, channel_id: i64) -> Result<shared::VoiceTokenResponse, String> {
     get(session, &format!("voice/token?channel_id={channel_id}")).await
 }

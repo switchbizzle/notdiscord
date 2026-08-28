@@ -26,6 +26,8 @@ pub fn icon_svg(name: &str) -> &'static str {
         "reply" => include_str!("../../client/assets/icons/reply.svg"),
         "smile" => include_str!("../../client/assets/icons/smile.svg"),
         "file" => include_str!("../../client/assets/icons/file.svg"),
+        "settings" => include_str!("../../client/assets/icons/settings.svg"),
+        "check" => include_str!("../../client/assets/icons/check.svg"),
         _ => "",
     }
 }

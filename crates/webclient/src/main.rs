@@ -34,6 +34,42 @@ extern "C" {
     fn voice_get_state_js() -> String;
 }
 
+// Push subscription glue (pwa/push.js).
+#[wasm_bindgen(js_namespace = ndPush)]
+extern "C" {
+    #[wasm_bindgen(js_name = current)]
+    fn push_current_js() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = enable)]
+    fn push_enable_js(vapid_key: &str) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = disable)]
+    fn push_disable_js() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = getState)]
+    fn push_state_js() -> String;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+struct PushGlue {
+    supported: bool,
+    permission: String,
+    endpoint: String,
+    #[serde(default)]
+    error: String,
+}
+
+/// The browser's PushSubscription, as push.js hands it over.
+#[derive(Debug, Clone, Deserialize)]
+struct PushSub {
+    endpoint: String,
+    p256dh: String,
+    auth: String,
+}
+
+impl From<PushSub> for shared::PushSubscribeRequest {
+    fn from(s: PushSub) -> Self {
+        Self { endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 struct VoicePeer {
     identity: String,
@@ -141,6 +177,7 @@ fn App() -> Element {
         // livekit-client + our glue, self-hosted next to the bundle.
         document::Script { src: "/app/livekit-client.umd.min.js" }
         document::Script { src: "/app/voice.js" }
+        document::Script { src: "/app/push.js" }
         if session().is_some() {
             Main { session }
         } else {
@@ -244,6 +281,39 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // glue's live view of the room.
     let mut voice_conn = use_signal(|| None::<(i64, String)>);
     let mut voice_glue = use_signal(VoiceGlue::default);
+    // Settings sheet (notifications live here).
+    let mut settings_open = use_signal(|| false);
+    let mut notify = use_signal(|| None::<shared::NotifyPrefs>);
+    let mut push_glue = use_signal(PushGlue::default);
+    let mut notify_msg = use_signal(String::new);
+
+    // Load prefs when the sheet opens: the browser's current subscription
+    // decides whether this device shows as on.
+    let mut load_notify = move || {
+        // Support and permission are known synchronously — show them before
+        // the (slower) subscription lookup, so the sheet never opens claiming
+        // the browser can't do notifications when it can.
+        if let Ok(state) = serde_json::from_str::<PushGlue>(&push_state_js()) {
+            push_glue.set(state);
+        }
+        spawn(async move {
+            let sub_json = wasm_bindgen_futures::JsFuture::from(push_current_js())
+                .await
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            let endpoint = serde_json::from_str::<PushSub>(&sub_json)
+                .map(|s| s.endpoint)
+                .unwrap_or_default();
+            if let Ok(state) = serde_json::from_str::<PushGlue>(&push_state_js()) {
+                push_glue.set(state);
+            }
+            match api::notify_prefs(&sess(), &endpoint).await {
+                Ok(prefs) => notify.set(Some(prefs)),
+                Err(e) => notify_msg.set(e),
+            }
+        });
+    };
     // channel_id -> unread count, for drawer badges.
     let mut unread = use_signal(HashMap::<i64, i64>::new);
     // The message being replied to, shared with MessageRow via context.
@@ -694,6 +764,17 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     button {
                         class: "drawer-logout",
                         onclick: move |_| {
+                            drawer.set(false);
+                            settings_open.set(true);
+                            notify_msg.set(String::new());
+                            load_notify();
+                        },
+                        Icon { name: "settings", size: 15 }
+                        " Settings"
+                    }
+                    button {
+                        class: "drawer-logout",
+                        onclick: move |_| {
                             save_session(&None);
                             session.set(None);
                         },
@@ -816,6 +897,111 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     }
                     if has_more() {
                         button { class: "load-older", onclick: load_older, "Load older messages" }
+                    }
+                }
+            }
+
+            if settings_open() {
+                div { class: "drawer-overlay", onclick: move |_| settings_open.set(false) }
+                div { class: "sheet",
+                    div { class: "sheet-head",
+                        div { class: "sheet-title", "Settings" }
+                        button { class: "sheet-x", onclick: move |_| settings_open.set(false),
+                            Icon { name: "x", size: 14 }
+                        }
+                    }
+                    div { class: "sheet-section", "Notifications" }
+                    {
+                        let glue = push_glue();
+                        let prefs = notify();
+                        let on = prefs.as_ref().is_some_and(|p| p.subscribed) && glue.permission == "granted";
+                        let level = prefs.as_ref().map(|p| p.level.clone()).unwrap_or_else(|| "mentions".into());
+                        let vapid = prefs.as_ref().map(|p| p.vapid_key.clone()).unwrap_or_default();
+                        rsx! {
+                            if !glue.supported {
+                                div { class: "sheet-hint",
+                                    "This browser can't do notifications. On iPhone, add NotDiscord to your Home Screen first."
+                                }
+                            } else {
+                                button {
+                                    class: if on { "sheet-toggle on" } else { "sheet-toggle" },
+                                    onclick: move |_| {
+                                        let vapid = vapid.clone();
+                                        spawn(async move {
+                                            notify_msg.set(String::new());
+                                            if on {
+                                                let json = wasm_bindgen_futures::JsFuture::from(push_disable_js())
+                                                    .await.ok().and_then(|v| v.as_string()).unwrap_or_default();
+                                                if let Ok(sub) = serde_json::from_str::<PushSub>(&json) {
+                                                    let _ = api::push_unsubscribe(&sess(), sub.into()).await;
+                                                }
+                                                notify_msg.set("notifications off on this device".into());
+                                            } else {
+                                                let json = wasm_bindgen_futures::JsFuture::from(push_enable_js(&vapid))
+                                                    .await.ok().and_then(|v| v.as_string()).unwrap_or_default();
+                                                match serde_json::from_str::<PushSub>(&json) {
+                                                    Ok(sub) => match api::push_subscribe(&sess(), sub.into()).await {
+                                                        Ok(()) => notify_msg.set("notifications on for this device".into()),
+                                                        Err(e) => notify_msg.set(e),
+                                                    },
+                                                    Err(_) => {
+                                                        let state: PushGlue = serde_json::from_str(&push_state_js()).unwrap_or_default();
+                                                        notify_msg.set(if state.error.is_empty() {
+                                                            "notifications weren't allowed".into()
+                                                        } else {
+                                                            state.error
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                            load_notify();
+                                        });
+                                    },
+                                    if on {
+                                        Icon { name: "check", size: 15 }
+                                        " Notifications are on for this device"
+                                    } else {
+                                        Icon { name: "user", size: 15 }
+                                        " Turn on notifications for this device"
+                                    }
+                                }
+                            }
+                            div { class: "sheet-section", "Notify me about" }
+                            for (value, label, hint) in [
+                                ("all", "Everything", "every message in every channel"),
+                                ("mentions", "Mentions & DMs", "when someone @s you or messages you directly"),
+                                ("none", "Nothing", "no notifications at all"),
+                            ] {
+                                button {
+                                    key: "{value}",
+                                    class: if level == value { "sheet-option picked" } else { "sheet-option" },
+                                    onclick: move |_| {
+                                        spawn(async move {
+                                            match api::set_notify_level(&sess(), value).await {
+                                                Ok(()) => {
+                                                    notify_msg.set(String::new());
+                                                    load_notify();
+                                                }
+                                                Err(e) => notify_msg.set(e),
+                                            }
+                                        });
+                                    },
+                                    div { class: "sheet-option-main",
+                                        div { class: "sheet-option-label", "{label}" }
+                                        div { class: "sheet-option-hint", "{hint}" }
+                                    }
+                                    if level == value {
+                                        Icon { name: "check", size: 15 }
+                                    }
+                                }
+                            }
+                            div { class: "sheet-hint",
+                                "Notifications only arrive while the app is closed — if you're already looking, you'd just see the message."
+                            }
+                            if !notify_msg().is_empty() {
+                                div { class: "sheet-note", "{notify_msg}" }
+                            }
+                        }
                     }
                 }
             }

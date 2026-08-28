@@ -169,6 +169,32 @@ pub struct ChangePasswordRequest {
     pub new: String,
 }
 
+/// Body for POST /api/push/subscribe — the browser's PushSubscription.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushSubscribeRequest {
+    pub endpoint: String,
+    /// base64url, straight from the browser.
+    pub p256dh: String,
+    pub auth: String,
+}
+
+/// How much a person wants to be notified: "all" | "mentions" | "none".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyPrefs {
+    pub level: String,
+    /// Whether this device already has a push subscription registered.
+    #[serde(default)]
+    pub subscribed: bool,
+    /// The server's VAPID public key, needed to subscribe.
+    #[serde(default)]
+    pub vapid_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetNotifyLevel {
+    pub level: String,
+}
+
 /// The caller's own email state (never another user's).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmailStatus {
