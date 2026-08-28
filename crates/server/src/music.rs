@@ -286,7 +286,7 @@ async fn run_command(
             let resp = http
                 .post(format!("{}/play", sidecar_url()))
                 .json(&serde_json::json!({
-                    "room": format!("channel-{vc}"),
+                    "room": crate::livekit_room(vc),
                     "lk_url": lk_url,
                     "token": token,
                     "url": url,
@@ -374,7 +374,7 @@ fn mint_bot_token(state: &SharedState, channel_id: i64) -> anyhow::Result<(Strin
         nbf: now - 10,
         exp: now + 12 * 3600,
         video: crate::routes::LiveKitVideoGrant {
-            room: format!("channel-{channel_id}"),
+            room: crate::livekit_room(channel_id),
             room_join: true,
             can_publish: true,
             can_subscribe: false,

@@ -61,6 +61,15 @@ impl AppState {
     }
 }
 
+/// LiveKit room name for a channel. NOTDISCORD_LIVEKIT_ROOM_PREFIX keeps
+/// multiple NotDiscord instances sharing one LiveKit server out of each
+/// other's calls — without it, two servers' "channel-2" would be the same
+/// room and strangers would meet mid-call.
+pub fn livekit_room(channel_id: i64) -> String {
+    let prefix = std::env::var("NOTDISCORD_LIVEKIT_ROOM_PREFIX").unwrap_or_default();
+    format!("{prefix}channel-{channel_id}")
+}
+
 /// For dm channels, the participant ids (the event audience); None otherwise.
 pub async fn dm_recipients(db: &SqlitePool, channel_id: i64) -> Result<Option<Vec<i64>>, sqlx::Error> {
     use sqlx::Row;

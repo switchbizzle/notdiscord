@@ -887,7 +887,7 @@ pub async fn voice_token(
         None => return Err(err(StatusCode::NOT_FOUND, "no such channel")),
     }
 
-    let room = format!("channel-{}", q.channel_id);
+    let room = crate::livekit_room(q.channel_id);
     let now = now_ms() / 1000;
     let claims = LiveKitClaims {
         iss: api_key,

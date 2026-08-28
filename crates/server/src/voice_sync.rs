@@ -153,7 +153,7 @@ async fn sync_once(state: &SharedState) -> anyhow::Result<()> {
     // must never be treated as empty — that would evict everyone in it.
     let mut answered: Vec<i64> = Vec::new();
     for channel_id in rooms_to_check(state).await {
-        let room = format!("channel-{channel_id}");
+        let room = crate::livekit_room(channel_id);
         match list_participants(&room).await {
             Ok(participants) => {
                 answered.push(channel_id);
