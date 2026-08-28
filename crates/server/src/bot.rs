@@ -247,7 +247,18 @@ pub async fn announce_loop(state: SharedState) {
             continue;
         }
 
-        let Some(channel_id) = first_text_channel(&state).await else { continue };
+        let Some(channel_id) = announce_channel(&state).await else {
+            // Announcements are off, or the chosen channel is gone. Move the
+            // marker anyway so turning them back on doesn't dump a backlog.
+            let _ = sqlx::query(
+                "INSERT INTO server_meta (key, value) VALUES ('announced_version', ?) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(&version)
+            .execute(&state.db)
+            .await;
+            continue;
+        };
         let mut text = format!("📦 **v{version} just shipped!** Restart to update.");
         for change in changelog_bullets(&version).await {
             text.push_str(&format!("\n• {change}"));
@@ -278,6 +289,37 @@ async fn first_text_channel(state: &SharedState) -> Option<i64> {
         .await
         .ok()
         .flatten()
+}
+
+/// Where release announcements go: the admin's pick when it still exists,
+/// the first text channel when unset, or None when switched off (0) — so
+/// announcements can't crowd whatever channel happens to be first.
+pub async fn announce_channel(state: &SharedState) -> Option<i64> {
+    let setting: Option<String> =
+        sqlx::query_scalar("SELECT value FROM server_meta WHERE key = 'announce_channel'")
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    match setting.as_deref().and_then(|v| v.parse::<i64>().ok()) {
+        Some(0) => None,
+        Some(id) => {
+            let exists: Option<i64> =
+                sqlx::query_scalar("SELECT id FROM channels WHERE id = ? AND kind = 'text'")
+                    .bind(id)
+                    .fetch_optional(&state.db)
+                    .await
+                    .ok()
+                    .flatten();
+            // A deleted channel falls back rather than silently swallowing
+            // every future announcement.
+            match exists {
+                Some(id) => Some(id),
+                None => first_text_channel(state).await,
+            }
+        }
+        None => first_text_channel(state).await,
+    }
 }
 
 async fn changelog_bullets(version: &str) -> Vec<String> {

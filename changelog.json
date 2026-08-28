@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.56.0",
+    "date": "2026-08-28",
+    "changes": [
+      "📢 Pick where the bot posts release notes: Server settings → Bot → Release announcements. Send them to #announcements, keep the default (first text channel), or switch them off entirely"
+    ]
+  },
+  {
     "version": "0.55.0",
     "date": "2026-08-28",
     "changes": [

@@ -822,6 +822,8 @@ fn MainView(session: api::Session) -> Element {
     let mut persona_draft = use_signal(String::new);
     let mut persona_message = use_signal(String::new);
     let mut bot_name_draft = use_signal(String::new);
+    // 0 = don't announce; otherwise the channel releases are announced in.
+    let mut announce_draft = use_signal(|| 0i64);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -880,6 +882,8 @@ fn MainView(session: api::Session) -> Element {
             if let Ok(settings) = api::get_bot_settings(&session()).await {
                 persona_draft.set(settings.persona);
                 bot_name_draft.set(settings.name);
+                // Unset means the server's default: the first text channel.
+                announce_draft.set(settings.announce_channel.unwrap_or(-1));
                 persona_loaded.set(true);
                 persona_message.set(String::new());
             }
@@ -2748,6 +2752,38 @@ fn MainView(session: api::Session) -> Element {
                                                     "The system prompt the bot answers with. It keeps its memory across changes."
                                                 }
                                             }
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Release announcements" }
+                                                select {
+                                                    class: "srv-input",
+                                                    onchange: move |e| {
+                                                        if let Ok(v) = e.value().parse::<i64>() {
+                                                            announce_draft.set(v);
+                                                        }
+                                                    },
+                                                    option {
+                                                        value: "-1",
+                                                        selected: announce_draft() < 0,
+                                                        "First text channel (default)"
+                                                    }
+                                                    option {
+                                                        value: "0",
+                                                        selected: announce_draft() == 0,
+                                                        "Don't announce"
+                                                    }
+                                                    for channel in channels().into_iter().filter(|c| c.kind == "text") {
+                                                        option {
+                                                            key: "{channel.id}",
+                                                            value: "{channel.id}",
+                                                            selected: announce_draft() == channel.id,
+                                                            "# {channel.name}"
+                                                        }
+                                                    }
+                                                }
+                                                div { class: "srv-hint",
+                                                    "Where the bot posts \"vX just shipped\" notes when an update goes out."
+                                                }
+                                            }
                                             div { class: "srv-inline",
                                                 button {
                                                     class: "srv-btn primary",
@@ -2757,12 +2793,16 @@ fn MainView(session: api::Session) -> Element {
                                                             persona: Some(persona_draft()),
                                                             name: Some(bot_name_draft().trim().to_string()),
                                                             avatar: None,
+                                                            // -1 is the client's "leave it default";
+                                                            // the server only stores real choices.
+                                                            announce_channel: Some(announce_draft()).filter(|v| *v >= 0),
                                                         };
                                                         spawn(async move {
                                                             match api::set_bot_settings(&session(), update).await {
                                                                 Ok(settings) => {
                                                                     persona_draft.set(settings.persona);
                                                                     bot_name_draft.set(settings.name);
+                                                                    announce_draft.set(settings.announce_channel.unwrap_or(-1));
                                                                     persona_message.set("saved".into());
                                                                 }
                                                                 Err(e) => persona_message.set(e),
@@ -2789,6 +2829,7 @@ fn MainView(session: api::Session) -> Element {
                                                                         persona: None,
                                                                         name: None,
                                                                         avatar: Some(url),
+                                                                        announce_channel: None,
                                                                     };
                                                                     if let Err(e) = api::set_bot_settings(&session(), update).await {
                                                                         persona_message.set(e);

@@ -1702,10 +1702,17 @@ pub async fn get_bot_settings(
         return Err(err(StatusCode::FORBIDDEN, "admins only"));
     }
     let bot = state.bot_user();
+    let announce_channel: Option<i64> =
+        sqlx::query_scalar("SELECT value FROM server_meta WHERE key = 'announce_channel'")
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal)?
+            .and_then(|v: String| v.parse().ok());
     Ok(Json(shared::BotSettings {
         persona: crate::bot::persona(&state.db).await,
         name: bot.username,
         avatar: bot.avatar,
+        announce_channel,
     }))
 }
 
@@ -1769,6 +1776,28 @@ pub async fn set_bot_settings(
             .await
             .map_err(internal)?;
         identity_changed = true;
+    }
+
+    if let Some(channel) = req.announce_channel {
+        // 0 means "don't announce"; anything else must be a real text channel.
+        if channel != 0 {
+            let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
+                .bind(channel)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(internal)?;
+            if kind.as_deref() != Some("text") {
+                return Err(err(StatusCode::BAD_REQUEST, "pick a text channel"));
+            }
+        }
+        sqlx::query(
+            "INSERT INTO server_meta (key, value) VALUES ('announce_channel', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(channel.to_string())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
     }
 
     if identity_changed {

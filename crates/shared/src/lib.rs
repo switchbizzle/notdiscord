@@ -331,6 +331,10 @@ pub struct BotSettings {
     pub name: String,
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Where release announcements go. None = the first text channel
+    /// (the old behavior); Some(0) = don't announce at all.
+    #[serde(default)]
+    pub announce_channel: Option<i64>,
 }
 
 /// Partial update for POST /api/server/bot — only Some fields change.
@@ -342,6 +346,9 @@ pub struct BotSettingsUpdate {
     pub name: Option<String>,
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Channel id for release announcements; 0 disables them.
+    #[serde(default)]
+    pub announce_channel: Option<i64>,
 }
 
 /// Upload storage usage and cap (GET /api/server/storage).
