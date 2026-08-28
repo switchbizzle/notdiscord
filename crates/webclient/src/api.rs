@@ -218,3 +218,20 @@ pub async fn link_preview(session: &Session, url: &str) -> Option<shared::LinkPr
     }
     resp.json().await.ok()
 }
+
+/// Public: what this server calls itself, and whether anyone has claimed it.
+pub async fn server_info() -> Option<shared::ServerInfo> {
+    Request::get("/api/server/info").send().await.ok()?.json().await.ok()
+}
+
+/// First run: claim a server nobody has an account on. Refused once one does.
+pub async fn setup(req: shared::SetupRequest) -> Result<Session, String> {
+    let resp = Request::post("/api/setup")
+        .json(&req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let auth: shared::AuthResponse = handle(resp).await?;
+    Ok(Session { token: auth.token, user: auth.user })
+}

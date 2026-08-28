@@ -319,6 +319,22 @@ pub struct ServerInfo {
     pub name: String,
     #[serde(default)]
     pub icon: Option<String>,
+    /// True while nobody has an account yet: the clients offer to set the
+    /// server up instead of asking for a login nobody can have.
+    #[serde(default)]
+    pub needs_setup: bool,
+}
+
+/// POST /api/setup — only accepted while a server has no people on it.
+/// Creates the owner (who is always an admin), names the server, and can
+/// set the invite code the next person will need.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupRequest {
+    pub username: String,
+    pub password: String,
+    pub server_name: String,
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

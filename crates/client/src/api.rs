@@ -531,6 +531,26 @@ pub async fn register(base_url: &str, username: String, password: String, invite
     Ok(session_from_auth(base_url, auth).await)
 }
 
+/// First run: claim a server nobody has an account on. The server refuses
+/// once one does, so this is only ever offered when it says it needs setting
+/// up.
+pub async fn setup(
+    base_url: &str,
+    username: String,
+    password: String,
+    server_name: String,
+    invite: String,
+) -> Result<Session, String> {
+    let req = shared::SetupRequest {
+        username,
+        password,
+        server_name,
+        invite: Some(invite.trim().to_owned()).filter(|s| !s.is_empty()),
+    };
+    let auth = auth_request(base_url, "setup", req).await?;
+    Ok(session_from_auth(base_url, auth).await)
+}
+
 /// Success is 204 with no body; failures carry a JSON error message.
 async fn expect_no_content(resp: reqwest::Response, fallback: &str) -> Result<(), String> {
     if resp.status().is_success() {

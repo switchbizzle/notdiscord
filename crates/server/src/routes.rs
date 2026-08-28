@@ -1255,6 +1255,96 @@ async fn stream_file(
 }
 
 #[cfg(test)]
+mod setup_tests {
+    use super::*;
+
+    async fn fresh_server() -> SharedState {
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&db).await.unwrap();
+        // NotBot exists from first boot on a real server, and must not count
+        // as a person — that bug once left the owner of a new server a member.
+        sqlx::query("INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'NotBot', '!bot', 0)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        std::sync::Arc::new(crate::AppState {
+            db,
+            events,
+            presence: std::sync::Mutex::new(std::collections::HashMap::new()),
+            voice: std::sync::Mutex::new(std::collections::HashMap::new()),
+            voice_left: std::sync::Mutex::new(std::collections::HashMap::new()),
+            bot: std::sync::Mutex::new(shared::User {
+                id: 1,
+                username: "NotBot".into(),
+                avatar: None,
+                role: "member".into(),
+            }),
+            music_watch: std::sync::Mutex::new(false),
+            music_player: std::sync::Mutex::new(None),
+            uploads: crate::ratelimit::UploadLimits::default(),
+        })
+    }
+
+    fn claim(username: &str) -> shared::SetupRequest {
+        shared::SetupRequest {
+            username: username.into(),
+            password: "Str0ng-Pass!x9".into(),
+            server_name: "Adam's Server".into(),
+            invite: Some("come-on-in".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_person_claims_the_server_and_nobody_else_can() {
+        let state = fresh_server().await;
+        assert_eq!(human_count(&state).await.unwrap(), 0, "the bot is not a person");
+
+        let Json(auth) = setup(State(state.clone()), Json(claim("owner"))).await.expect("claim");
+        assert_eq!(auth.user.username, "owner");
+        assert_eq!(auth.user.role, "admin", "the owner has to be able to run the place");
+        assert!(!auth.token.is_empty());
+
+        // The name and invite code the owner chose are in force.
+        assert_eq!(meta_value(&state, "name").await.unwrap(), "Adam's Server");
+        assert_eq!(
+            meta_value_opt(&state, "invite_code").await.unwrap().as_deref(),
+            Some("come-on-in")
+        );
+
+        // And the door is shut: this endpoint takes no authentication, so
+        // "already claimed" is the only thing standing between a stranger and
+        // an admin account.
+        let second = setup(State(state.clone()), Json(claim("squatter"))).await;
+        let status = second.err().expect("a claimed server must refuse").0;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(human_count(&state).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_bad_claim_leaves_the_server_unclaimed() {
+        let state = fresh_server().await;
+        // Each of these must fail *and* leave the server claimable, or a typo
+        // in the setup form would lock a self-hoster out of their own server.
+        let bad = [
+            shared::SetupRequest { username: "x".into(), ..claim("x") },
+            shared::SetupRequest { password: "short".into(), ..claim("owner") },
+            // A password containing the username is refused by the shared rule.
+            shared::SetupRequest { password: "owner-owner-1".into(), ..claim("owner") },
+            shared::SetupRequest { server_name: "  ".into(), ..claim("owner") },
+            shared::SetupRequest { invite: Some("i".repeat(65)), ..claim("owner") },
+        ];
+        for req in bad {
+            let attempt = setup(State(state.clone()), Json(req)).await;
+            assert!(attempt.is_err(), "a bad claim was accepted");
+            assert_eq!(human_count(&state).await.unwrap(), 0, "and it left a user behind");
+        }
+        // The real one still works afterwards.
+        assert!(setup(State(state.clone()), Json(claim("owner"))).await.is_ok());
+    }
+}
+
+#[cfg(test)]
 mod filename_tests {
     use super::*;
 
@@ -1619,7 +1709,85 @@ pub async fn server_info(State(state): State<SharedState>) -> ApiResult<Json<Ser
         id: meta_value(&state, "id").await?,
         name: meta_value(&state, "name").await?,
         icon: meta_value_opt(&state, "icon").await?,
+        needs_setup: human_count(&state).await? == 0,
     }))
+}
+
+/// People with accounts. NotBot exists from first boot and is not a person,
+/// so it never counts — the same mistake once left the owner of a fresh
+/// server as a plain member.
+async fn human_count(state: &SharedState) -> ApiResult<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id != ?")
+        .bind(state.bot_user().id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)
+}
+
+/// First run: claim a server that nobody has an account on yet.
+///
+/// This is open to anyone who can reach the server, which is the point — it
+/// is how a self-hoster gets in without an invite code they'd have no way to
+/// know. It stops working the instant one person exists, and the check and
+/// the insert share a transaction so two people racing to claim a fresh
+/// server can't both win.
+pub async fn setup(
+    State(state): State<SharedState>,
+    Json(req): Json<shared::SetupRequest>,
+) -> ApiResult<Json<AuthResponse>> {
+    let username = req.username.trim().to_owned();
+    if username.len() < 2 || username.len() > 32 {
+        return Err(err(StatusCode::BAD_REQUEST, "username must be 2-32 characters"));
+    }
+    if let Some(problem) = shared::password_problem(&req.password, &username) {
+        return Err(err(StatusCode::BAD_REQUEST, problem));
+    }
+    let server_name = req.server_name.trim().to_owned();
+    if server_name.is_empty() || server_name.chars().count() > 40 {
+        return Err(err(StatusCode::BAD_REQUEST, "server name must be 1-40 characters"));
+    }
+    let invite = req.invite.as_deref().map(str::trim).unwrap_or_default().to_owned();
+    if invite.chars().count() > 64 {
+        return Err(err(StatusCode::BAD_REQUEST, "invite code is too long"));
+    }
+    // Hash before the transaction: argon2 is deliberately slow, and holding a
+    // write lock through it would block every other request on the server.
+    let hash = auth::hash_password(req.password).await.map_err(internal)?;
+
+    let bot_id = state.bot_user().id;
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id != ?")
+        .bind(bot_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal)?;
+    if existing > 0 {
+        return Err(err(StatusCode::CONFLICT, "this server already has an owner"));
+    }
+    let result = sqlx::query(
+        "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'admin', ?)",
+    )
+    .bind(&username)
+    .bind(&hash)
+    .bind(now_ms())
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
+    let user_id = result.last_insert_rowid();
+    for (key, value) in [("name", server_name.as_str()), ("invite_code", invite.as_str())] {
+        sqlx::query("INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)")
+            .bind(key)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
+
+    let token = create_session(&state, user_id).await?;
+    let user = shared::User { id: user_id, username, avatar: None, role: "admin".into() };
+    tracing::info!("server claimed by {} — first run complete", user.username);
+    Ok(Json(AuthResponse { token, user }))
 }
 
 pub async fn set_server_icon(
@@ -1666,6 +1834,8 @@ pub async fn rename_server(
         id: meta_value(&state, "id").await?,
         icon: meta_value_opt(&state, "icon").await?,
         name,
+        // Renaming means someone is logged in, so setup is long done.
+        needs_setup: false,
     }))
 }
 

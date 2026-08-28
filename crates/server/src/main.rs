@@ -283,6 +283,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/gifs", get(routes::gifs))
         .route("/api/preview", get(preview::preview))
+        // Open on purpose, and only while nobody has an account yet.
+        .route("/api/setup", post(routes::setup))
         .route("/api/voice/token", get(routes::voice_token))
         .route("/api/emojis", get(routes::list_emojis).post(routes::create_emoji))
         .route("/api/emojis/{id}", axum::routing::delete(routes::delete_emoji))

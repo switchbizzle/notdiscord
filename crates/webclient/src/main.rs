@@ -239,7 +239,109 @@ fn App() -> Element {
         if session().is_some() {
             Main { session }
         } else {
-            Login { session }
+            Gate { session }
+        }
+    }
+}
+
+/// Login, or setup on a server nobody has claimed yet. Asking a self-hoster
+/// for credentials that cannot exist is the least helpful thing a fresh
+/// server could do, so it asks who they are instead.
+#[component]
+fn Gate(session: Signal<Option<api::Session>>) -> Element {
+    let info = use_resource(api::server_info);
+    match info() {
+        // Still asking. A blank moment beats flashing the wrong screen.
+        None => rsx! { div { class: "login-wrap" } },
+        Some(Some(info)) if info.needs_setup => rsx! { Setup { session } },
+        _ => rsx! { Login { session } },
+    }
+}
+
+#[component]
+fn Setup(session: Signal<Option<api::Session>>) -> Element {
+    let mut server_name = use_signal(|| "NotDiscord".to_string());
+    let mut username = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let mut invite = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+
+    let mut claim = move || {
+        if busy() {
+            return;
+        }
+        spawn(async move {
+            busy.set(true);
+            error.set(String::new());
+            let req = shared::SetupRequest {
+                username: username(),
+                password: password(),
+                server_name: server_name(),
+                invite: Some(invite()).filter(|c| !c.trim().is_empty()),
+            };
+            match api::setup(req).await {
+                Ok(s) => {
+                    let s = Some(s);
+                    save_session(&s);
+                    session.set(s);
+                }
+                Err(e) => error.set(e),
+            }
+            busy.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "login-wrap",
+            div { class: "login-card",
+                h1 { "Set up your server" }
+                p { class: "login-sub",
+                    "Nobody has an account here yet. The first one is yours, and it's the admin."
+                }
+                label { "Server name" }
+                input {
+                    value: "{server_name}",
+                    oninput: move |e| server_name.set(e.value()),
+                }
+                label { "Your username" }
+                input {
+                    value: "{username}",
+                    autocapitalize: "none",
+                    oninput: move |e| username.set(e.value()),
+                }
+                label { "Password" }
+                input {
+                    r#type: "password",
+                    value: "{password}",
+                    oninput: move |e| password.set(e.value()),
+                    onkeydown: move |e| {
+                        if e.key() == Key::Enter {
+                            claim();
+                        }
+                    },
+                }
+                label { "Invite code for everyone else (optional)" }
+                input {
+                    value: "{invite}",
+                    autocapitalize: "none",
+                    oninput: move |e| invite.set(e.value()),
+                }
+                p { class: "login-sub",
+                    "Leave it empty and anyone who finds this server can register. You can change it later in Server settings."
+                }
+                if !error().is_empty() {
+                    div { class: "login-error", "{error}" }
+                }
+                div { class: "login-buttons",
+                    button {
+                        class: "primary",
+                        disabled: busy(),
+                        onclick: move |_| claim(),
+                        if busy() { "Setting up…" } else { "Create my server" }
+                    }
+                }
+            }
         }
     }
 }

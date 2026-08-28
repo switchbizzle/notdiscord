@@ -483,6 +483,53 @@ fn LoginView(adding: Signal<bool>) -> Element {
     let mut reset_code = use_signal(String::new);
     let mut reset_pw = use_signal(String::new);
     let mut notice = use_signal(String::new);
+    // A server with nobody on it can't be logged into, so the form offers to
+    // claim it instead. Probed whenever the address settles.
+    let mut needs_setup = use_signal(|| false);
+    let mut server_name = use_signal(String::new);
+
+    use_future(move || async move {
+        let mut last = String::new();
+        loop {
+            let current = base_url();
+            if current != last {
+                last = current.clone();
+                // Let typing settle before asking; the address bar is edited
+                // one character at a time.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if base_url() == current {
+                    match api::server_info(&current).await {
+                        Ok(info) => {
+                            needs_setup.set(info.needs_setup);
+                            if info.needs_setup && server_name().trim().is_empty() {
+                                server_name.set(info.name);
+                            }
+                        }
+                        Err(_) => needs_setup.set(false),
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    });
+
+    let claim = move |_| {
+        if busy() {
+            return;
+        }
+        spawn(async move {
+            busy.set(true);
+            error.set(String::new());
+            match api::setup(&base_url(), username(), password(), server_name(), invite()).await {
+                Ok(s) => {
+                    servers.set(api::upsert_server(s));
+                    adding.set(false);
+                }
+                Err(e) => error.set(e),
+            }
+            busy.set(false);
+        });
+    };
 
     let submit = move |register: bool| {
         if busy() {
@@ -517,6 +564,16 @@ fn LoginView(adding: Signal<bool>) -> Element {
                     value: "{base_url}",
                     oninput: move |e| base_url.set(e.value()),
                 }
+                if needs_setup() {
+                    div { class: "login-notice",
+                        "Nobody has an account on this server yet — the first one is yours, and it's the admin."
+                    }
+                    label { "Server name" }
+                    input {
+                        value: "{server_name}",
+                        oninput: move |e| server_name.set(e.value()),
+                    }
+                }
                 label { "Username" }
                 input {
                     value: "{username}",
@@ -533,10 +590,19 @@ fn LoginView(adding: Signal<bool>) -> Element {
                         }
                     },
                 }
-                label { "Invite code (only needed to register)" }
+                if needs_setup() {
+                    label { "Invite code for everyone else (optional)" }
+                } else {
+                    label { "Invite code (only needed to register)" }
+                }
                 input {
                     value: "{invite}",
                     oninput: move |e| invite.set(e.value()),
+                }
+                if needs_setup() {
+                    div { class: "settings-hint",
+                        "Leave it empty and anyone who can reach this server can register."
+                    }
                 }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
@@ -545,19 +611,30 @@ fn LoginView(adding: Signal<bool>) -> Element {
                     div { class: "login-notice", "{notice}" }
                 }
                 div { class: "login-buttons",
-                    button {
-                        class: "primary",
-                        disabled: busy(),
-                        onclick: move |_| submit(false),
-                        "Log in"
-                    }
-                    button {
-                        disabled: busy(),
-                        onclick: move |_| submit(true),
-                        "Register"
+                    if needs_setup() {
+                        button {
+                            class: "primary",
+                            disabled: busy(),
+                            onclick: claim,
+                            if busy() { "Setting up…" } else { "Set up this server" }
+                        }
+                    } else {
+                        button {
+                            class: "primary",
+                            disabled: busy(),
+                            onclick: move |_| submit(false),
+                            "Log in"
+                        }
+                        button {
+                            disabled: busy(),
+                            onclick: move |_| submit(true),
+                            "Register"
+                        }
                     }
                 }
-                if !forgot() {
+                // No accounts yet means no password to have forgotten.
+                if needs_setup() {
+                } else if !forgot() {
                     button {
                         class: "login-cancel",
                         onclick: move |_| {
@@ -6092,9 +6169,10 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                         key: "v{i}",
                         class: "msg-video",
                         src: "{src}",
-                        autoplay: true,
-                        muted: true,
-                        r#loop: true,
+                        // No autoplay, no loop: these were fine when every
+                        // video here was a two-second clip, but a phone
+                        // recording that starts itself and never stops is a
+                        // jump-scare in a chat window (switchb, on a 1:41 one).
                         controls: true,
                         preload: "metadata",
                     }

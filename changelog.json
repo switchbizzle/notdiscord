@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.68.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🏠 A brand-new server sets itself up now. Point the app (or a browser) at one nobody has an account on and it offers to create it: name the server, make your account — which is the admin — and pick the invite code everyone else will need. No SSH, no guessing which account becomes the owner",
+      "▶️ Videos in chat no longer start playing by themselves, or loop forever. That was fine when every clip was two seconds long; it isn't when someone posts a real video (switchb)"
+    ]
+  },
+  {
     "version": "0.67.0",
     "date": "2026-08-28",
     "changes": [
