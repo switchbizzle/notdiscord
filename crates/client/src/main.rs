@@ -5117,6 +5117,8 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
     let voice = use_coroutine_handle::<voice::VoiceCmd>();
     let mut share_picker_ctx =
         use_context::<Signal<Option<(Vec<share::MonitorChoice>, Vec<share::WindowChoice>)>>>();
+    // Label of the tile filling the panel, if any (double-click to toggle).
+    let mut focused = use_signal(|| None::<String>);
 
     // Tiles refresh by re-requesting their frame, and the stamp that makes
     // each request unique comes from here. It used to be a JS interval that
@@ -5177,8 +5179,25 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
     let deaf_icon: &'static str = if snapshot.deafened { "headphones-off" } else { "headphones" };
     let wide = tiles.len() <= 2;
 
+    // A focused tile that left the call (share stopped, person hung up)
+    // would otherwise hide everyone behind an empty panel.
+    {
+        let still_there = tiles.iter().any(|(_, label, _, _)| Some(label.as_str()) == focused().as_deref());
+        if focused().is_some() && !still_there {
+            focused.set(None);
+        }
+    }
+
     rsx! {
-        div { class: "video-tab",
+        div { class: if focused().is_some() { "video-tab expanded" } else { "video-tab" },
+            if focused().is_some() {
+                button {
+                    class: "video-unfocus",
+                    title: "Back to everyone (or double-click the tile)",
+                    onclick: move |_| focused.set(None),
+                    Icon { name: "x", size: 14 }
+                }
+            }
             if !in_call {
                 div { class: "video-empty",
                     Icon { name: "camera", size: 26 }
@@ -5192,7 +5211,12 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
                     div { class: "video-empty-title", "Connecting…" }
                 }
             } else {
-                div { class: if wide { "video-grid wide" } else { "video-grid" },
+                div {
+                    class: match (focused().is_some(), wide) {
+                        (true, _) => "video-grid focused",
+                        (false, true) => "video-grid wide",
+                        (false, false) => "video-grid",
+                    },
                     for (key, label, speaking, user_id) in tiles {
                         {
                             let initial = label
@@ -5200,9 +5224,33 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
                                 .next()
                                 .map(|c| c.to_uppercase().to_string())
                                 .unwrap_or_else(|| "?".into());
-                            let tile_class = if speaking { "video-tile speaking" } else { "video-tile" };
+                            // While one tile is focused the others step aside.
+                            let is_focused = focused().as_deref() == Some(label.as_str());
+                            let hidden = focused().is_some() && !is_focused;
+                            let tile_class = match (hidden, is_focused, speaking) {
+                                (true, _, _) => "video-tile hidden",
+                                (_, true, true) => "video-tile focused speaking",
+                                (_, true, false) => "video-tile focused",
+                                (_, false, true) => "video-tile speaking",
+                                _ => "video-tile",
+                            };
+                            let label_for_click = label.clone();
                             rsx! {
-                                div { key: "{label}", class: "{tile_class}",
+                                div {
+                                    key: "{label}",
+                                    class: "{tile_class}",
+                                    title: "Double-click to expand",
+                                    // Same gesture as the pop-out call window
+                                    // (v0.40.0): double-click fills the panel,
+                                    // double-click again restores the grid.
+                                    ondoubleclick: move |_| {
+                                        let mut f = focused;
+                                        if f.peek().as_deref() == Some(label_for_click.as_str()) {
+                                            f.set(None);
+                                        } else {
+                                            f.set(Some(label_for_click.clone()));
+                                        }
+                                    },
                                     match key {
                                         Some(vkey) => rsx! {
                                             img {

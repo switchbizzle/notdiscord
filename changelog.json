@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.61.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🔍 Double-click a tile in the Video tab to blow it up — it takes the whole panel and chat steps aside, so you can actually watch someone's screen share. Double-click again (or hit the ✕) to go back to everyone. Same gesture the pop-out call window has had"
+    ]
+  },
+  {
     "version": "0.60.0",
     "date": "2026-08-28",
     "changes": [

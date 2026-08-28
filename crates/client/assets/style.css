@@ -2453,6 +2453,45 @@ ul.md-list { list-style-type: disc; }
 /* One or two streams shouldn't be shown as postage stamps. */
 .video-grid.wide { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 
+/* Double-clicked tile: it takes the whole panel, and the panel takes the
+   whole middle column instead of its usual 62% share. */
+.video-tab.expanded { flex: 1 1 auto; max-height: none; min-height: 0; position: relative; }
+/* An expanded tile means "show me this, not chat" — the message list steps
+   aside (the composer stays, so you can still talk). Without this the two
+   flex siblings split the column and the tile ends up a sliver. */
+.video-tab.expanded ~ .messages { display: none; }
+/* A single row that actually stretches: the default grid sizes rows to
+   content, so a height:100% tile in one would measure zero. */
+.video-grid.focused {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    align-content: stretch;
+    overflow: hidden;
+}
+.video-tile.hidden { display: none; }
+.video-tile.focused {
+    aspect-ratio: auto;
+    height: 100%;
+    min-height: 0;
+    cursor: zoom-out;
+}
+.video-tile { cursor: zoom-in; }
+.video-unfocus {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    z-index: 5;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
+    color: #dbdee1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.video-unfocus:hover { background: rgba(0, 0, 0, 0.8); color: #fff; }
+
 .video-tile {
     position: relative;
     aspect-ratio: 16 / 9;
