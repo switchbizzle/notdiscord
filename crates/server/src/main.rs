@@ -3,6 +3,7 @@ mod bot;
 mod mail;
 mod music;
 mod preview;
+mod ratelimit;
 mod routes;
 mod thumbs;
 mod voice_sync;
@@ -42,6 +43,8 @@ pub struct AppState {
     pub music_watch: Mutex<bool>,
     /// The live player card message: (channel id, message id).
     pub music_player: Mutex<Option<(i64, i64)>>,
+    /// Per-user upload budget (see ratelimit).
+    pub uploads: ratelimit::UploadLimits,
 }
 
 impl AppState {
@@ -214,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         bot: Mutex::new(bot_user),
         music_watch: Mutex::new(false),
         music_player: Mutex::new(None),
+        uploads: ratelimit::UploadLimits::default(),
     });
 
     // NotBot announces new client releases in chat.

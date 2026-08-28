@@ -40,8 +40,12 @@ pub async fn register(
     }
 
     let hash = auth::hash_password(req.password).await.map_err(internal)?;
-    // The first account on a fresh server becomes admin/owner.
-    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    // The first PERSON on a fresh server becomes admin/owner. NotBot is
+    // created at first boot, so counting it here left the owner of a brand
+    // new server as a plain member with no way to promote themselves.
+    let bot_id = state.bot_user().id;
+    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id != ?")
+        .bind(bot_id)
         .fetch_one(&state.db)
         .await
         .map_err(internal)?;
@@ -1055,12 +1059,17 @@ pub(crate) async fn storage_cap_bytes(state: &SharedState) -> i64 {
 
 pub async fn upload(
     State(state): State<SharedState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> ApiResult<Json<UploadResponse>> {
     if body.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "empty upload"));
+    }
+    // Uploads cost disk, storage cap, and thumbnail CPU; the budget is per
+    // user, so opening more connections doesn't buy more of it.
+    if !state.uploads.take(user.id) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "too many uploads at once — give it a moment"));
     }
     if uploads_size().await + body.len() as i64 > storage_cap_bytes(&state).await {
         return Err(err(

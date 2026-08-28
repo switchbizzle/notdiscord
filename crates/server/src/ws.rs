@@ -68,6 +68,8 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
 
     // Voice channel this connection has announced itself in.
     let mut my_voice: Option<i64> = None;
+    // This connection's flood budget.
+    let mut limits = crate::ratelimit::ConnectionLimits::default();
 
     loop {
         tokio::select! {
@@ -131,6 +133,37 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                             send_scoped(&state, &recipients, ServerEvent::VoiceStateChanged { user: user.clone(), channel_id, sharing, camera });
                         }
                         Ok(event) => {
+                            // Flood guard: each kind of traffic has its own
+                            // budget, so a reaction spree can't silence you
+                            // mid-sentence. Refusals are told to the sender —
+                            // silently dropping a message is worse than
+                            // saying no — and a connection that keeps at it
+                            // is dropped as not-a-person.
+                            let allowed = match &event {
+                                ClientEvent::SendMessage { .. } => limits.messages.take(),
+                                ClientEvent::ToggleReaction { .. } => limits.reactions.take(),
+                                ClientEvent::Typing { .. } => limits.typing.take(),
+                                ClientEvent::EditMessage { .. } | ClientEvent::DeleteMessage { .. } => {
+                                    limits.edits.take()
+                                }
+                                _ => true,
+                            };
+                            if !allowed {
+                                limits.strikes += 1;
+                                if limits.strikes > crate::ratelimit::MAX_STRIKES {
+                                    tracing::warn!("ws flood from {}: closing", user.username);
+                                    break;
+                                }
+                                // Typing is noise; don't nag about it.
+                                if !matches!(event, ClientEvent::Typing { .. }) {
+                                    let warning = serde_json::to_string(&ServerEvent::Error {
+                                        message: "slow down — too many actions at once".into(),
+                                    })
+                                    .expect("serialize");
+                                    let _ = sink.send(WsMessage::text(warning)).await;
+                                }
+                                continue;
+                            }
                             if let Err(e) = handle_event(&state, &user, event).await {
                                 tracing::warn!("ws event error from {}: {e}", user.username);
                             }

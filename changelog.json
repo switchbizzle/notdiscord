@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.60.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🛡️ Flood protection on the server: messages, reactions, edits and uploads each get a generous burst allowance and then a sane rate, so a runaway script or a stolen account can't fill everyone's screen. Normal chatting is unaffected — you'd have to send ten messages in one second to notice",
+      "🐛 Fixed: on a brand-new server the first person to register wasn't made admin (the bot account was being counted as the first user), leaving the owner unable to open server settings"
+    ]
+  },
+  {
     "version": "0.59.0",
     "date": "2026-08-28",
     "changes": [

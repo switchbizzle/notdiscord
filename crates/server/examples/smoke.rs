@@ -102,7 +102,8 @@ async fn main() {
     println!("alice saw bob typing");
 
     let content = format!("hello from smoke test {nonce}");
-    let event = ClientEvent::SendMessage { channel_id: general.id, content: content.clone() };
+    let event =
+        ClientEvent::SendMessage { channel_id: general.id, content: content.clone(), reply_to: None };
     ws_alice
         .send(WsMsg::Text(serde_json::to_string(&event).unwrap().into()))
         .await
