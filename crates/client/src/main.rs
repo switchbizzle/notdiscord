@@ -817,6 +817,52 @@ fn MainView(session: api::Session) -> Element {
     let mut share_picker =
         use_signal(|| None::<(Vec<share::MonitorChoice>, Vec<share::WindowChoice>)>);
     use_context_provider(|| share_picker);
+    // Thumbnails keyed "m{index}" / "w{hwnd}", filled in as each still is
+    // grabbed so the picker paints immediately and fills in behind you.
+    let mut share_thumbs = use_signal(HashMap::<String, String>::new);
+    use_context_provider(|| share_thumbs);
+
+    // Whenever the picker opens, grab one still per target on a background
+    // thread. Sequential on purpose: a dozen simultaneous capture sessions
+    // is a lot of GPU churn for pictures nobody has looked at yet.
+    use_effect(move || {
+        let Some((monitors, windows)) = share_picker() else {
+            share_thumbs.write().clear();
+            return;
+        };
+        let targets: Vec<(String, share::ShareTarget)> = monitors
+            .iter()
+            .map(|m| (format!("m{}", m.index), share::ShareTarget::Monitor(m.index)))
+            .chain(
+                windows
+                    .iter()
+                    .map(|w| (format!("w{}", w.hwnd), share::ShareTarget::Window(w.hwnd))),
+            )
+            .collect();
+        spawn(async move {
+            for (key, target) in targets {
+                // Picker closed while we were working — stop capturing.
+                if share_picker.peek().is_none() {
+                    break;
+                }
+                let jpeg = tokio::task::spawn_blocking(move || {
+                    voice::com_init_mta();
+                    share::thumbnail(target)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some(jpeg) = jpeg {
+                    use base64::Engine;
+                    let uri = format!(
+                        "data:image/jpeg;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(&jpeg)
+                    );
+                    share_thumbs.write().insert(key, uri);
+                }
+            }
+        });
+    });
     let mut storage_info = use_signal(|| None::<shared::StorageInfo>);
     // None until the Server tab loads it; the draft is what's in the box.
     let mut invite_loaded = use_signal(|| false);
@@ -3671,36 +3717,64 @@ fn MainView(session: api::Session) -> Element {
                             if let Some((monitors, windows)) = share_picker() {
                                 div { class: "share-picker",
                                     div { class: "share-picker-title", "Share what?" }
-                                    for m in monitors {
-                                        button {
-                                            key: "m{m.index}",
-                                            class: "share-picker-option",
-                                            onclick: move |_| {
-                                                voice.send(voice::VoiceCmd::StartScreenShare {
-                                                    target: share::ShareTarget::Monitor(m.index),
-                                                });
-                                                share_picker.set(None);
-                                            },
-                                            Icon { name: "screen", size: 14 }
-                                            "{m.label}"
+                                    div { class: "share-grid",
+                                        for m in monitors {
+                                            {
+                                                let key = format!("m{}", m.index);
+                                                let thumb = share_thumbs().get(&key).cloned();
+                                                rsx! {
+                                                    button {
+                                                        key: "{key}",
+                                                        class: "share-card",
+                                                        title: "{m.label}",
+                                                        onclick: move |_| {
+                                                            voice.send(voice::VoiceCmd::StartScreenShare {
+                                                                target: share::ShareTarget::Monitor(m.index),
+                                                            });
+                                                            share_picker.set(None);
+                                                        },
+                                                        if let Some(src) = thumb {
+                                                            img { class: "share-thumb", src: "{src}" }
+                                                        } else {
+                                                            div { class: "share-thumb placeholder",
+                                                                Icon { name: "screen", size: 18 }
+                                                            }
+                                                        }
+                                                        div { class: "share-card-label", "{m.label}" }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     if !windows.is_empty() {
                                         div { class: "share-picker-sub", "Windows" }
                                     }
-                                    div { class: "share-picker-windows",
+                                    div { class: "share-grid share-grid-windows",
                                         for w in windows {
-                                            button {
-                                                key: "w{w.hwnd}",
-                                                class: "share-picker-option",
-                                                onclick: move |_| {
-                                                    voice.send(voice::VoiceCmd::StartScreenShare {
-                                                        target: share::ShareTarget::Window(w.hwnd),
-                                                    });
-                                                    share_picker.set(None);
-                                                },
-                                                Icon { name: "file", size: 14 }
-                                                "{w.label}"
+                                            {
+                                                let key = format!("w{}", w.hwnd);
+                                                let thumb = share_thumbs().get(&key).cloned();
+                                                rsx! {
+                                                    button {
+                                                        key: "{key}",
+                                                        class: "share-card",
+                                                        title: "{w.label}",
+                                                        onclick: move |_| {
+                                                            voice.send(voice::VoiceCmd::StartScreenShare {
+                                                                target: share::ShareTarget::Window(w.hwnd),
+                                                            });
+                                                            share_picker.set(None);
+                                                        },
+                                                        if let Some(src) = thumb {
+                                                            img { class: "share-thumb", src: "{src}" }
+                                                        } else {
+                                                            div { class: "share-thumb placeholder",
+                                                                Icon { name: "file", size: 18 }
+                                                            }
+                                                        }
+                                                        div { class: "share-card-label", "{w.label}" }
+                                                    }
+                                                }
                                             }
                                         }
                                     }

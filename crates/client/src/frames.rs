@@ -179,7 +179,19 @@ pub fn is_wanted(stamp: &AtomicU64) -> bool {
 
 /// RGBA -> JPEG, scaled down so a 1440p share doesn't cost 1440p of encoding.
 fn encode(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
-    let scale = (MAX_EDGE as f32 / width.max(height) as f32).min(1.0);
+    encode_scaled(rgba, width, height, MAX_EDGE, QUALITY)
+}
+
+/// The same scale-and-encode at a caller-chosen size — share-picker
+/// thumbnails want something far smaller than a live tile.
+pub fn encode_scaled(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    max_edge: u32,
+    quality: u8,
+) -> Option<Vec<u8>> {
+    let scale = (max_edge as f32 / width.max(height) as f32).min(1.0);
     let (out_w, out_h) = (
         ((width as f32 * scale) as u32).max(1),
         ((height as f32 * scale) as u32).max(1),
@@ -195,7 +207,7 @@ fn encode(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
         }
     }
     let mut out = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, QUALITY)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
         .encode(&rgb, out_w, out_h, image::ExtendedColorType::Rgb8)
         .ok()?;
     Some(out)

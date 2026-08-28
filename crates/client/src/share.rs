@@ -210,6 +210,91 @@ pub fn list_monitors() -> Vec<MonitorChoice> {
     choices.into_iter().map(|(_, c)| c).collect()
 }
 
+// ---------- Share-picker thumbnails ----------
+
+/// Grabs exactly one frame and stops: the picker wants a still, not a stream.
+struct ThumbGrabber {
+    slot: Arc<Mutex<Option<(u32, u32, Vec<u8>)>>>,
+}
+
+impl GraphicsCaptureApiHandler for ThumbGrabber {
+    type Flags = Arc<Mutex<Option<(u32, u32, Vec<u8>)>>>;
+    type Error = CapError;
+
+    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        Ok(Self { slot: ctx.flags })
+    }
+
+    fn on_frame_arrived(
+        &mut self,
+        frame: &mut Frame,
+        control: InternalCaptureControl,
+    ) -> Result<(), Self::Error> {
+        let (width, height) = (frame.width(), frame.height());
+        let mut buffer = frame.buffer()?;
+        let mut scratch = Vec::new();
+        let data = buffer.as_nopadding_buffer(&mut scratch);
+        *self.slot.lock().unwrap() = Some((width, height, data.to_vec()));
+        control.stop();
+        Ok(())
+    }
+}
+
+/// One still of a share target as JPEG bytes, for the picker's preview.
+/// Blocking and short-lived: starts a capture, takes the first frame, stops.
+/// Returns None if the target is gone or never produced a frame (a minimized
+/// window, for instance — Windows simply stops sending frames for those).
+pub fn thumbnail(target: ShareTarget) -> Option<Vec<u8>> {
+    let slot: Arc<Mutex<Option<(u32, u32, Vec<u8>)>>> = Arc::new(Mutex::new(None));
+    macro_rules! settings {
+        ($item:expr) => {
+            Settings::new(
+                $item,
+                CursorCaptureSettings::WithoutCursor,
+                DrawBorderSettings::WithoutBorder,
+                SecondaryWindowSettings::Default,
+                MinimumUpdateIntervalSettings::Default,
+                DirtyRegionSettings::Default,
+                ColorFormat::Rgba8,
+                slot.clone(),
+            )
+        };
+    }
+    let control = match target {
+        ShareTarget::Monitor(index) => {
+            ThumbGrabber::start_free_threaded(settings!(Monitor::from_index(index).ok()?))
+        }
+        ShareTarget::PrimaryMonitor => {
+            ThumbGrabber::start_free_threaded(settings!(Monitor::primary().ok()?))
+        }
+        ShareTarget::Window(hwnd) => {
+            let window =
+                windows_capture::window::Window::from_raw_hwnd(hwnd as *mut std::ffi::c_void);
+            if !window.is_valid() {
+                return None;
+            }
+            ThumbGrabber::start_free_threaded(settings!(window))
+        }
+    }
+    .ok()?;
+
+    // First frame usually lands in well under 200ms; give up rather than
+    // stall the picker on a window that never paints.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(900);
+    let frame = loop {
+        if let Some(frame) = slot.lock().unwrap().take() {
+            break Some(frame);
+        }
+        if std::time::Instant::now() > deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let _ = control.stop();
+    let (width, height, rgba) = frame?;
+    crate::frames::encode_scaled(&rgba, width, height, 320, 70)
+}
+
 /// Start capturing a monitor or a single window into `source`. `preview`
 /// also receives a scaled copy, so the sharer can see their own tile.
 /// `closed` is set by the capture when it ends on its own (window closed).

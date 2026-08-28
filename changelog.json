@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.58.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🖼️ The share picker shows live thumbnails now — an actual picture of each monitor and window, so you can see what you're about to share instead of guessing from a title. It also moved out of the cramped sidebar into a proper centered picker with room for full names"
+    ]
+  },
+  {
     "version": "0.57.0",
     "date": "2026-08-28",
     "changes": [
