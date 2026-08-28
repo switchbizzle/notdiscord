@@ -86,10 +86,22 @@ fn main() {
             }
         }
     }
-    let window = WindowBuilder::new()
+    // Reopen at the size and place you left it — updates restart the app, and
+    // resizing after every one gets old.
+    let saved = api::load_window();
+    let mut window = WindowBuilder::new()
         .with_title("NotDiscord")
-        .with_inner_size(LogicalSize::new(1100.0, 720.0))
+        .with_inner_size(match saved {
+            Some(s) => LogicalSize::new(s.width, s.height),
+            None => LogicalSize::new(1100.0, 720.0),
+        })
         .with_min_inner_size(LogicalSize::new(900.0, 560.0));
+    if let Some(state) = saved {
+        if let (Some(x), Some(y)) = (state.x, state.y) {
+            window = window.with_position(dioxus::desktop::tao::dpi::LogicalPosition::new(x, y));
+        }
+        window = window.with_maximized(state.maximized);
+    }
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::new()
@@ -223,6 +235,68 @@ fn App() -> Element {
     // System tray: created once, lives for the app's lifetime.
     let tray_handle: tray::TrayHandle = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(tray::create())));
     let tray_unread = use_context_provider(|| Signal::new(false));
+
+    // Remember where and how big the window is, so an update (which restarts
+    // the app) doesn't reset it. Resizing fires a storm of events, so the
+    // write is debounced: the handler only stamps a signal.
+    {
+        let window = window.clone();
+        let mut moved = use_signal(|| 0u64);
+        dioxus::desktop::use_wry_event_handler(move |event, _| {
+            use dioxus::desktop::tao::event::{Event, WindowEvent};
+            if let Event::WindowEvent { event: WindowEvent::Resized(_) | WindowEvent::Moved(_), .. } = event {
+                // Only a nudge. Reading geometry here catches the window
+                // mid-maximize, when the size is already full-screen but
+                // is_maximized() hasn't caught up — and that combination
+                // would be saved as the size to restore to.
+                let n = *moved.peek();
+                moved.set(n + 1);
+            }
+        });
+        use_future(move || {
+            // Rc isn't Copy, and the future is built fresh each time.
+            let window = window.clone();
+            async move {
+            let mut last: Option<api::WindowState> = api::load_window();
+            let mut seen = 0u64;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                let ticks = moved();
+                if ticks == seen {
+                    continue;
+                }
+                seen = ticks;
+                let w = &window.window;
+                if w.is_minimized() {
+                    continue;
+                }
+                let maximized = w.is_maximized();
+                let scale = w.scale_factor();
+                let mut next = last.unwrap_or(api::WindowState {
+                    width: 1100.0,
+                    height: 720.0,
+                    x: None,
+                    y: None,
+                    maximized,
+                });
+                // Maximized keeps the previous size as what to restore to.
+                if !maximized {
+                    let size = w.inner_size().to_logical::<f64>(scale);
+                    let pos = w.outer_position().ok().map(|p| p.to_logical::<f64>(scale));
+                    next.width = size.width;
+                    next.height = size.height;
+                    next.x = pos.map(|p| p.x);
+                    next.y = pos.map(|p| p.y);
+                }
+                next.maximized = maximized;
+                if last != Some(next) {
+                    api::save_window(&next);
+                    last = Some(next);
+                }
+            }
+            }
+        });
+    }
 
     // Reflect unread state on the tray icon.
     {
@@ -1123,6 +1197,18 @@ fn MainView(session: api::Session) -> Element {
 
             // Refresh state that may have drifted while disconnected.
             if let Ok(users) = api::users(&session()).await {
+                // Your own role can change without you being told — an admin
+                // promotes you, or the server's owner is fixed by hand. The
+                // roster is authoritative, so adopt it rather than staying
+                // locked out of controls the server would happily allow.
+                if let Some(me) = users.iter().find(|u| u.user.id == session().user.id) {
+                    if me.user.role != session().user.role {
+                        let mut s = session();
+                        s.user.role = me.user.role.clone();
+                        api::update_saved_server(&s);
+                        session.set(s);
+                    }
+                }
                 members.set(users);
             }
             if let Some(channel) = selected() {

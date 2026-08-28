@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.62.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🪟 The app remembers your window size, position, and whether it was maximized — no more resizing it after every update",
+      "🔑 If your role changes while you're online (someone promotes you to admin), the app now picks that up on its own instead of leaving you with the badge but none of the buttons"
+    ]
+  },
+  {
     "version": "0.61.0",
     "date": "2026-08-28",
     "changes": [

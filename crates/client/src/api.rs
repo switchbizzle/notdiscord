@@ -371,6 +371,47 @@ fn settings_path() -> Option<std::path::PathBuf> {
     config_root().map(|d| d.join("settings.json"))
 }
 
+/// Where the window was last time. Kept out of settings.json because it's
+/// written on resize, and settings are written on user actions.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowState {
+    pub width: f64,
+    pub height: f64,
+    /// Screen position; None restores to wherever the OS puts it.
+    #[serde(default)]
+    pub x: Option<f64>,
+    #[serde(default)]
+    pub y: Option<f64>,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+fn window_path() -> Option<std::path::PathBuf> {
+    config_root().map(|d| d.join("window.json"))
+}
+
+pub fn load_window() -> Option<WindowState> {
+    let state: WindowState = window_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())?;
+    // A window smaller than the minimum, or absurdly large, means a corrupt
+    // file or a monitor that no longer exists — start fresh instead.
+    if state.width < 400.0 || state.height < 300.0 || state.width > 20000.0 || state.height > 20000.0 {
+        return None;
+    }
+    Some(state)
+}
+
+pub fn save_window(state: &WindowState) {
+    let Some(path) = window_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
 pub fn load_settings() -> Settings {
     settings_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
