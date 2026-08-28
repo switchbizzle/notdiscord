@@ -1,3 +1,4 @@
+mod attachments;
 mod auth;
 mod bot;
 mod creds;
@@ -102,9 +103,10 @@ pub fn uploads_dir() -> std::path::PathBuf {
         .into()
 }
 
-/// Delete uploads older than the retention window, except files still
-/// referenced as an avatar or sticker. Both storage layouts are handled:
-/// uploads/{32hex}/{name} directories and legacy flat uploads/{32hex}.{ext}.
+/// Delete uploads older than the retention window, except files something
+/// still points at — an avatar, a sticker, a custom emoji, the server icon.
+/// Both storage layouts are handled: uploads/{32hex}/{name} directories and
+/// legacy flat uploads/{32hex}.{ext}.
 async fn cleanup_uploads(state: &SharedState) -> anyhow::Result<usize> {
     use sqlx::Row;
 
@@ -117,15 +119,13 @@ async fn cleanup_uploads(state: &SharedState) -> anyhow::Result<usize> {
     .unwrap_or(21);
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days as u64 * 86400);
 
-    // Protected: the first /files/ path segment of every avatar and sticker.
+    // Protected: whatever the shared reference list turns up. Custom emojis
+    // used to be missing from here, which would have deleted one out from
+    // under the server the moment it aged past the window.
     let mut keep = std::collections::HashSet::<String>::new();
-    let referenced = sqlx::query(
-        "SELECT avatar AS url FROM users WHERE avatar IS NOT NULL \
-         UNION ALL SELECT url FROM stickers \
-         UNION ALL SELECT value FROM server_meta WHERE key = 'icon'",
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let referenced = sqlx::query(attachments::REFERENCE_SOURCES)
+        .fetch_all(&state.db)
+        .await?;
     for row in referenced {
         let url: String = row.get(0);
         if let Some(pos) = url.find("/files/") {

@@ -455,9 +455,9 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
         ClientEvent::DeleteMessage { message_id } => {
             // Authors can delete their own messages; admins can delete any.
             let query = if user.role == "admin" {
-                sqlx::query("SELECT channel_id FROM messages WHERE id = ?").bind(message_id)
+                sqlx::query("SELECT channel_id, content FROM messages WHERE id = ?").bind(message_id)
             } else {
-                sqlx::query("SELECT channel_id FROM messages WHERE id = ? AND author_id = ?")
+                sqlx::query("SELECT channel_id, content FROM messages WHERE id = ? AND author_id = ?")
                     .bind(message_id)
                     .bind(user.id)
             };
@@ -465,12 +465,20 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 return Ok(());
             };
             let channel_id: i64 = row.get(0);
+            let content: String = row.get(1);
             sqlx::query("DELETE FROM messages WHERE id = ?")
                 .bind(message_id)
                 .execute(&state.db)
                 .await?;
             let recipients = dm_recipients(&state.db, channel_id).await?;
             send_scoped(state, &recipients, ServerEvent::MessageDeleted { channel_id, message_id });
+            // Take the attachments with it, unless something else — another
+            // message, an avatar, a sticker, an emoji — still points at them.
+            // Off the reply path: deleting is done either way.
+            let state = state.clone();
+            tokio::spawn(async move {
+                crate::attachments::drop_orphans(&state, &content, message_id).await;
+            });
         }
     }
     Ok(())

@@ -243,3 +243,44 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
 @media (min-width: 900px) {
     .messages, .composer { padding-left: max(12px, calc((100vw - 860px) / 2)); padding-right: max(12px, calc((100vw - 860px) / 2)); }
 }
+
+/* Editing and deleting your own messages. Deleting confirms first: these
+   are thumb-sized targets, and there's no undo behind them. */
+.msg-confirm {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    background: #2b2d31;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 4px 0;
+    font-size: 13px;
+    color: #dbdee1;
+}
+.msg-edit { margin: 4px 0; display: flex; flex-direction: column; gap: 6px; }
+.msg-edit-box {
+    width: 100%;
+    box-sizing: border-box;
+    background: #1e1f22;
+    border: 1px solid #3f4147;
+    border-radius: 8px;
+    color: #dbdee1;
+    font: inherit;
+    padding: 8px 10px;
+    resize: vertical;
+}
+.msg-edit-actions { display: flex; gap: 8px; }
+.msg-confirm-yes, .msg-confirm-no {
+    border: none;
+    border-radius: 6px;
+    /* Thumb-sized: these are the only destructive controls in the app. */
+    padding: 10px 16px;
+    min-height: 40px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.msg-confirm-yes { background: #da373c; color: #fff; }
+.msg-edit-actions .msg-confirm-yes { background: #5865f2; }
+.msg-confirm-no { background: #4e5058; color: #dbdee1; }

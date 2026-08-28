@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.66.0",
+    "date": "2026-08-28",
+    "changes": [
+      "✏️ The phone app can edit and delete your own messages now — admins can delete anyone's, same as on desktop. Deleting asks first, because these are thumb-sized buttons",
+      "🗑️ Deleting a message now deletes what it was carrying. A photo or video goes with it, unless something else still points at that file — another message, an avatar, a sticker, an emoji. Before this it sat on the server until the retention sweep noticed it weeks later",
+      "Fixed while we were in there: custom emojis weren't protected from that sweep, so one could have been deleted out from under the server once it aged past the retention window"
+    ]
+  },
+  {
     "version": "0.65.1",
     "date": "2026-08-28",
     "changes": [

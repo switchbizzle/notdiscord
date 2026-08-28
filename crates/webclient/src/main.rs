@@ -350,6 +350,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let replying = use_context_provider(|| Signal::new(None::<Message>));
     let mut replying = replying;
     let me_id = sess().user.id;
+    let me_admin = sess().user.role == "admin";
 
 
     let refresh_music = move || {
@@ -923,7 +924,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 main { class: "messages",
                     // column-reverse pins the view to the newest message.
                     for msg in messages().into_iter().rev() {
-                        MessageRow { key: "{msg.id}", msg, me_id }
+                        MessageRow { key: "{msg.id}", msg, me_id, me_admin }
                     }
                     if has_more() {
                         button { class: "load-older", onclick: load_older, "Load older messages" }
@@ -1243,11 +1244,16 @@ fn Avatar(user: User) -> Element {
 const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "🔥"];
 
 #[component]
-fn MessageRow(msg: Message, me_id: i64) -> Element {
+fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut replying = use_context::<Signal<Option<Message>>>();
     let mut strip_open = use_signal(|| false);
+    // Editing and deleting your own words, the way the desktop app allows.
+    // Deleting asks first: these are thumb-sized targets on a phone.
+    let mut editing = use_signal(|| None::<String>);
+    let mut confirming_delete = use_signal(|| false);
     let msg_id = msg.id;
+    let mine = msg.author.id == me_id;
 
     // The bot's music-player card is a desktop thing.
     if msg.content.starts_with(shared::PLAYER_MARKER) {
@@ -1289,6 +1295,73 @@ fn MessageRow(msg: Message, me_id: i64) -> Element {
                         move |_| replying.set(Some(msg_for_reply.clone()))
                     },
                     Icon { name: "reply", size: 14 }
+                }
+                if mine {
+                    button {
+                        class: "msg-act",
+                        onclick: {
+                            let original = msg.content.clone();
+                            move |_| {
+                                confirming_delete.set(false);
+                                editing.set(Some(original.clone()));
+                            }
+                        },
+                        Icon { name: "edit", size: 14 }
+                    }
+                }
+                if mine || me_admin {
+                    button {
+                        class: "msg-act",
+                        onclick: move |_| {
+                            editing.set(None);
+                            confirming_delete.set(!confirming_delete());
+                        },
+                        Icon { name: "trash", size: 14 }
+                    }
+                }
+            }
+            if confirming_delete() {
+                div { class: "msg-confirm",
+                    span { "Delete this message?" }
+                    button {
+                        class: "msg-confirm-yes",
+                        onclick: move |_| {
+                            confirming_delete.set(false);
+                            ws.send(ClientEvent::DeleteMessage { message_id: msg_id });
+                        },
+                        "Delete"
+                    }
+                    button {
+                        class: "msg-confirm-no",
+                        onclick: move |_| confirming_delete.set(false),
+                        "Cancel"
+                    }
+                }
+            }
+            if let Some(draft) = editing() {
+                div { class: "msg-edit",
+                    textarea {
+                        class: "msg-edit-box",
+                        rows: "3",
+                        value: "{draft}",
+                        oninput: move |e| editing.set(Some(e.value())),
+                    }
+                    div { class: "msg-edit-actions",
+                        button {
+                            class: "msg-confirm-yes",
+                            onclick: move |_| {
+                                let text = editing().unwrap_or_default().trim().to_string();
+                                // An empty edit is a delete you didn't ask for;
+                                // the server ignores it, so we do too.
+                                if !text.is_empty() {
+                                    ws.send(ClientEvent::EditMessage { message_id: msg_id, content: text });
+                                }
+                                editing.set(None);
+                            },
+                            "Save"
+                        }
+                        button { class: "msg-confirm-no", onclick: move |_| editing.set(None), "Cancel" }
+                    }
                 }
             }
             if let Some(preview) = msg.reply_preview.clone() {

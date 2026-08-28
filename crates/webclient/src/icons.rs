@@ -29,6 +29,8 @@ pub fn icon_svg(name: &str) -> &'static str {
         "settings" => include_str!("../../client/assets/icons/settings.svg"),
         "check" => include_str!("../../client/assets/icons/check.svg"),
         "download" => include_str!("../../client/assets/icons/download.svg"),
+        "edit" => include_str!("../../client/assets/icons/edit.svg"),
+        "trash" => include_str!("../../client/assets/icons/trash.svg"),
         _ => "",
     }
 }
