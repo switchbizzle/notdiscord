@@ -290,6 +290,8 @@ async fn run_command(
                     "lk_url": lk_url,
                     "token": token,
                     "url": url,
+                    // Per-server HD credentials, if an admin configured any.
+                    "cookies": crate::creds::get(state, "soundcloud").await,
                 }))
                 .timeout(std::time::Duration::from_secs(60))
                 .send()

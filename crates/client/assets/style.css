@@ -2381,6 +2381,46 @@ ul.md-list { list-style-type: disc; }
 .srv-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .srv-create { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .srv-hint { color: #949ba4; font-size: 12px; }
+.srv-cred {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: #2b2d31;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 8px;
+}
+.srv-cred-head { display: flex; align-items: center; gap: 8px; }
+.srv-cred-name { font-size: 13px; font-weight: 600; color: #dbdee1; }
+.srv-cred-tag {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+.srv-cred-tag.on { background: #248046; color: #fff; }
+.srv-cred-tag.env { background: #4e5058; color: #dbdee1; }
+.srv-cred-tag.off { background: #40444b; color: #949ba4; }
+/* Long secrets wrap instead of scrolling off, and never in a proportional
+   face — a mistyped cookie is hard enough to spot as it is. */
+.srv-cred-input {
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 12px;
+    resize: vertical;
+    word-break: break-all;
+}
+.srv-cred-clear {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    padding: 0;
+    color: #f38688;
+    font-size: 12px;
+    cursor: pointer;
+}
+.srv-cred-clear:hover { text-decoration: underline; }
 .srv-note {
     background: #2b2d31;
     border-left: 3px solid #5865f2;

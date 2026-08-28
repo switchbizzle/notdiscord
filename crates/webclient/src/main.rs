@@ -47,6 +47,25 @@ extern "C" {
     fn push_state_js() -> String;
 }
 
+// Install glue (pwa/install.js).
+#[wasm_bindgen(js_namespace = ndInstall)]
+extern "C" {
+    #[wasm_bindgen(js_name = prompt)]
+    fn install_prompt_js() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = getState)]
+    fn install_state_js() -> String;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+struct InstallGlue {
+    /// True once the browser has offered us an install event to replay.
+    available: bool,
+    installed: bool,
+    ios: bool,
+    #[serde(default)]
+    outcome: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 struct PushGlue {
     supported: bool,
@@ -172,12 +191,19 @@ fn App() -> Element {
         document::Title { "NotDiscord" }
         document::Stylesheet { href: CSS }
         document::Script {
-            "if ('serviceWorker' in navigator) {{ navigator.serviceWorker.register('/app/sw.js', {{ scope: '/app/' }}); }}"
+            // A backstop for dev builds: released pages catch the install
+            // event in the document head (see release-webapp.ps1), which is
+            // early enough to beat a repeat visitor's browser. This must not
+            // clear what that already caught.
+            "if ('serviceWorker' in navigator) {{ navigator.serviceWorker.register('/app/sw.js', {{ scope: '/app/' }}); }}
+             window.__ndInstallEvent = window.__ndInstallEvent || null;
+             window.addEventListener('beforeinstallprompt', function (e) {{ e.preventDefault(); window.__ndInstallEvent = e; }});"
         }
         // livekit-client + our glue, self-hosted next to the bundle.
         document::Script { src: "/app/livekit-client.umd.min.js" }
         document::Script { src: "/app/voice.js" }
         document::Script { src: "/app/push.js" }
+        document::Script { src: "/app/install.js" }
         if session().is_some() {
             Main { session }
         } else {
@@ -285,6 +311,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut settings_open = use_signal(|| false);
     let mut notify = use_signal(|| None::<shared::NotifyPrefs>);
     let mut push_glue = use_signal(PushGlue::default);
+    let mut install_glue = use_signal(InstallGlue::default);
     let mut notify_msg = use_signal(String::new);
 
     // Load prefs when the sheet opens: the browser's current subscription
@@ -295,6 +322,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         // the browser can't do notifications when it can.
         if let Ok(state) = serde_json::from_str::<PushGlue>(&push_state_js()) {
             push_glue.set(state);
+        }
+        if let Ok(state) = serde_json::from_str::<InstallGlue>(&install_state_js()) {
+            install_glue.set(state);
         }
         spawn(async move {
             let sub_json = wasm_bindgen_futures::JsFuture::from(push_current_js())
@@ -908,6 +938,43 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         div { class: "sheet-title", "Settings" }
                         button { class: "sheet-x", onclick: move |_| settings_open.set(false),
                             Icon { name: "x", size: 14 }
+                        }
+                    }
+                    // Installing comes first: on iPhone it's what makes
+                    // notifications possible at all, and on Android the
+                    // browser's own banner only ever appears once.
+                    {
+                        let inst = install_glue();
+                        rsx! {
+                            if !inst.installed {
+                                div { class: "sheet-section", "Install" }
+                                if inst.available {
+                                    button {
+                                        class: "sheet-toggle",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                let _ = wasm_bindgen_futures::JsFuture::from(install_prompt_js()).await;
+                                                if let Ok(state) = serde_json::from_str::<InstallGlue>(&install_state_js()) {
+                                                    install_glue.set(state);
+                                                }
+                                            });
+                                        },
+                                        Icon { name: "download", size: 15 }
+                                        " Install NotDiscord on this device"
+                                    }
+                                } else if inst.ios {
+                                    div { class: "sheet-hint",
+                                        "To install: tap the Share button, then \"Add to Home Screen\". Notifications only work once it's installed."
+                                    }
+                                } else {
+                                    div { class: "sheet-hint",
+                                        "To install: open your browser's menu and pick \"Install app\" or \"Add to Home screen\". Your browser only offers to do this on its own once, so the menu is the reliable way back."
+                                    }
+                                }
+                                if inst.outcome == "dismissed" {
+                                    div { class: "sheet-note", "maybe next time" }
+                                }
+                            }
                         }
                     }
                     div { class: "sheet-section", "Notifications" }

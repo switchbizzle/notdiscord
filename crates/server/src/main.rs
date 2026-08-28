@@ -1,5 +1,6 @@
 mod auth;
 mod bot;
+mod creds;
 mod mail;
 mod music;
 mod preview;

@@ -1741,11 +1741,20 @@ pub async fn get_bot_settings(
             .await
             .map_err(internal)?
             .and_then(|v: String| v.parse().ok());
+    let model = crate::bot::meta_value_opt(&state, "bot_model")
+        .await
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| std::env::var("NOTDISCORD_BOT_MODEL").ok().filter(|m| !m.trim().is_empty()))
+        .unwrap_or_else(|| crate::bot::DEFAULT_MODEL.into());
     Ok(Json(shared::BotSettings {
         persona: crate::bot::persona(&state.db).await,
         name: bot.username,
         avatar: bot.avatar,
         announce_channel,
+        model,
+        // Never the values themselves — only whether each is set and where
+        // it came from.
+        credentials: crate::creds::statuses(&state).await,
     }))
 }
 
@@ -1831,6 +1840,31 @@ pub async fn set_bot_settings(
         .execute(&state.db)
         .await
         .map_err(internal)?;
+    }
+
+    if let Some(model) = &req.model {
+        let model = model.trim();
+        if model.len() > 120 {
+            return Err(err(StatusCode::BAD_REQUEST, "that model name is too long"));
+        }
+        // Empty resets to the built-in default.
+        sqlx::query(
+            "INSERT INTO server_meta (key, value) VALUES ('bot_model', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(model)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    }
+
+    for (key, value) in &req.credentials {
+        if value.len() > 64_000 {
+            return Err(err(StatusCode::BAD_REQUEST, "that value is too large"));
+        }
+        crate::creds::set(&state, key, value)
+            .await
+            .map_err(|_| err(StatusCode::BAD_REQUEST, "unknown credential"))?;
     }
 
     if identity_changed {
@@ -2008,7 +2042,7 @@ pub async fn gifs(
     _user: AuthUser,
     Query(q): Query<GifQuery>,
 ) -> ApiResult<Json<Vec<GifResult>>> {
-    let Ok(key) = std::env::var("NOTDISCORD_GIPHY_KEY") else {
+    let Some(key) = crate::creds::get(&_state, "giphy").await else {
         return Err(err(
             StatusCode::SERVICE_UNAVAILABLE,
             "GIF search not configured on the server yet",

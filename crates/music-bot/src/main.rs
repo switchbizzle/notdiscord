@@ -122,7 +122,41 @@ fn music_bitrate() -> u64 {
 /// public rendition, so roughly 320k against 160k. yt-dlp's own "bestaudio"
 /// picks it without help. Tracks with downloads disabled see no difference,
 /// which is why a single track is a bad way to test this.
+/// A cookie file handed over by the server (admins paste one in settings),
+/// written to disk once so yt-dlp can read it. Falls back to the file named
+/// by SOUNDCLOUD_COOKIES, which is how our own deployment supplies it.
+static COOKIE_FILE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
+    std::sync::OnceLock::new();
+
+fn cookie_slot() -> &'static std::sync::Mutex<Option<std::path::PathBuf>> {
+    COOKIE_FILE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Store (or clear) the server-supplied cookie. Written beside our other
+/// temp files, replaced whenever the server sends a different one.
+fn set_cookies(contents: Option<&str>) {
+    let mut slot = cookie_slot().lock().unwrap();
+    match contents.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(text) => {
+            let path = std::env::temp_dir().join("notdiscord-soundcloud-cookies.txt");
+            if std::fs::write(&path, text).is_ok() {
+                *slot = Some(path);
+            }
+        }
+        None => {
+            if let Some(path) = slot.take() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
 fn cookie_args() -> Vec<String> {
+    if let Some(path) = cookie_slot().lock().unwrap().clone() {
+        if path.exists() {
+            return vec!["--cookies".into(), path.to_string_lossy().into_owned()];
+        }
+    }
     match std::env::var("SOUNDCLOUD_COOKIES") {
         Ok(path) if !path.is_empty() && std::path::Path::new(&path).exists() => {
             vec!["--cookies".into(), path]
@@ -183,6 +217,10 @@ struct PlayRequest {
     token: String,
     /// SoundCloud (or anything yt-dlp handles) track or playlist page URL.
     url: String,
+    /// Optional cookies.txt contents, so HD streaming is configured per
+    /// server rather than baked into this container.
+    #[serde(default)]
+    cookies: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +233,9 @@ async fn play(
     State(state): State<Shared>,
     Json(req): Json<PlayRequest>,
 ) -> Result<Json<PlayResponse>, (StatusCode, String)> {
+    // The server owns this setting; every request restates it, so clearing
+    // it in settings takes effect on the next song.
+    set_cookies(req.cookies.as_deref());
     let tracks = resolve_tracks(&req.url)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("could not resolve that link: {e}")))?;
@@ -663,4 +704,32 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
     }
     let _ = ffmpeg.wait().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One test for the whole cookie lifecycle: the slot is process-global and
+    /// the file path is fixed, so splitting this up would just race with itself.
+    #[test]
+    fn server_supplied_cookies_win_and_can_be_taken_back() {
+        assert!(cookie_args().is_empty(), "nothing configured, nothing passed");
+
+        set_cookies(Some("# Netscape HTTP Cookie File\n.soundcloud.com\tTRUE\t/\tTRUE\t0\toauth_token\tX\n"));
+        let args = cookie_args();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "--cookies");
+        let written = std::fs::read_to_string(&args[1]).expect("cookie file exists");
+        assert!(written.contains("oauth_token\tX"));
+
+        // Whitespace-only is how the server says "an admin cleared this".
+        set_cookies(Some("   "));
+        assert!(cookie_args().is_empty());
+        assert!(!std::path::Path::new(&args[1]).exists(), "the file goes too");
+
+        set_cookies(Some("something"));
+        set_cookies(None);
+        assert!(cookie_args().is_empty());
+    }
 }

@@ -948,6 +948,11 @@ fn MainView(session: api::Session) -> Element {
     let mut bot_name_draft = use_signal(String::new);
     // 0 = don't announce; otherwise the channel releases are announced in.
     let mut announce_draft = use_signal(|| 0i64);
+    let mut bot_model_draft = use_signal(String::new);
+    // Credential key -> what the admin typed. Values are never loaded back
+    // from the server, so an empty box means "leave it alone".
+    let mut cred_drafts = use_signal(HashMap::<String, String>::new);
+    let mut cred_status = use_signal(Vec::<shared::CredentialStatus>::new);
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
@@ -1006,6 +1011,9 @@ fn MainView(session: api::Session) -> Element {
             if let Ok(settings) = api::get_bot_settings(&session()).await {
                 persona_draft.set(settings.persona);
                 bot_name_draft.set(settings.name);
+                bot_model_draft.set(settings.model);
+                cred_status.set(settings.credentials);
+                cred_drafts.write().clear();
                 // Unset means the server's default: the first text channel.
                 announce_draft.set(settings.announce_channel.unwrap_or(-1));
                 persona_loaded.set(true);
@@ -2934,6 +2942,76 @@ fn MainView(session: api::Session) -> Element {
                                                 }
                                             }
                                             div { class: "srv-field",
+                                                div { class: "srv-label", "Model" }
+                                                input {
+                                                    class: "srv-input",
+                                                    value: "{bot_model_draft}",
+                                                    placeholder: "{shared::DEFAULT_BOT_MODEL}",
+                                                    oninput: move |e| bot_model_draft.set(e.value()),
+                                                }
+                                                div { class: "srv-hint",
+                                                    "Any OpenRouter model id. Leave empty for the default."
+                                                }
+                                            }
+                                            div { class: "srv-field",
+                                                div { class: "srv-label", "Keys" }
+                                                div { class: "srv-hint",
+                                                    "Stored on this server, never shown again once saved. Leave a box empty to keep what's already there."
+                                                }
+                                                for cred in cred_status() {
+                                                    div { key: "{cred.key}", class: "srv-cred",
+                                                        div { class: "srv-cred-head",
+                                                            span { class: "srv-cred-name", "{cred.label}" }
+                                                            if cred.from_env {
+                                                                span { class: "srv-cred-tag env", "from environment" }
+                                                            } else if cred.set {
+                                                                span { class: "srv-cred-tag on", "set" }
+                                                            } else {
+                                                                span { class: "srv-cred-tag off", "not set" }
+                                                            }
+                                                        }
+                                                        {
+                                                            let key = cred.key.clone();
+                                                            let clear = cred.key.clone();
+                                                            let typed = cred_drafts().get(&cred.key).cloned().unwrap_or_default();
+                                                            let placeholder: &str = if cred.from_env {
+                                                                "•••••••• (set when the server started)"
+                                                            } else if cred.set {
+                                                                "•••••••• (saved)"
+                                                            } else {
+                                                                "paste here"
+                                                            };
+                                                            rsx! {
+                                                                textarea {
+                                                                    class: "srv-input srv-cred-input",
+                                                                    rows: "2",
+                                                                    value: "{typed}",
+                                                                    placeholder: "{placeholder}",
+                                                                    oncontextmenu: move |e: Event<MouseData>| {
+                                                                        menu::open(ctx_menu, &e, menu::text_field_items())
+                                                                    },
+                                                                    oninput: move |e| {
+                                                                        cred_drafts.write().insert(key.clone(), e.value());
+                                                                    },
+                                                                }
+                                                                if cred.set && !cred.from_env {
+                                                                    button {
+                                                                        class: "srv-cred-clear",
+                                                                        onclick: move |_| {
+                                                                            // A single space is how we say "clear this"
+                                                                            // without it looking like an untouched box.
+                                                                            cred_drafts.write().insert(clear.clone(), " ".into());
+                                                                        },
+                                                                        "Remove"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        div { class: "srv-hint", "{cred.hint}" }
+                                                    }
+                                                }
+                                            }
+                                            div { class: "srv-field",
                                                 div { class: "srv-label", "Release announcements" }
                                                 select {
                                                     class: "srv-input",
@@ -2977,12 +3055,23 @@ fn MainView(session: api::Session) -> Element {
                                                             // -1 is the client's "leave it default";
                                                             // the server only stores real choices.
                                                             announce_channel: Some(announce_draft()).filter(|v| *v >= 0),
+                                                            model: Some(bot_model_draft().trim().to_string()),
+                                                            // Untouched boxes aren't sent, so saving the
+                                                            // persona can't wipe a key by omission.
+                                                            credentials: cred_drafts()
+                                                                .into_iter()
+                                                                .filter(|(_, v)| !v.is_empty())
+                                                                .map(|(k, v)| (k, v.trim().to_string()))
+                                                                .collect(),
                                                         };
                                                         spawn(async move {
                                                             match api::set_bot_settings(&session(), update).await {
                                                                 Ok(settings) => {
                                                                     persona_draft.set(settings.persona);
                                                                     bot_name_draft.set(settings.name);
+                                                                    bot_model_draft.set(settings.model);
+                                                                    cred_status.set(settings.credentials);
+                                                                    cred_drafts.write().clear();
                                                                     announce_draft.set(settings.announce_channel.unwrap_or(-1));
                                                                     persona_message.set("saved".into());
                                                                 }
@@ -3011,6 +3100,7 @@ fn MainView(session: api::Session) -> Element {
                                                                         name: None,
                                                                         avatar: Some(url),
                                                                         announce_channel: None,
+                                                                        ..Default::default()
                                                                     };
                                                                     if let Err(e) = api::set_bot_settings(&session(), update).await {
                                                                         persona_message.set(e);

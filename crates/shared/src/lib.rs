@@ -361,6 +361,26 @@ pub struct BotSettings {
     /// (the old behavior); Some(0) = don't announce at all.
     #[serde(default)]
     pub announce_channel: Option<i64>,
+    /// The LLM the bot answers with (not a secret, so it round-trips).
+    #[serde(default)]
+    pub model: String,
+    /// Secrets never travel back to the client — only whether they're set,
+    /// and where they came from, so an admin can tell "the server was
+    /// started with one" from "I typed one in here".
+    #[serde(default)]
+    pub credentials: Vec<CredentialStatus>,
+}
+
+/// One configurable credential, as the settings pane sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialStatus {
+    /// Stable key: "openrouter" | "giphy" | "soundcloud" | "spotify".
+    pub key: String,
+    pub label: String,
+    pub hint: String,
+    pub set: bool,
+    /// True when the value comes from the environment rather than settings.
+    pub from_env: bool,
 }
 
 /// Partial update for POST /api/server/bot — only Some fields change.
@@ -375,7 +395,17 @@ pub struct BotSettingsUpdate {
     /// Channel id for release announcements; 0 disables them.
     #[serde(default)]
     pub announce_channel: Option<i64>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Credential updates by key; an empty string clears one, and clearing
+    /// falls back to whatever the environment provides.
+    #[serde(default)]
+    pub credentials: Vec<(String, String)>,
 }
+
+/// The model the bot uses when an admin hasn't picked one. Cheap, fast, and
+/// good enough for chat; anything on OpenRouter can replace it in settings.
+pub const DEFAULT_BOT_MODEL: &str = "google/gemini-2.5-flash-lite";
 
 /// Upload storage usage and cap (GET /api/server/storage).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -40,15 +40,30 @@ pub async fn persona(db: &sqlx::SqlitePool) -> String {
         .unwrap_or_else(|| DEFAULT_PERSONA.to_owned())
 }
 
-fn api_key() -> Option<String> {
-    std::env::var("NOTDISCORD_OPENROUTER_KEY").ok().filter(|k| !k.trim().is_empty())
+/// Admin-configured key wins; the environment is the fallback, so a server
+/// started with one keeps working and a self-hoster can paste their own.
+async fn api_key(state: &SharedState) -> Option<String> {
+    crate::creds::get(state, "openrouter").await
 }
 
-fn model() -> String {
-    std::env::var("NOTDISCORD_BOT_MODEL")
-        .ok()
+pub use shared::DEFAULT_BOT_MODEL as DEFAULT_MODEL;
+
+async fn model(state: &SharedState) -> String {
+    meta_value_opt(state, "bot_model")
+        .await
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "google/gemini-2.5-flash-lite".into())
+        .or_else(|| std::env::var("NOTDISCORD_BOT_MODEL").ok().filter(|m| !m.trim().is_empty()))
+        .unwrap_or_else(|| DEFAULT_MODEL.into())
+}
+
+/// One server_meta string, or None when unset.
+pub async fn meta_value_opt(state: &SharedState, key: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM server_meta WHERE key = ?")
+        .bind(key)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
 }
 
 fn image_model() -> String {
@@ -467,11 +482,17 @@ fn response_text(response: &serde_json::Value) -> anyhow::Result<String> {
     Ok(text)
 }
 
-async fn call_openrouter(key: &str, system: String, user: String, max_tokens: u32) -> anyhow::Result<String> {
+async fn call_openrouter(
+    key: &str,
+    model: &str,
+    system: String,
+    user: String,
+    max_tokens: u32,
+) -> anyhow::Result<String> {
     let response = call_raw(
         key,
         serde_json::json!({
-            "model": model(),
+            "model": model,
             "max_tokens": max_tokens,
             "messages": [
                 { "role": "system", "content": system },
@@ -484,10 +505,10 @@ async fn call_openrouter(key: &str, system: String, user: String, max_tokens: u3
 }
 
 async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<String> {
-    let Some(key) = api_key() else {
+    let Some(key) = api_key(state).await else {
         return Ok(
-            "I can hear you, but my brain isn't hooked up yet — the server needs an \
-             OpenRouter key in NOTDISCORD_OPENROUTER_KEY before I can answer questions."
+            "I can hear you, but my brain isn't hooked up yet — an admin needs to put an \
+             OpenRouter key in Server settings → Bot before I can answer questions."
                 .into(),
         );
     };
@@ -579,9 +600,10 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
         }));
     }
 
+    let chat_model = model(state).await;
     let request = |parts: Vec<serde_json::Value>| {
         serde_json::json!({
-            "model": model(),
+            "model": chat_model,
             "max_tokens": 700,
             "tools": tools,
             "messages": [
@@ -618,7 +640,7 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
             return draw_image(state, &key, prompt).await;
         }
         let query = if query.is_empty() { "the user's latest question" } else { query };
-        return web_answer(&key, base_system, &transcript, &bot_name, query).await;
+        return web_answer(&key, &chat_model, base_system, &transcript, &bot_name, query).await;
     }
 
     response_text(&response)
@@ -697,6 +719,7 @@ async fn draw_image(state: &SharedState, key: &str, prompt: &str) -> anyhow::Res
 /// Re-run the question with OpenRouter's web-search plugin enabled.
 async fn web_answer(
     key: &str,
+    model: &str,
     system: String,
     transcript: &str,
     bot_name: &str,
@@ -705,7 +728,7 @@ async fn web_answer(
     let response = call_raw(
         key,
         serde_json::json!({
-            "model": model(),
+            "model": model,
             "max_tokens": 700,
             "plugins": [{ "id": "web", "max_results": 5 }],
             "messages": [
@@ -734,7 +757,7 @@ fn maybe_compact(state: SharedState, channel_id: i64) {
 }
 
 async fn compact(state: &SharedState, channel_id: i64) -> anyhow::Result<()> {
-    let Some(key) = api_key() else { return Ok(()) };
+    let Some(key) = api_key(state).await else { return Ok(()) };
     let memory = load_memory(state, channel_id).await?;
     let entries =
         transcript_after(state, channel_id, memory.compacted_to, RAW_CHAR_BUDGET).await?;
@@ -763,6 +786,7 @@ async fn compact(state: &SharedState, channel_id: i64) -> anyhow::Result<()> {
 
     let notes = call_openrouter(
         &key,
+        &model(state).await,
         format!(
             "You maintain {BOT_NAME}'s long-term memory of one chat channel. Merge the \
              existing notes and the new transcript into ONE updated set of notes, at most \

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.64.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🔑 Server settings → Bot has a Keys section: the OpenRouter key, GIPHY key, SoundCloud cookie, and Spotify credentials are all set from inside the app now, no server access needed. Keys are write-only — once saved, nobody can read them back out",
+      "🧠 You can also pick which model the bot thinks with — any model id from OpenRouter, and it takes effect on the next message",
+      "📲 The web app has its own Install button in Settings, because your browser only ever offers on its own once (and never again after you uninstall)"
+    ]
+  },
+  {
     "version": "0.63.0",
     "date": "2026-08-28",
     "changes": [
