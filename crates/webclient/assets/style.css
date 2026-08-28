@@ -348,3 +348,16 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
     font-weight: 600;
     cursor: pointer;
 }
+
+/* Switching between logging in and making an account. */
+.login-switch {
+    background: none;
+    border: none;
+    color: #949ba4;
+    font-size: 13px;
+    padding: 12px 0 0;
+    min-height: 40px;
+    cursor: pointer;
+    width: 100%;
+}
+.login-switch:active { color: #dbdee1; }

@@ -353,6 +353,9 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
     let mut invite = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
+    // Logging in is what almost everyone is here to do; an invite code box on
+    // that screen is a question nobody signing in can answer.
+    let mut registering = use_signal(|| false);
 
     let submit = move |register: bool| {
         if busy() {
@@ -382,7 +385,11 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
         div { class: "login-wrap",
             div { class: "login-card",
                 h1 { "NotDiscord" }
-                p { class: "login-sub", "the phone-sized version" }
+                if registering() {
+                    p { class: "login-sub", "make yourself an account" }
+                } else {
+                    p { class: "login-sub", "the phone-sized version" }
+                }
                 label { "Username" }
                 input {
                     value: "{username}",
@@ -396,22 +403,37 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
                     oninput: move |e| password.set(e.value()),
                     onkeydown: move |e| {
                         if e.key() == Key::Enter {
-                            submit(false);
+                            submit(registering());
                         }
                     },
                 }
-                label { "Invite code (only to register)" }
-                input {
-                    value: "{invite}",
-                    autocapitalize: "none",
-                    oninput: move |e| invite.set(e.value()),
+                if registering() {
+                    label { "Invite code" }
+                    input {
+                        value: "{invite}",
+                        autocapitalize: "none",
+                        oninput: move |e| invite.set(e.value()),
+                    }
+                    p { class: "login-sub", "whoever runs this server has it" }
                 }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
                 }
                 div { class: "login-buttons",
-                    button { class: "primary", disabled: busy(), onclick: move |_| submit(false), "Log in" }
-                    button { disabled: busy(), onclick: move |_| submit(true), "Register" }
+                    button {
+                        class: "primary",
+                        disabled: busy(),
+                        onclick: move |_| submit(registering()),
+                        if registering() { "Create account" } else { "Log in" }
+                    }
+                }
+                button {
+                    class: "login-switch",
+                    onclick: move |_| {
+                        error.set(String::new());
+                        registering.toggle();
+                    },
+                    if registering() { "I already have an account" } else { "I need an account" }
                 }
             }
         }

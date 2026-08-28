@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.69.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🔑 The login screen stopped asking for an invite code you don't need. Logging in is just username and password now; \"I need an account\" flips it to the sign-up form, which is the only place the code belongs (switchb)"
+    ]
+  },
+  {
     "version": "0.68.0",
     "date": "2026-08-28",
     "changes": [

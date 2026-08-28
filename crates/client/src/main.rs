@@ -487,6 +487,9 @@ fn LoginView(adding: Signal<bool>) -> Element {
     // claim it instead. Probed whenever the address settles.
     let mut needs_setup = use_signal(|| false);
     let mut server_name = use_signal(String::new);
+    // Logging in is what almost everyone is here to do; an invite code box on
+    // that screen is a question nobody signing in can answer (switchb).
+    let mut registering = use_signal(|| false);
 
     use_future(move || async move {
         let mut last = String::new();
@@ -586,23 +589,28 @@ fn LoginView(adding: Signal<bool>) -> Element {
                     oninput: move |e| password.set(e.value()),
                     onkeydown: move |e| {
                         if e.key() == Key::Enter {
-                            submit(false);
+                            if !needs_setup() {
+                                submit(registering());
+                            }
                         }
                     },
                 }
                 if needs_setup() {
                     label { "Invite code for everyone else (optional)" }
-                } else {
-                    label { "Invite code (only needed to register)" }
-                }
-                input {
-                    value: "{invite}",
-                    oninput: move |e| invite.set(e.value()),
-                }
-                if needs_setup() {
+                    input {
+                        value: "{invite}",
+                        oninput: move |e| invite.set(e.value()),
+                    }
                     div { class: "settings-hint",
                         "Leave it empty and anyone who can reach this server can register."
                     }
+                } else if registering() {
+                    label { "Invite code" }
+                    input {
+                        value: "{invite}",
+                        oninput: move |e| invite.set(e.value()),
+                    }
+                    div { class: "settings-hint", "Whoever runs this server has it." }
                 }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
@@ -622,18 +630,26 @@ fn LoginView(adding: Signal<bool>) -> Element {
                         button {
                             class: "primary",
                             disabled: busy(),
-                            onclick: move |_| submit(false),
-                            "Log in"
-                        }
-                        button {
-                            disabled: busy(),
-                            onclick: move |_| submit(true),
-                            "Register"
+                            onclick: move |_| submit(registering()),
+                            if registering() { "Create account" } else { "Log in" }
                         }
                     }
                 }
-                // No accounts yet means no password to have forgotten.
-                if needs_setup() {
+                if !needs_setup() {
+                    button {
+                        class: "login-switch",
+                        onclick: move |_| {
+                            error.set(String::new());
+                            notice.set(String::new());
+                            forgot.set(false);
+                            registering.toggle();
+                        },
+                        if registering() { "I already have an account" } else { "I need an account" }
+                    }
+                }
+                // No accounts yet means no password to have forgotten, and
+                // neither does an account you haven't made.
+                if needs_setup() || registering() {
                 } else if !forgot() {
                     button {
                         class: "login-cancel",

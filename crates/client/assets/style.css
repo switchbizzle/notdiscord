@@ -2615,3 +2615,16 @@ ul.md-list { list-style-type: disc; }
 
 /* Chat keeps its place underneath, same as the music tab. */
 .messages.video-chat { flex: 1 1 auto; min-height: 0; }
+
+/* Switching between logging in and making an account. Quiet, like the
+   forgot-password link it sits next to. */
+.login-switch {
+    background: none;
+    border: none;
+    color: #949ba4;
+    font-size: 12px;
+    padding: 8px 0 0;
+    cursor: pointer;
+    align-self: center;
+}
+.login-switch:hover { color: #dbdee1; text-decoration: underline; }
