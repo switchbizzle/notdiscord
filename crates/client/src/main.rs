@@ -789,6 +789,10 @@ fn MainView(session: api::Session) -> Element {
     let mut search_query = use_signal(String::new);
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
     let mut pins_open = use_signal(|| None::<Vec<Message>>);
+    // Pings you'd otherwise miss: (id, channel_id, message_id, author, where, text).
+    // Each expires on its own; clicking one jumps to the message.
+    let mut toasts = use_signal(Vec::<(u64, i64, i64, User, String, String)>::new);
+    let mut toast_seq = use_signal(|| 0u64);
     // True while the message list is scrolled away from the newest message,
     // which is when the "back to now" chip earns its place.
     let mut scrolled_up = use_signal(|| false);
@@ -1113,6 +1117,39 @@ fn MainView(session: api::Session) -> Element {
                                     if audio_settings().notification_sounds {
                                         play_notification_sound();
                                     }
+                                }
+                                // A ping you're not looking at gets a toast: the
+                                // sidebar badge is easy to miss, and on the Music
+                                // or Video tab there's no chat in view at all.
+                                let looking_here = selected().map(|c| c.id) == Some(message.channel_id)
+                                    && view_tab() == "chat"
+                                    && window.window.is_focused();
+                                if mentioned && !looking_here && audio_settings().ping_toasts {
+                                    let where_ = if is_dm {
+                                        format!("@{}", message.author.username)
+                                    } else {
+                                        channels()
+                                            .iter()
+                                            .find(|c| c.id == message.channel_id)
+                                            .map(|c| format!("# {}", c.name))
+                                            .unwrap_or_default()
+                                    };
+                                    let id = toast_seq() + 1;
+                                    toast_seq.set(id);
+                                    let preview: String = message.content.chars().take(120).collect();
+                                    toasts.write().push((
+                                        id,
+                                        message.channel_id,
+                                        message.id,
+                                        message.author.clone(),
+                                        where_,
+                                        preview,
+                                    ));
+                                    // Self-expiry, so no timer has to sweep the list.
+                                    spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                                        toasts.write().retain(|t| t.0 != id);
+                                    });
                                 }
                                 if selected().map(|c| c.id) == Some(message.channel_id) {
                                     // Visible channel: reading it counts as read.
@@ -2147,6 +2184,18 @@ fn MainView(session: api::Session) -> Element {
                                         },
                                     }
                                     " Notification sounds"
+                                }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().ping_toasts,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.ping_toasts = e.checked();
+                                            api::save_settings(&s);
+                                        },
+                                    }
+                                    " Popup for mentions and DMs"
                                 }
                                 button {
                                     class: "profile-btn",
@@ -3198,6 +3247,44 @@ fn MainView(session: api::Session) -> Element {
                                         "Set status"
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            if !toasts().is_empty() {
+                div { class: "toast-stack",
+                    for (id, channel_id, message_id, author, where_, preview) in toasts() {
+                        div {
+                            key: "{id}",
+                            class: "ping-toast",
+                            onclick: move |_| {
+                                toasts.write().retain(|t| t.0 != id);
+                                let Some(channel) = channels().into_iter().find(|c| c.id == channel_id) else {
+                                    return;
+                                };
+                                if selected().map(|c| c.id) != Some(channel_id) {
+                                    open_channel(channel);
+                                }
+                                view_tab.set("chat");
+                                jump_to.set(Some(message_id));
+                            },
+                            UserAvatar { user: author.clone(), class: "toast-avatar" }
+                            div { class: "toast-text",
+                                div { class: "toast-head",
+                                    span { class: "toast-author", "{author.username}" }
+                                    span { class: "toast-where", "{where_}" }
+                                }
+                                div { class: "toast-body", "{preview}" }
+                            }
+                            button {
+                                class: "toast-x",
+                                title: "Dismiss",
+                                onclick: move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    toasts.write().retain(|t| t.0 != id);
+                                },
+                                Icon { name: "x", size: 12 }
                             }
                         }
                     }

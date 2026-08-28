@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.57.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🔔 Ping toasts: when someone @mentions you or DMs you while you're in another channel (or on the Music/Video tab), a little popup slides in bottom-right with who, where, and what. Click it to jump straight to the message, × to dismiss, or ignore it — it fades on its own after six seconds. Toggle in Settings → App"
+    ]
+  },
+  {
     "version": "0.56.0",
     "date": "2026-08-28",
     "changes": [

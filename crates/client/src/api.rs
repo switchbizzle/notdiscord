@@ -336,6 +336,9 @@ pub struct Settings {
     /// Play the notification sound on pings.
     #[serde(default = "yes")]
     pub notification_sounds: bool,
+    /// Pop a toast for @mentions and DMs you aren't currently reading.
+    #[serde(default = "yes")]
+    pub ping_toasts: bool,
     /// Last client version whose changelog the user has seen.
     #[serde(default)]
     pub last_seen_version: Option<String>,
@@ -381,6 +384,7 @@ pub fn load_settings() -> Settings {
             ptt_key: default_ptt_key(),
             vad_threshold: default_vad_threshold(),
             notification_sounds: true,
+            ping_toasts: true,
             voice_join_sounds: true,
             ..Default::default()
         })
