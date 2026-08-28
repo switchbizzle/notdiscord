@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.65.1",
+    "date": "2026-08-28",
+    "changes": [
+      "🎞️ Videos shared from a phone play inline again. Android hands over a filename with the gallery's own id stuck on the end, which ran past our 64-character limit — and the part being cut off was the \".mp4\", so the app offered a download instead of a player. Long names are still shortened, but never at the extension's expense (thanks switchb)"
+    ]
+  },
+  {
     "version": "0.65.0",
     "date": "2026-08-28",
     "changes": [

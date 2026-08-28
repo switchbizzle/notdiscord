@@ -992,17 +992,46 @@ pub async fn create_channel(
     Ok(Json(channel))
 }
 
+/// Uploads keep their own name (inside a random directory, so two people's
+/// "IMG_1234.jpg" can't collide), but not more of it than this.
+const MAX_FILENAME: usize = 64;
+
 fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
         .collect();
     let cleaned = cleaned.trim_matches('.').to_owned();
-    let mut out: String = cleaned.chars().take(64).collect();
-    if out.is_empty() {
-        out = "file".into();
+    if cleaned.is_empty() {
+        return "file".into();
     }
-    out
+    if cleaned.chars().count() <= MAX_FILENAME {
+        return cleaned;
+    }
+
+    // Truncate the name, never the extension. A phone hands over a filename
+    // with the gallery's own uuid stuck on the end, which runs past the limit
+    // — and a name cut mid-uuid loses its ".mp4", which is the only thing
+    // telling the app to play the video instead of offering a download.
+    match extension_of(&cleaned) {
+        Some(ext) => {
+            let room = MAX_FILENAME.saturating_sub(ext.chars().count() + 1);
+            let stem: String = cleaned.chars().take(room).collect();
+            let stem = stem.trim_end_matches('.');
+            format!("{stem}.{ext}")
+        }
+        None => cleaned.chars().take(MAX_FILENAME).collect(),
+    }
+}
+
+/// The trailing extension, if the name has a plausible one. Long or odd tails
+/// after a dot aren't extensions — they're part of the name.
+fn extension_of(name: &str) -> Option<&str> {
+    let (stem, ext) = name.rsplit_once('.')?;
+    let ok = !stem.is_empty()
+        && (1..=8).contains(&ext.chars().count())
+        && ext.chars().all(|c| c.is_ascii_alphanumeric());
+    ok.then_some(ext)
 }
 
 /// Media types safe to serve inline (rendered by the client / a browser).
@@ -1223,6 +1252,80 @@ async fn stream_file(
         }
     }
     resp
+}
+
+#[cfg(test)]
+mod filename_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_name_keeps_its_extension() {
+        // Reported by switchb: a video shared from an Android gallery arrived
+        // as an unplayable file link. The name is the export name plus the
+        // gallery's uuid, 68 characters before the extension, and the old
+        // truncation cut ".mp4" clean off.
+        let phone = "analoglobotomy2026_08_28_14_27_0874c47d53-7a50-4adf-8df2-33ad8e1cd0.mp4";
+        let out = sanitize_filename(phone);
+        assert!(out.ends_with(".mp4"), "lost the extension: {out}");
+        assert!(out.chars().count() <= MAX_FILENAME, "too long: {out}");
+        assert!(out.starts_with("analoglobotomy2026"), "unrecognisable: {out}");
+        // Which is what decides whether it plays inline.
+        assert_eq!(inline_content_type(&out), Some("video/mp4"));
+    }
+
+    #[test]
+    fn short_names_are_left_alone() {
+        assert_eq!(sanitize_filename("holiday.mp4"), "holiday.mp4");
+        assert_eq!(sanitize_filename("my photo (1).jpg"), "my_photo__1_.jpg");
+        // Path separators and leading dots can't escape the upload directory.
+        assert_eq!(sanitize_filename("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(sanitize_filename(".bashrc"), "bashrc");
+        assert_eq!(sanitize_filename(""), "file");
+        assert_eq!(sanitize_filename("...."), "file");
+    }
+
+    #[test]
+    fn sanitizing_twice_changes_nothing() {
+        // serve_file validates a request by re-sanitizing the name and
+        // demanding it come back identical, so any name this function
+        // produces has to survive a second pass — otherwise the file it
+        // just stored can never be fetched.
+        for input in [
+            "holiday.mp4",
+            "../../etc/passwd",
+            ".bashrc",
+            "",
+            "....",
+            "a b c.JPEG",
+            &"x".repeat(80),
+            &format!("{}.mp4", "x".repeat(80)),
+            &format!("{}.{}", "x".repeat(80), "y".repeat(20)),
+            &format!("{}.....mp4", "z".repeat(70)),
+            "analoglobotomy2026_08_28_14_27_0874c47d53-7a50-4adf-8df2-33ad8e1cd0.mp4",
+        ] {
+            let once = sanitize_filename(input);
+            assert_eq!(sanitize_filename(&once), once, "not stable for {input:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_real_extension_survives_truncation() {
+        let long = "x".repeat(80);
+        // No extension: plain truncation, as before.
+        assert_eq!(sanitize_filename(&long).chars().count(), MAX_FILENAME);
+        // A dotted tail that isn't an extension doesn't get rescued.
+        let dotted = format!("{long}.{}", "y".repeat(20));
+        let out = sanitize_filename(&dotted);
+        assert_eq!(out.chars().count(), MAX_FILENAME);
+        assert!(!out.contains('.'), "invented an extension: {out}");
+        // A name that is *almost* all extension still keeps it.
+        let out = sanitize_filename(&format!("{long}.jpeg"));
+        assert!(out.ends_with(".jpeg"));
+        assert_eq!(out.chars().count(), MAX_FILENAME);
+        // No trailing dot before the extension when the cut lands on one.
+        let out = sanitize_filename(&format!("{}.....mp4", "z".repeat(70)));
+        assert!(out.ends_with("z.mp4"), "{out}");
+    }
 }
 
 #[cfg(test)]
