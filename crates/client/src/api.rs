@@ -339,6 +339,9 @@ pub struct Settings {
     /// Last client version whose changelog the user has seen.
     #[serde(default)]
     pub last_seen_version: Option<String>,
+    /// Sidebar DM section folded away (unread DMs still surface).
+    #[serde(default)]
+    pub dms_collapsed: bool,
 }
 
 fn vad() -> String {

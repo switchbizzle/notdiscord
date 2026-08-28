@@ -351,16 +351,22 @@ button.sidebar-title:hover { background: #35373c; }
 }
 .channel.voice { font-size: 14px; }
 .channel.dm { gap: 8px; font-size: 14px; }
-.voice-occupants { padding: 0 6px 4px 26px; display: flex; flex-direction: column; gap: 2px; }
-.voice-occupant { display: flex; align-items: center; gap: 6px; }
-.occupant-avatar { width: 18px; height: 18px; font-size: 8px; }
-.voice-occupant-name {
-    color: #949ba4;
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+/* Voice occupancy chips: overlapping mini avatars on the channel row. */
+.chip-stack { display: inline-flex; align-items: center; margin-left: auto; }
+.chip-avatar {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid #2b2d31; margin-left: -7px;
+    font-size: 9px; display: inline-flex; align-items: center; justify-content: center;
+    object-fit: cover; flex: 0 0 auto;
 }
+.chip-avatar:first-child { margin-left: 0; }
+.chip-more { color: #949ba4; font-size: 10px; margin-left: 3px; }
+/* The DM header doubles as the collapse toggle. */
+.section-toggle {
+    display: flex; align-items: center; gap: 4px;
+    background: none; color: #949ba4; padding: 0; text-align: left;
+}
+.section-toggle:hover .section-label { color: #dbdee1; }
 .dm-avatar {
     width: 22px;
     height: 22px;

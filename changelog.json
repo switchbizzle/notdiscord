@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.51.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🧹 Sidebar dedup (the design Jon and switchb picked): voice channels show who's inside as small stacked avatars right on the row — hover for names, LIVE pill if someone's sharing. The name-by-name roster under the channel is gone; the tile at the bottom is the one place with names, sliders, and controls",
+      "Direct Messages can fold away — click the header to collapse. DMs with unread messages (and the one you have open) stay visible, so nothing sneaks past you. Your choice sticks between launches"
+    ]
+  },
+  {
     "version": "0.50.1",
     "date": "2026-08-28",
     "changes": [

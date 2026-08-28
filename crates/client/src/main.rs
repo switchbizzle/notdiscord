@@ -3252,9 +3252,31 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                     if channels().iter().any(|c| c.kind == "dm") {
-                        div { class: "section-label", "Direct Messages" }
+                        {
+                            let collapsed = audio_settings().dms_collapsed;
+                            let chevron: &'static str = if collapsed { "chevron-down" } else { "chevron-up" };
+                            let hint = if collapsed { "Show direct messages" } else { "Hide direct messages (unread ones stay visible)" };
+                            rsx! {
+                                button {
+                                    class: "section-row section-toggle",
+                                    title: "{hint}",
+                                    onclick: move |_| {
+                                        audio_settings.write().dms_collapsed = !collapsed;
+                                        api::save_settings(&audio_settings());
+                                    },
+                                    span { class: "section-label", "Direct Messages" }
+                                    Icon { name: chevron, size: 12 }
+                                }
+                            }
+                        }
                     }
-                    for channel in channels().into_iter().filter(|c| c.kind == "dm") {
+                    // Collapsed hides the quiet ones; anything unread (every DM
+                    // pings) or currently open always shows.
+                    for channel in channels().into_iter().filter(|c| c.kind == "dm").filter(|c| {
+                        !audio_settings().dms_collapsed
+                            || unread().contains_key(&c.id)
+                            || selected_id == Some(c.id)
+                    }) {
                         button {
                             key: "dm{channel.id}",
                             class: if selected_id == Some(channel.id) {
@@ -3351,6 +3373,29 @@ fn MainView(session: api::Session) -> Element {
                             },
                             Icon { name: "volume", size: 15 }
                             span { class: "voice-channel-name chan-name", "{channel.name}" }
+                            // Occupancy as stacked chips on the row itself
+                            // (Jon's dedup): who's in there at a glance, names
+                            // on hover — the full roster with sliders lives in
+                            // the connected tile below, exactly once.
+                            if let Some(occupants) = voice_rosters().get(&ch_id).cloned().filter(|o| !o.is_empty()) {
+                                span {
+                                    class: "chip-stack",
+                                    title: occupants.iter().map(|(u, _, _)| u.username.clone()).collect::<Vec<_>>().join(", "),
+                                    for (occupant, _, _) in occupants.iter().take(4) {
+                                        UserAvatar {
+                                            key: "{occupant.id}",
+                                            user: occupant.clone(),
+                                            class: "chip-avatar",
+                                        }
+                                    }
+                                    if occupants.len() > 4 {
+                                        span { class: "chip-more", "+{occupants.len() - 4}" }
+                                    }
+                                }
+                                if occupants.iter().any(|(_, sharing, _)| *sharing) {
+                                    span { class: "live-pill", "LIVE" }
+                                }
+                            }
                             if session().user.role == "admin" {
                                 span {
                                     class: "chan-del",
@@ -3363,35 +3408,6 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     },
                                     "✕"
-                                }
-                            }
-                        }
-                        if let Some(occupants) = voice_rosters().get(&ch_id).cloned() {
-                            div { class: "voice-occupants",
-                                for (occupant, occ_sharing, occ_camera) in occupants {
-                                    div {
-                                        key: "{occupant.id}",
-                                        class: "voice-occupant",
-                                        oncontextmenu: {
-                                            let occupant = occupant.clone();
-                                            move |e: Event<MouseData>| {
-                                                let is_admin = occupant.role == "admin";
-                                                menu::open(ctx_menu, &e, member_items(
-                                                    occupant.clone(),
-                                                    false,
-                                                    is_admin,
-                                                ));
-                                            }
-                                        },
-                                        UserAvatar { user: occupant.clone(), class: "dm-avatar occupant-avatar" }
-                                        span { class: "voice-occupant-name", "{occupant.username}" }
-                                        if occ_sharing {
-                                            span { class: "live-pill", "LIVE" }
-                                        }
-                                        if occ_camera {
-                                            span { class: "cam-pill", "CAM" }
-                                        }
-                                    }
                                 }
                             }
                         }
