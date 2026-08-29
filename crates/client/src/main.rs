@@ -185,6 +185,20 @@ impl ConfirmAction {
     }
 }
 
+/// Which message the reaction palette is for, and which one to scroll to.
+///
+/// These are wrappers rather than bare `Signal<Option<i64>>` because dioxus
+/// keys context by TYPE: two contexts of the same type are one context, the
+/// later provider quietly wins, and every consumer of the first gets the
+/// second. That is exactly what happened — the React button set the jump
+/// target, so it scrolled to the message instead of opening the palette, and
+/// the palette never opened at all (Jon, #feature-requests).
+#[derive(Clone, Copy)]
+pub struct ReactTarget(pub Signal<Option<i64>>);
+
+#[derive(Clone, Copy)]
+pub struct JumpTo(pub Signal<Option<i64>>);
+
 /// A track/video playing in the media dock (from a link preview card).
 #[derive(Clone, PartialEq)]
 struct NowPlaying {
@@ -762,7 +776,8 @@ fn MainView(session: api::Session) -> Element {
     use_context_provider(|| session);
     let mut servers_file = use_context::<Signal<api::ServersFile>>();
     let mut lightbox = use_context_provider(|| Signal::new(None::<String>));
-    let mut react_target = use_context_provider(|| Signal::new(None::<i64>));
+    let mut react_target = use_signal(|| None::<i64>);
+    use_context_provider(|| ReactTarget(react_target));
     let mut channels = use_signal(Vec::<Channel>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
@@ -872,7 +887,8 @@ fn MainView(session: api::Session) -> Element {
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
     let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
-    let mut jump_to = use_context_provider(|| Signal::new(None::<i64>));
+    let mut jump_to = use_signal(|| None::<i64>);
+    use_context_provider(|| JumpTo(jump_to));
     // The one open right-click menu, wherever it was opened from.
     let ctx_menu: menu::MenuSignal = use_context_provider(|| Signal::new(None::<menu::Menu>));
     // A person is a person wherever they turn up, so the member list and the
@@ -5958,12 +5974,12 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut lightbox = use_context::<Signal<Option<String>>>();
-    let mut react_target = use_context::<Signal<Option<i64>>>();
+    let mut react_target = use_context::<ReactTarget>().0;
     let members_ctx = use_context::<Signal<Vec<UserStatus>>>();
     let tags_ctx = use_context::<Signal<Vec<Tag>>>();
     let emojis_ctx = use_context::<Signal<Vec<shared::CustomEmoji>>>();
     let mut replying_ctx = use_context::<Signal<Option<Message>>>();
-    let mut jump_ctx = use_context::<Signal<Option<i64>>>();
+    let mut jump_ctx = use_context::<JumpTo>().0;
     let ctx_menu = use_context::<menu::MenuSignal>();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);

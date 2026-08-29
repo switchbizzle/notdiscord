@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.72.0",
+    "date": "2026-08-28",
+    "changes": [
+      "😄 The react button works again. Clicking it did nothing visible — it was quietly jumping to the message instead of opening the emoji picker — and it had been that way since replies shipped in v0.18.0, 67 releases ago. Thanks JunkfoodJon for reporting it",
+      "Replying and reacting also work together now: the picker opens while a reply is staged, instead of one cancelling the other"
+    ]
+  },
+  {
     "version": "0.71.0",
     "date": "2026-08-28",
     "changes": [
