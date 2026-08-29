@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.80.1",
+    "date": "2026-08-29",
+    "changes": [
+      "🤫 The bot stops announcing what it queued. Adding a song posted a line in whatever channel you typed the command in — which is how it ended up talking in #feature-requests — and the queue in the rail already shows the same thing, better",
+      "It still speaks up when something goes wrong, and when a Spotify playlist is too long to take whole, since the queue can't tell you that part"
+    ]
+  },
+  {
     "version": "0.80.0",
     "date": "2026-08-29",
     "changes": [

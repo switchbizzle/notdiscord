@@ -291,7 +291,11 @@ async fn run_command(
             // A Spotify link is a list of songs, not something playable:
             // resolve it to search phrases the sidecar can find audio for.
             let mut plan = Vec::new();
-            let mut spotify_note = String::new();
+            // The queue is on screen in the rail, so confirming an add in chat
+            // just puts the bot in a channel it was never invited to. The one
+            // thing the queue can't tell you is that we took only part of a
+            // long playlist, so that is the only thing left to say.
+            let mut truncated_note = String::new();
             if crate::spotify::is_spotify_url(&url) {
                 if crate::spotify::credentials(state).await.is_none() {
                     return Ok("I can read Spotify links once an admin adds Spotify credentials in \
@@ -303,15 +307,11 @@ async fn run_command(
                         return Ok(format!("\"{}\" is empty — nothing to queue 🫥", resolved.name));
                     }
                     Ok(resolved) => {
-                        if resolved.tracks.len() > 1 {
-                            spotify_note = format!(
-                                "🎧 from Spotify: {}{}",
+                        if resolved.truncated {
+                            truncated_note = format!(
+                                "🎧 {} is long — queued the first {} tracks",
                                 resolved.name,
-                                if resolved.truncated {
-                                    format!(" (first {} tracks)", resolved.tracks.len())
-                                } else {
-                                    String::new()
-                                }
+                                resolved.tracks.len()
                             );
                         }
                         plan = resolved.tracks;
@@ -347,24 +347,15 @@ async fn run_command(
                 return Ok(format!("can't play that: {msg}"));
             }
             let body: serde_json::Value = resp.json().await?;
-            let queued = body["queued"].as_u64().unwrap_or(0);
             let started = body["started"].as_bool().unwrap_or(false);
 
             if started {
                 join_roster(state, vc);
                 spawn_status_watch(state.clone(), text_channel);
-                Ok(if !spotify_note.is_empty() {
-                    format!("{spotify_note} — {queued} tracks queued!")
-                } else if queued > 1 {
-                    format!("🎶 coming right up — {queued} tracks queued!")
-                } else {
-                    String::new() // the player card appears momentarily
-                })
-            } else if !spotify_note.is_empty() {
-                Ok(format!("{spotify_note} — added {queued} to the queue 🎵"))
-            } else {
-                Ok(format!("added to the queue (+{queued}) 🎵"))
             }
+            // Otherwise silence: the player card and the queue both say more
+            // than a line of chat could.
+            Ok(truncated_note)
         }
         MusicCmd::Ask => Ok(String::new()), // handled by the LLM path
         MusicCmd::Skip => {
