@@ -895,3 +895,23 @@ pub async fn set_server_icon(session: &Session, url: String) -> Result<shared::S
         .await?;
     handle(resp).await
 }
+
+/// Channels this account has muted. Failures are silent: an unreachable
+/// server means "nothing muted", which is noisier than the truth but never
+/// hides a message.
+pub async fn mutes(session: &Session) -> Vec<i64> {
+    let Ok(resp) = send_retry(http().get(format!("{}/api/mutes", session.base_url)).bearer_auth(&session.token)).await
+    else {
+        return Vec::new();
+    };
+    resp.json().await.unwrap_or_default()
+}
+
+pub async fn set_mute(session: &Session, channel_id: i64, muted: bool) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/channels/{channel_id}/mute", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::MuteRequest { muted }))
+        .await?;
+    expect_no_content(resp, "could not change that").await
+}

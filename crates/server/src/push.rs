@@ -175,10 +175,22 @@ pub async fn recipients(
     .fetch_all(&state.db)
     .await?;
 
+    // Whoever muted this channel doesn't want it on their phone either.
+    let muted: std::collections::HashSet<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT user_id FROM channel_mutes WHERE channel_id = ?")
+            .bind(message.channel_id)
+            .fetch_all(&state.db)
+            .await?
+            .into_iter()
+            .collect();
+
     let mut out = Vec::new();
     for row in rows {
         let user_id: i64 = row.get(0);
         let level: String = row.get(4);
+        if muted.contains(&user_id) {
+            continue;
+        }
         // Presence deliberately isn't consulted. It counts a user as "here"
         // when ANY of their devices holds a socket, and the desktop client
         // lives in the tray all day — so switchb's phone was silenced from
@@ -290,6 +302,24 @@ mod tests {
         assert!(!ids.contains(&1), "never notify the person who just typed it");
         assert!(!ids.contains(&3), "mentions-only, and this mentions nobody");
         assert!(!ids.contains(&4), "they asked for nothing");
+    }
+
+    #[tokio::test]
+    async fn a_muted_channel_reaches_nobody_who_muted_it() {
+        let state = state_with_people().await;
+        // #general is channel 1, seeded by the first migration; "atdesk" has
+        // had enough of it.
+        sqlx::query("INSERT INTO channel_mutes (user_id, channel_id, muted_at) VALUES (2, 1, 0)")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        // Even a direct mention stays quiet: silencing a channel is the whole
+        // point, and a mention is exactly what would otherwise get through.
+        let got = recipients(&state, &message_from(1, "oi @atdesk"), &[2, 3], None).await.unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+        assert!(!ids.contains(&2), "a muted channel still pushed");
+        assert!(ids.contains(&3), "and it silenced somebody who didn't mute it");
     }
 
     #[tokio::test]

@@ -1955,6 +1955,55 @@ pub async fn set_invite(
 }
 
 /// Unread counts per visible channel. DMs only count for their participants.
+/// The channels this person has muted. The client dims them and keeps quiet;
+/// the server skips them when deciding who to push to.
+pub async fn list_mutes(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<Vec<i64>>> {
+    let ids = sqlx::query_scalar("SELECT channel_id FROM channel_mutes WHERE user_id = ?")
+        .bind(user.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(ids))
+}
+
+pub async fn set_mute(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<shared::MuteRequest>,
+) -> ApiResult<StatusCode> {
+    // Muting a DM is allowed — it's your notification, not a permission — but
+    // only for a channel you can actually see.
+    if let Some(members) = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)? {
+        if !members.contains(&user.id) {
+            return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+        }
+    }
+    if req.muted {
+        sqlx::query(
+            "INSERT INTO channel_mutes (user_id, channel_id, muted_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id, channel_id) DO NOTHING",
+        )
+        .bind(user.id)
+        .bind(channel_id)
+        .bind(now_ms())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    } else {
+        sqlx::query("DELETE FROM channel_mutes WHERE user_id = ? AND channel_id = ?")
+            .bind(user.id)
+            .bind(channel_id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn unread(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,

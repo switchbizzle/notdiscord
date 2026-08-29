@@ -958,6 +958,10 @@ fn MainView(session: api::Session) -> Element {
     // The right rail shows the room, or your conversations. Jon's spec: a
     // text button beside MEMBERS in the same row, and clicking one swaps the
     // rail without moving anything else on screen.
+    // Channels this account has muted: no sound, no toast, no push. The
+    // messages still arrive and still count as unread — a mute is about
+    // noise, not about hiding what people said.
+    let mut muted = use_signal(std::collections::HashSet::<i64>::new);
     let mut rail_dms = use_signal(|| false);
     let mut jump_to = use_signal(|| None::<i64>);
     use_context_provider(|| JumpTo(jump_to));
@@ -1321,6 +1325,7 @@ fn MainView(session: api::Session) -> Element {
     // Initial data load: channel list, unread badges, then history for the
     // first channel.
     use_future(move || async move {
+        muted.set(api::mutes(&session()).await.into_iter().collect());
         match api::channels(&session()).await {
             Ok(chs) => {
                 if let Ok(counts) = api::unread(&session()).await {
@@ -1429,7 +1434,11 @@ fn MainView(session: api::Session) -> Element {
                                     .iter()
                                     .any(|c| c.id == message.channel_id && c.kind == "dm");
                                 let content_lower = message.content.to_lowercase();
+                                // A muted channel makes no sound and raises no
+                                // toast, even for an @you — that is what muting
+                                // one is for. It still counts as unread.
                                 let mentioned = message.author.id != me.id
+                                    && !muted().contains(&message.channel_id)
                                     && (is_dm
                                         || content_lower.contains("@everyone")
                                         || content_lower.contains(&format!("@{}", me.username.to_lowercase())));
@@ -3741,8 +3750,13 @@ fn MainView(session: api::Session) -> Element {
                     for channel in channels().into_iter().filter(|c| c.kind == "text") {
                         button {
                             key: "{channel.id}",
+                            // A muted channel stays legible but stops asking
+                            // for attention: no bold-unread treatment, and the
+                            // badge below goes grey.
                             class: if selected_id == Some(channel.id) {
                                 "channel active"
+                            } else if muted().contains(&channel.id) {
+                                "channel muted"
                             } else if unread().contains_key(&channel.id) {
                                 "channel unread"
                             } else {
@@ -3761,6 +3775,34 @@ fn MainView(session: api::Session) -> Element {
                                             mark_channel_read(id)
                                         }));
                                     }
+                                    let is_muted = muted().contains(&id);
+                                    let (label, icon) = if is_muted {
+                                        ("Unmute channel", "volume")
+                                    } else {
+                                        ("Mute channel", "ban")
+                                    };
+                                    items.push(menu::item(label, icon, move || {
+                                        // Flip it locally first: the menu closes
+                                        // on click and a round trip would leave
+                                        // the channel looking unchanged.
+                                        let mut muted = muted;
+                                        if is_muted {
+                                            muted.write().remove(&id);
+                                        } else {
+                                            muted.write().insert(id);
+                                        }
+                                        spawn(async move {
+                                            if let Err(e) = api::set_mute(&session(), id, !is_muted).await {
+                                                status.set(e);
+                                                // Put it back the way the server has it.
+                                                if is_muted {
+                                                    muted.write().insert(id);
+                                                } else {
+                                                    muted.write().remove(&id);
+                                                }
+                                            }
+                                        });
+                                    }));
                                     if session().user.role == "admin" {
                                         let name = name.clone();
                                         items.push(menu::danger("Delete channel", "trash", move || {
@@ -3775,10 +3817,22 @@ fn MainView(session: api::Session) -> Element {
                                 }
                             },
                             span { class: "chan-name", "# {channel.name}" }
+                            if muted().contains(&channel.id) {
+                                span { class: "chan-muted", title: "Muted", Icon { name: "ban", size: 12 } }
+                            }
                             if let Some((count, mentions, _)) = unread().get(&channel.id).copied() {
                                 if selected_id != Some(channel.id) {
                                     span {
-                                        class: if mentions > 0 { "unread-badge ping" } else { "unread-badge" },
+                                        // A muted channel still counts, quietly:
+                                        // a red badge is the shouting a mute was
+                                        // meant to stop.
+                                        class: if muted().contains(&channel.id) {
+                                            "unread-badge"
+                                        } else if mentions > 0 {
+                                            "unread-badge ping"
+                                        } else {
+                                            "unread-badge"
+                                        },
                                         "{count}"
                                     }
                                 }
@@ -5100,6 +5154,29 @@ fn MainView(session: api::Session) -> Element {
                                                     mark_channel_read(id)
                                                 }));
                                             }
+                                            // A conversation can be muted like
+                                            // any other channel.
+                                            let is_muted = muted().contains(&id);
+                                            let label = if is_muted { "Unmute" } else { "Mute" };
+                                            let icon = if is_muted { "volume" } else { "ban" };
+                                            items.push(menu::item(label, icon, move || {
+                                                let mut muted = muted;
+                                                if is_muted {
+                                                    muted.write().remove(&id);
+                                                } else {
+                                                    muted.write().insert(id);
+                                                }
+                                                spawn(async move {
+                                                    if let Err(e) = api::set_mute(&session(), id, !is_muted).await {
+                                                        status.set(e);
+                                                        if is_muted {
+                                                            muted.write().insert(id);
+                                                        } else {
+                                                            muted.write().remove(&id);
+                                                        }
+                                                    }
+                                                });
+                                            }));
                                             menu::open(ctx_menu, &e, items);
                                         }
                                     },

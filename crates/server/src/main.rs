@@ -282,6 +282,8 @@ async fn main() -> anyhow::Result<()> {
             post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/api/gifs", get(routes::gifs))
+        .route("/api/mutes", get(routes::list_mutes))
+        .route("/api/channels/{id}/mute", post(routes::set_mute))
         .route("/api/preview", get(preview::preview))
         // Open on purpose, and only while nobody has an account yet.
         .route("/api/setup", post(routes::setup))

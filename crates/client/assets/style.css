@@ -2691,3 +2691,7 @@ ul.md-list { list-style-type: disc; }
 .rail-dm-who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .rail-dm-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-dm-when { font-size: 11px; color: #80848e; }
+
+/* A muted channel: still readable, no longer shouting. */
+.channel.muted .chan-name { color: #6d7079; }
+.chan-muted { color: #6d7079; display: inline-flex; margin-left: 4px; }

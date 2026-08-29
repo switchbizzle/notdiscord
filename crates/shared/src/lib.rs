@@ -594,6 +594,12 @@ pub struct UnreadInfo {
     pub last_read_id: i64,
 }
 
+/// Body for POST /api/channels/{id}/mute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MuteRequest {
+    pub muted: bool,
+}
+
 /// Body for POST /api/read — "I've seen up to this message".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkReadRequest {

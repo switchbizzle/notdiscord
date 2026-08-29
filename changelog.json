@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.75.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🔇 Mute a channel. Right-click it (or a DM in the rail) and pick Mute: no sound, no toast, no phone notification, even for an @you. The channel dims and its badge goes quiet, but messages still arrive and still count as unread — muting is about noise, not about hiding what people said",
+      "Handy now that phone notifications work: mute the busy channels instead of turning the lot off"
+    ]
+  },
+  {
     "version": "0.74.0",
     "date": "2026-08-28",
     "changes": [
