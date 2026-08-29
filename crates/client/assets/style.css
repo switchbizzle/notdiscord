@@ -1476,6 +1476,8 @@ ul.md-list { list-style-type: disc; }
     cursor: zoom-out;
 }
 .lightbox-img {
+    /* The container is click-to-close; the photo itself is a safe area. */
+    cursor: default;
     max-width: 90vw;
     max-height: 82vh;
     border-radius: 8px;
@@ -1491,6 +1493,22 @@ ul.md-list { list-style-type: disc; }
 }
 .lightbox-actions button:hover { background: #404249; }
 .lightbox-hint { color: #949ba4; font-size: 12px; }
+.lightbox-count { color: #dbdee1; font-size: 12px; font-variant-numeric: tabular-nums; }
+.lightbox:focus { outline: none; }
+/* Sat over the image, vertically centred, out of the way of the actions bar. */
+.lightbox-arrow {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 44px; height: 44px; border: none; border-radius: 50%;
+    background: rgba(30, 31, 34, 0.72); color: #dbdee1;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; padding: 0;
+}
+.lightbox-arrow:hover { background: rgba(53, 55, 60, 0.95); }
+.lightbox-arrow.left { left: 24px; }
+.lightbox-arrow.right { right: 24px; }
+/* One chevron asset, turned a quarter each way. */
+.lightbox-arrow.left svg { transform: rotate(90deg); }
+.lightbox-arrow.right svg { transform: rotate(-90deg); }
 
 .drop-overlay {
     position: fixed;

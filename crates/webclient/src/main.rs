@@ -149,6 +149,44 @@ fn dm_peer(channel: &Channel, me: i64) -> String {
 /// Split message text into leading media (rendered inline) and residual text.
 /// Far simpler than the desktop renderer on purpose: images and videos
 /// inline, other /files/ attachments become links, everything else is text.
+/// The open image and the list it came from, so the arrows (and a swipe) step
+/// through the channel's photos instead of trapping you on the one you tapped.
+#[derive(Clone, PartialEq)]
+struct Lightbox {
+    urls: Vec<String>,
+    at: usize,
+}
+
+impl Lightbox {
+    fn only(url: String) -> Self {
+        Self { urls: vec![url], at: 0 }
+    }
+
+    fn within(url: String, urls: Vec<String>) -> Self {
+        match urls.iter().position(|u| *u == url) {
+            Some(at) => Self { urls, at },
+            None => Self::only(url),
+        }
+    }
+
+    fn url(&self) -> String {
+        self.urls[self.at].clone()
+    }
+
+    /// Wraps — running off the end of a gallery is never what you meant.
+    fn step(&mut self, delta: i32) {
+        let n = self.urls.len() as i32;
+        if n > 1 {
+            self.at = (((self.at as i32 + delta) % n + n) % n) as usize;
+        }
+    }
+}
+
+/// The channel's images, oldest first. Newtyped because dioxus keys context
+/// by type and a bare Signal<Vec<String>> invites a collision.
+#[derive(Clone, Copy)]
+struct Gallery(Memo<Vec<String>>);
+
 fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, String)>, String) {
     let mut images = Vec::new();
     let mut videos = Vec::new();
@@ -471,6 +509,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut members = use_signal(Vec::<UserStatus>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
+    let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
+    // Where a finger went down, so touchend can measure how far it travelled.
+    let mut swipe_from = use_signal(|| None::<f64>);
+    let gallery = use_memo(move || {
+        messages().iter().flat_map(|m| extract_media(&m.content).0).collect::<Vec<String>>()
+    });
+    use_context_provider(|| Gallery(gallery));
     let mut has_more = use_signal(|| false);
     let mut drawer = use_signal(|| true);
     let mut draft = use_signal(String::new);
@@ -1401,6 +1446,85 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
                 button { class: "send", onclick: move |_| send(()), Icon { name: "send", size: 16 } }
             }
+            if let Some(view) = lightbox() {
+                {
+                    let url = view.url();
+                    let many = view.urls.len() > 1;
+                    let position = format!("{} of {}", view.at + 1, view.urls.len());
+                    let mut step = move |delta: i32| {
+                        if let Some(mut view) = lightbox() {
+                            view.step(delta);
+                            lightbox.set(Some(view));
+                        }
+                    };
+                    rsx! {
+                        div {
+                            class: "lightbox",
+                            onclick: move |_| lightbox.set(None),
+                            // A drag across the photo pages it, the way every
+                            // other phone gallery works. Anything under a
+                            // third of the screen is a tap, not a swipe.
+                            ontouchstart: move |e: Event<TouchData>| {
+                                if let Some(t) = e.touches().first() {
+                                    swipe_from.set(Some(t.client_coordinates().x));
+                                }
+                            },
+                            ontouchend: move |e: Event<TouchData>| {
+                                let Some(from) = swipe_from() else { return };
+                                swipe_from.set(None);
+                                let Some(t) = e.touches_changed().first().map(|t| t.client_coordinates().x) else {
+                                    return;
+                                };
+                                let travelled = t - from;
+                                let enough = web_sys::window()
+                                    .and_then(|w| w.inner_width().ok())
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(360.0)
+                                    / 3.0;
+                                if travelled.abs() > enough {
+                                    // Drag left to go forward, like paper.
+                                    step(if travelled < 0.0 { 1 } else { -1 });
+                                }
+                            },
+                            img {
+                                class: "lightbox-img",
+                                src: "{url}",
+                                onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                            }
+                            if many {
+                                button {
+                                    class: "lightbox-arrow left",
+                                    onclick: move |e: Event<MouseData>| {
+                                        e.stop_propagation();
+                                        step(-1);
+                                    },
+                                    Icon { name: "chevron-down", size: 22 }
+                                }
+                                button {
+                                    class: "lightbox-arrow right",
+                                    onclick: move |e: Event<MouseData>| {
+                                        e.stop_propagation();
+                                        step(1);
+                                    },
+                                    Icon { name: "chevron-down", size: 22 }
+                                }
+                            }
+                            div { class: "lightbox-bar",
+                                if many {
+                                    span { class: "lightbox-count", "{position}" }
+                                }
+                                a {
+                                    class: "lightbox-open",
+                                    href: "{url}",
+                                    target: "_blank",
+                                    onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                    "Open full size"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1520,6 +1644,8 @@ const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "�
 fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut replying = use_context::<Signal<Option<Message>>>();
+    let mut lightbox = use_context::<Signal<Option<Lightbox>>>();
+    let gallery = use_context::<Gallery>().0;
     let mut strip_open = use_signal(|| false);
     // Editing and deleting your own words, the way the desktop app allows.
     // Deleting asks first: these are thumb-sized targets on a phone.
@@ -1651,8 +1777,15 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
                     // draw a 340px image.
                     let shown = if src.contains("/files/") { format!("{src}?thumb=1") } else { src.clone() };
                     rsx! {
-                        a { key: "{i}", href: "{src}", target: "_blank",
-                            img { class: "msg-img", src: "{shown}", loading: "lazy" }
+                        img {
+                            key: "{i}",
+                            class: "msg-img",
+                            src: "{shown}",
+                            loading: "lazy",
+                            onclick: {
+                                let src = src.clone();
+                                move |_| lightbox.set(Some(Lightbox::within(src.clone(), gallery())))
+                            },
                         }
                     }
                 }

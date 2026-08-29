@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.81.0",
+    "date": "2026-08-29",
+    "changes": [
+      "🖼️ Opening an image no longer traps you on it (Jon's #4). Arrows either side step through the channel's photos, ← and → do the same, and it says where you are — \"3 of 12\". Open one from the Files panel and it walks that list instead",
+      "📱 The web app gets a proper viewer too, where it had none: photos opened in a new tab before. Swipe left or right to move between them, tap outside to close"
+    ]
+  },
+  {
     "version": "0.80.1",
     "date": "2026-08-29",
     "changes": [

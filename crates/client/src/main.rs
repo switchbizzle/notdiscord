@@ -887,17 +887,80 @@ const TYPING_TTL_MS: i64 = 4000;
 /// Minimum interval between Typing events we send while the user types.
 const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 
+/// What the lightbox is showing: the images it was opened from, and where in
+/// them we are. Carrying the list rather than looking one up on demand means
+/// the arrows step through the same set the click came from — the channel's
+/// photos when you clicked one in chat, the Files panel's when you clicked
+/// there.
+#[derive(Clone, PartialEq)]
+struct Lightbox {
+    urls: Vec<String>,
+    at: usize,
+}
+
+impl Lightbox {
+    /// One image with nothing to step to.
+    fn only(url: String) -> Self {
+        Self { urls: vec![url], at: 0 }
+    }
+
+    /// `url` in the context of `urls`, or on its own if it isn't one of them.
+    fn within(url: String, urls: Vec<String>) -> Self {
+        match urls.iter().position(|u| *u == url) {
+            Some(at) => Self { urls, at },
+            None => Self::only(url),
+        }
+    }
+
+    fn url(&self) -> String {
+        self.urls[self.at].clone()
+    }
+
+    /// Wrapping, because falling off the end of a gallery just makes you
+    /// press the other arrow twice to get back.
+    fn step(&mut self, delta: i32) {
+        let n = self.urls.len() as i32;
+        if n > 1 {
+            self.at = (((self.at as i32 + delta) % n + n) % n) as usize;
+        }
+    }
+}
+
+/// Every image in the channel as it currently stands, oldest first — reading
+/// order, which is the order the arrows should walk. Its own type: dioxus
+/// keys context by type, and a bare Signal<Vec<String>> is too easy to
+/// collide with later.
+#[derive(Clone, Copy)]
+struct Gallery(Memo<Vec<String>>);
+
 #[component]
 fn MainView(session: api::Session) -> Element {
     let mut session = use_signal(move || session);
     use_context_provider(|| session);
     let mut servers_file = use_context::<Signal<api::ServersFile>>();
-    let mut lightbox = use_context_provider(|| Signal::new(None::<String>));
+    let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
     let mut react_target = use_signal(|| None::<i64>);
     use_context_provider(|| ReactTarget(react_target));
     let mut channels = use_signal(Vec::<Channel>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
+    let gallery = use_memo(move || {
+        let base = session.peek().base_url.clone();
+        messages()
+            .iter()
+            .flat_map(|m| extract_media(&m.content, &base).0)
+            .collect::<Vec<String>>()
+    });
+    use_context_provider(|| Gallery(gallery));
+    // Runs after the overlay is in the DOM, which is the earliest the element
+    // can take focus — without it the arrow keys go nowhere until you click.
+    use_effect(move || {
+        if lightbox().is_some() {
+            dioxus::document::eval(
+                "const el = document.getElementById('lightbox'); if (el) el.focus();",
+            );
+        }
+    });
     let mut members = use_signal(Vec::<UserStatus>::new);
     let mut tags = use_signal(Vec::<Tag>::new);
     use_context_provider(|| members);
@@ -3961,12 +4024,60 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
             }
-            if let Some(url) = lightbox() {
+            if let Some(view) = lightbox() {
+                {
+                    let url = view.url();
+                    let many = view.urls.len() > 1;
+                    let position = format!("{} of {}", view.at + 1, view.urls.len());
+                    let mut step = move |delta: i32| {
+                        let mut view = lightbox().unwrap_or_else(|| Lightbox::only(String::new()));
+                        view.step(delta);
+                        lightbox.set(Some(view));
+                    };
+                    rsx! {
                 div {
                     class: "lightbox",
+                    id: "lightbox",
+                    // Focused on open (see the use_effect below) so the arrow
+                    // keys reach it without a click first.
+                    tabindex: "0",
                     onclick: move |_| lightbox.set(None),
-                    img { class: "lightbox-img", src: "{url}" }
+                    onkeydown: move |e: Event<KeyboardData>| match e.key() {
+                        Key::Escape => lightbox.set(None),
+                        Key::ArrowLeft => step(-1),
+                        Key::ArrowRight => step(1),
+                        _ => {}
+                    },
+                    if many {
+                        button {
+                            class: "lightbox-arrow left",
+                            title: "Previous (\u{2190})",
+                            onclick: move |e: MouseEvent| {
+                                e.stop_propagation();
+                                step(-1);
+                            },
+                            Icon { name: "chevron-down", size: 22 }
+                        }
+                        button {
+                            class: "lightbox-arrow right",
+                            title: "Next (\u{2192})",
+                            onclick: move |e: MouseEvent| {
+                                e.stop_propagation();
+                                step(1);
+                            },
+                            Icon { name: "chevron-down", size: 22 }
+                        }
+                    }
+                    img {
+                        class: "lightbox-img",
+                        src: "{url}",
+                        // Clicking the photo itself shouldn't close the photo.
+                        onclick: move |e: MouseEvent| e.stop_propagation(),
+                    }
                     div { class: "lightbox-actions",
+                        if many {
+                            span { class: "lightbox-count", "{position}" }
+                        }
                         button {
                             onclick: {
                                 let url = url.clone();
@@ -3992,7 +4103,11 @@ fn MainView(session: api::Session) -> Element {
                             },
                             "Save"
                         }
-                        span { class: "lightbox-hint", "click anywhere to close" }
+                        span { class: "lightbox-hint",
+                            if many { "\u{2190} \u{2192} to browse \u{b7} click outside to close" } else { "click anywhere to close" }
+                        }
+                    }
+                }
                     }
                 }
             }
@@ -5368,7 +5483,21 @@ fn MainView(session: api::Session) -> Element {
                                     title: "{f.name}",
                                     onclick: move |_| {
                                         if is_img {
-                                            lightbox.set(Some(abs_open.clone()));
+                                            // The panel's own images, in the
+                                            // order it lists them.
+                                            let base = session().base_url;
+                                            let shown: Vec<String> = files_open()
+                                                .unwrap_or_default()
+                                                .iter()
+                                                .filter(|f| {
+                                                    let lower = f.name.to_lowercase();
+                                                    [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                                                        .iter()
+                                                        .any(|e| lower.ends_with(e))
+                                                })
+                                                .map(|f| format!("{base}{}", f.url))
+                                                .collect();
+                                            lightbox.set(Some(Lightbox::within(abs_open.clone(), shown)));
                                         } else {
                                             let _ = open::that(&abs_open);
                                         }
@@ -6474,7 +6603,8 @@ const REACTION_EMOJIS: &[&str] = &[
 fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let session = use_context::<Signal<api::Session>>();
     let ws = use_coroutine_handle::<ClientEvent>();
-    let mut lightbox = use_context::<Signal<Option<String>>>();
+    let mut lightbox = use_context::<Signal<Option<Lightbox>>>();
+    let gallery = use_context::<Gallery>().0;
     let mut react_target = use_context::<ReactTarget>().0;
     let members_ctx = use_context::<Signal<Vec<UserStatus>>>();
     let tags_ctx = use_context::<Signal<Vec<Tag>>>();
@@ -6685,7 +6815,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                         loading: "lazy",
                         onclick: {
                             let src = src.clone();
-                            move |_| lightbox.set(Some(src.clone()))
+                            move |_| lightbox.set(Some(Lightbox::within(src.clone(), gallery())))
                         },
                         oncontextmenu: {
                             let src = src.clone();
@@ -6696,7 +6826,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                                         let src = src.clone();
                                         move || {
                                             let mut lightbox = lightbox;
-                                            lightbox.set(Some(src.clone()));
+                                            lightbox.set(Some(Lightbox::within(src.clone(), gallery())));
                                         }
                                     }),
                                     menu::item("Save image as…", "download", {
