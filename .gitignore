@@ -42,3 +42,12 @@ Thumbs.db
 deploy/.env
 deploy/data/
 deploy/client/
+
+# Other people's projects that live in this working directory but are not
+# ours to publish. Jon shared Lightify's source with the crew, not with
+# GitHub — and `git add -A` does not know the difference.
+/Lightify/
+/Lightify-source-*.zip
+/MANIFEST.txt
+/doppelstream/
+/passtheaux/
