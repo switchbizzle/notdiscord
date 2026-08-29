@@ -2131,6 +2131,7 @@ pub async fn set_bot_settings(
         .map_err(internal)?;
     }
 
+    let mut touched_spotify = false;
     for (key, value) in &req.credentials {
         if value.len() > 64_000 {
             return Err(err(StatusCode::BAD_REQUEST, "that value is too large"));
@@ -2138,6 +2139,15 @@ pub async fn set_bot_settings(
         crate::creds::set(&state, key, value)
             .await
             .map_err(|_| err(StatusCode::BAD_REQUEST, "unknown credential"))?;
+        touched_spotify |= key.starts_with("spotify");
+    }
+    // Spotify is the one an admin can get subtly wrong — a swapped pair or a
+    // half-copied secret looks identical to a good one until somebody posts a
+    // link. Ask Spotify now, while the person who typed it is still looking.
+    if touched_spotify && crate::spotify::credentials(&state).await.is_some() {
+        if let Err(e) = crate::spotify::check(&state).await {
+            return Err(err(StatusCode::BAD_REQUEST, &e.to_string()));
+        }
     }
 
     if identity_changed {

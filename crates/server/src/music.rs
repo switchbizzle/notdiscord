@@ -293,7 +293,7 @@ async fn run_command(
             let mut plan = Vec::new();
             let mut spotify_note = String::new();
             if crate::spotify::is_spotify_url(&url) {
-                if crate::creds::get(state, "spotify").await.is_none() {
+                if crate::spotify::credentials(state).await.is_none() {
                     return Ok("I can read Spotify links once an admin adds Spotify credentials in \
                                Server settings → Bot 🎧 (SoundCloud links work either way)"
                         .into());

@@ -40,12 +40,22 @@ pub const CREDENTIALS: &[Credential] = &[
         label: "SoundCloud cookie file",
         hint: "Optional. Paste a cookies.txt from a logged-in SoundCloud account to stream the artist's original file where it's offered. Without it, music plays at SoundCloud's public quality.",
     },
+    // Two boxes, because developer.spotify.com shows two values. Asking an
+    // admin to join them with a colon was one more thing to get wrong, and
+    // it was got wrong the first time it was used.
     Credential {
-        key: "spotify",
-        meta_key: "spotify_creds",
-        env: "NOTDISCORD_SPOTIFY_CREDS",
-        label: "Spotify client ID:secret",
-        hint: "Optional, as \"id:secret\" from developer.spotify.com. Paste it now and Spotify links start resolving to the right song in the next update — the audio will still stream from SoundCloud, because Spotify's API doesn't allow playback through a bot.",
+        key: "spotify_id",
+        meta_key: "spotify_client_id",
+        env: "NOTDISCORD_SPOTIFY_ID",
+        label: "Spotify client ID",
+        hint: "Optional. From your app's page on developer.spotify.com — the long code under the app name. Lets Spotify links resolve to the right song; the audio still streams from SoundCloud, because Spotify's API doesn't allow playback through a bot.",
+    },
+    Credential {
+        key: "spotify_secret",
+        meta_key: "spotify_client_secret",
+        env: "NOTDISCORD_SPOTIFY_SECRET",
+        label: "Spotify client secret",
+        hint: "The value behind \"View client secret\" on the same page. Saved together with the ID above, and checked against Spotify the moment you save.",
     },
 ];
 

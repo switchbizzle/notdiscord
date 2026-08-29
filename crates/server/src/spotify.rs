@@ -144,20 +144,38 @@ struct TokenResponse {
     expires_in: u64,
 }
 
+/// The configured pair. Admins fill in two boxes; earlier versions had one
+/// box holding "id:secret", and a server set up that way keeps working.
+pub async fn credentials(state: &SharedState) -> Option<(String, String)> {
+    let id = crate::creds::get(state, "spotify_id").await;
+    let secret = crate::creds::get(state, "spotify_secret").await;
+    if let (Some(id), Some(secret)) = (id, secret) {
+        return Some((id.trim().to_owned(), secret.trim().to_owned()));
+    }
+    // Legacy single field, read straight from storage since it's no longer
+    // in the credential registry.
+    let joined: Option<String> = sqlx::query_scalar("SELECT value FROM server_meta WHERE key = 'spotify_creds'")
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("NOTDISCORD_SPOTIFY_CREDS").ok());
+    let joined = joined?;
+    let (id, secret) = joined.trim().split_once(':')?;
+    Some((id.trim().to_owned(), secret.trim().to_owned()))
+}
+
 async fn token(state: &SharedState) -> anyhow::Result<String> {
-    let Some(creds) = crate::creds::get(state, "spotify").await else {
-        anyhow::bail!("no spotify credentials");
+    let Some((id, secret)) = credentials(state).await else {
+        anyhow::bail!("no spotify credentials — an admin can add them in Server settings → Bot");
     };
-    let creds = creds.trim().to_owned();
+    let creds = format!("{id}:{secret}");
     if let Some(hit) = cached(&creds) {
         return Ok(hit);
     }
-    let (id, secret) = creds
-        .split_once(':')
-        .ok_or_else(|| anyhow::anyhow!("spotify credentials should look like \"id:secret\""))?;
 
     use base64::Engine;
-    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", id.trim(), secret.trim()));
+    let basic = base64::engine::general_purpose::STANDARD.encode(&creds);
     let resp = reqwest::Client::new()
         .post(format!("{}/api/token", accounts_base()))
         .header("Authorization", format!("Basic {basic}"))
@@ -166,7 +184,9 @@ async fn token(state: &SharedState) -> anyhow::Result<String> {
         .send()
         .await?;
     if !resp.status().is_success() {
-        anyhow::bail!("spotify refused the credentials ({})", resp.status());
+        anyhow::bail!(
+            "Spotify refused those credentials — check the client ID and secret in Server settings → Bot"
+        );
     }
     let body: TokenResponse = resp.json().await?;
     // Expire a minute early so a token can't die mid-request.
@@ -179,6 +199,14 @@ async fn token(state: &SharedState) -> anyhow::Result<String> {
     Ok(body.access_token)
 }
 
+/// Ask Spotify whether the stored credentials work. Used when an admin saves
+/// them, so a typo is caught in the settings pane instead of surfacing hours
+/// later as "couldn't read that Spotify link".
+pub async fn check(state: &SharedState) -> anyhow::Result<()> {
+    *TOKEN.lock().unwrap() = None;
+    token(state).await.map(|_| ())
+}
+
 async fn get(state: &SharedState, path: &str) -> anyhow::Result<serde_json::Value> {
     let token = token(state).await?;
     let resp = reqwest::Client::new()
@@ -187,10 +215,45 @@ async fn get(state: &SharedState, path: &str) -> anyhow::Result<serde_json::Valu
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await?;
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        // Spotify says how long to wait; pass that on rather than making
+        // somebody guess, and never retry inside the request — that is how a
+        // rate limit turns into a worse rate limit.
+        let wait = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("a moment");
+        anyhow::bail!("Spotify is rate limiting us — try again in {wait}s");
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!("Spotify doesn't have that one (private playlist, or a dead link?)");
+    }
     if !resp.status().is_success() {
         anyhow::bail!("spotify said {}", resp.status());
     }
     Ok(resp.json().await?)
+}
+
+/// Links resolved recently, so reposting the same track — or everyone in the
+/// room pasting the same one — costs Spotify nothing. Bounded and dumb on
+/// purpose: chat links repeat within minutes or never.
+const CACHE_LIMIT: usize = 256;
+static RESOLVED: std::sync::Mutex<Vec<(String, std::sync::Arc<Resolved>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn cached_resolve(url: &str) -> Option<std::sync::Arc<Resolved>> {
+    let cache = RESOLVED.lock().unwrap();
+    cache.iter().find(|(key, _)| key == url).map(|(_, value)| value.clone())
+}
+
+fn remember(url: &str, value: &std::sync::Arc<Resolved>) {
+    let mut cache = RESOLVED.lock().unwrap();
+    cache.retain(|(key, _)| key != url);
+    cache.push((url.to_owned(), value.clone()));
+    if cache.len() > CACHE_LIMIT {
+        cache.remove(0);
+    }
 }
 
 // ---------- Reading their JSON ----------
@@ -229,6 +292,7 @@ fn biggest_image(images: &serde_json::Value) -> Option<String> {
 
 /// What a link is worth queueing, in order. The name is the album or
 /// playlist's own, so the bot can say what it just added.
+#[derive(Debug, Clone)]
 pub struct Resolved {
     pub name: String,
     pub tracks: Vec<Planned>,
@@ -243,7 +307,19 @@ pub async fn resolve(state: &SharedState, url: &str) -> anyhow::Result<Resolved>
     let Some(link) = parse_link(target) else {
         anyhow::bail!("that Spotify link isn't a track, album, or playlist");
     };
+    // Keyed on what the link resolved to, so the short and long forms of the
+    // same track share an entry.
+    let cache_key = format!("{:?}:{}", link.kind, link.id);
+    if let Some(hit) = cached_resolve(&cache_key) {
+        return Ok((*hit).clone());
+    }
 
+    let resolved = fetch(state, &link).await?;
+    remember(&cache_key, &std::sync::Arc::new(resolved.clone()));
+    Ok(resolved)
+}
+
+async fn fetch(state: &SharedState, link: &Link) -> anyhow::Result<Resolved> {
     match link.kind {
         Kind::Track => {
             let track = get(state, &format!("tracks/{}", link.id)).await?;
@@ -523,6 +599,7 @@ mod tests {
         std::env::set_var("NOTDISCORD_SPOTIFY_ACCOUNTS", format!("http://{addr}"));
         std::env::set_var("NOTDISCORD_SPOTIFY_API", format!("http://{addr}/v1"));
         *TOKEN.lock().unwrap() = None;
+        RESOLVED.lock().unwrap().clear();
         let state = test_state("client-id-42:shhh-secret").await;
 
         // A single track.
@@ -585,12 +662,43 @@ mod tests {
             );
         }
 
-        // Changing the credentials must not keep using the old token.
-        sqlx::query("UPDATE server_meta SET value = 'other-id:other-secret' WHERE key = 'spotify_creds'")
+        // A link posted twice costs Spotify nothing the second time. This is
+        // the whole answer to "are we polling their API too hard".
+        let before = seen.lock().unwrap().paths.len();
+        let again = resolve(&state, "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT")
+            .await
+            .expect("track");
+        assert_eq!(again.tracks[0].title, "Strobe");
+        assert_eq!(
+            seen.lock().unwrap().paths.len(),
+            before,
+            "a repeated link went back to Spotify"
+        );
+        // The short form of the same track is the same cache entry.
+        resolve(&state, "https://open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT?si=x")
+            .await
+            .expect("track");
+        assert_eq!(seen.lock().unwrap().paths.len(), before, "the same track, twice over");
+
+        // Two separate boxes are the supported way in; the single "id:secret"
+        // field above is what older servers were set up with, and both got us
+        // this far in the same test.
+        sqlx::query("DELETE FROM server_meta WHERE key = 'spotify_creds'")
             .execute(&state.db)
             .await
             .unwrap();
-        resolve(&state, "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT").await.expect("track");
+        for (key, value) in [("spotify_client_id", "other-id"), ("spotify_client_secret", "other-secret")] {
+            sqlx::query("INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)")
+                .bind(key)
+                .bind(value)
+                .execute(&state.db)
+                .await
+                .unwrap();
+        }
+        // Changing the credentials must not keep using the old token — and a
+        // link we haven't seen has to actually go and ask.
+        check(&state).await.expect("the new pair works");
+        resolve(&state, "https://open.spotify.com/track/1ATL5GLyefJaxhQzSPVrLX").await.expect("track");
         {
             use base64::Engine;
             let seen = seen.lock().unwrap();

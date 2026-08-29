@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.71.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🎵 Spotify credentials are two boxes now — client ID in one, secret in the other, exactly as Spotify's dashboard shows them. No more joining them with a colon by hand (JunkfoodJon, who called the old way sloppy, correctly)",
+      "✅ And they're checked against Spotify the moment you hit Save, so a typo says so right there instead of turning up later as \"couldn't read that Spotify link\"",
+      "😴 Gentler on Spotify's API: a link is resolved once and remembered, so reposting the same track costs nothing, and if they ever do rate us the bot says how long to wait instead of hammering away"
+    ]
+  },
+  {
     "version": "0.70.0",
     "date": "2026-08-28",
     "changes": [
