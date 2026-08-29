@@ -887,6 +887,10 @@ fn MainView(session: api::Session) -> Element {
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
     let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
+    // The right rail shows the room, or your conversations. Jon's spec: a
+    // text button beside MEMBERS in the same row, and clicking one swaps the
+    // rail without moving anything else on screen.
+    let mut rail_dms = use_signal(|| false);
     let mut jump_to = use_signal(|| None::<i64>);
     use_context_provider(|| JumpTo(jump_to));
     // The one open right-click menu, wherever it was opened from.
@@ -3728,72 +3732,9 @@ fn MainView(session: api::Session) -> Element {
                             }
                         }
                     }
-                    if channels().iter().any(|c| c.kind == "dm") {
-                        {
-                            let collapsed = audio_settings().dms_collapsed;
-                            let chevron: &'static str = if collapsed { "chevron-down" } else { "chevron-up" };
-                            let hint = if collapsed { "Show direct messages" } else { "Hide direct messages (unread ones stay visible)" };
-                            rsx! {
-                                button {
-                                    class: "section-row section-toggle",
-                                    title: "{hint}",
-                                    onclick: move |_| {
-                                        audio_settings.write().dms_collapsed = !collapsed;
-                                        api::save_settings(&audio_settings());
-                                    },
-                                    span { class: "section-label", "Direct Messages" }
-                                    Icon { name: chevron, size: 12 }
-                                }
-                            }
-                        }
-                    }
-                    // Collapsed hides the quiet ones; anything unread (every DM
-                    // pings) or currently open always shows.
-                    for channel in channels().into_iter().filter(|c| c.kind == "dm").filter(|c| {
-                        !audio_settings().dms_collapsed
-                            || unread().contains_key(&c.id)
-                            || selected_id == Some(c.id)
-                    }) {
-                        button {
-                            key: "dm{channel.id}",
-                            class: if selected_id == Some(channel.id) {
-                                "channel dm active"
-                            } else if unread().contains_key(&channel.id) {
-                                "channel dm unread"
-                            } else {
-                                "channel dm"
-                            },
-                            onclick: {
-                                let channel = channel.clone();
-                                move |_| open_channel(channel.clone())
-                            },
-                            oncontextmenu: {
-                                let id = channel.id;
-                                move |e: Event<MouseData>| {
-                                    let mut items = Vec::new();
-                                    if unread().contains_key(&id) {
-                                        items.push(menu::item("Mark as read", "check-square", move || {
-                                            mark_channel_read(id)
-                                        }));
-                                    }
-                                    menu::open(ctx_menu, &e, items);
-                                }
-                            },
-                            if let Some(peer) = dm_peer(&channel, session().user.id) {
-                                UserAvatar { user: peer, class: "dm-avatar" }
-                            }
-                            span { class: "chan-name", "{dm_peer_name(&channel, session().user.id)}" }
-                            if voice_rosters().get(&channel.id).is_some_and(|v| !v.is_empty()) {
-                                span { class: "dm-call-live", Icon { name: "phone", size: 11 } }
-                            }
-                            // Every DM message pings, so the badge is always hot.
-                            if let Some((count, _, _)) = unread().get(&channel.id).copied() {
-                                if selected_id != Some(channel.id) {
-                                    span { class: "unread-badge ping", "{count}" }
-                                }
-                            }
-                        }
-                    }
+                    // Direct messages live in the right rail now (Jon's
+                    // spec), which is also the redundancy switchb flagged when
+                    // the same name appeared three times down this side.
                     div { class: "section-row",
                         span { class: "section-label", "Voice" }
                         button {
@@ -4666,47 +4607,6 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                 }
-                if let Some(target) = react_target() {
-                    div { class: "react-palette",
-                        span { class: "react-palette-label", "React:" }
-                        for emoji in REACTION_EMOJIS {
-                            button {
-                                key: "{emoji}",
-                                onclick: move |_| {
-                                    ws.send(ClientEvent::ToggleReaction {
-                                        message_id: target,
-                                        emoji: emoji.to_string(),
-                                    });
-                                    react_target.set(None);
-                                },
-                                "{emoji}"
-                            }
-                        }
-                        // React with the server's own emojis too.
-                        for custom in emojis() {
-                            button {
-                                key: "c{custom.id}",
-                                title: ":{custom.name}:",
-                                onclick: {
-                                    let token = format!(":{}:", custom.name);
-                                    move |_| {
-                                        ws.send(ClientEvent::ToggleReaction {
-                                            message_id: target,
-                                            emoji: token.clone(),
-                                        });
-                                        react_target.set(None);
-                                    }
-                                },
-                                img { class: "custom-emoji", src: "{custom.url}" }
-                            }
-                        }
-                        button {
-                            class: "react-palette-close",
-                            onclick: move |_| react_target.set(None),
-                            "✕"
-                        }
-                    }
-                }
                 if let Some(target) = replying_to() {
                     div { class: "reply-bar",
                         Icon { name: "reply", size: 13 }
@@ -5066,7 +4966,90 @@ fn MainView(session: api::Session) -> Element {
                 }
             } else {
             div { class: "members",
-                div { class: "members-title", "Members" }
+                div { class: "rail-tabs",
+                    button {
+                        class: if rail_dms() { "rail-tab" } else { "rail-tab on" },
+                        onclick: move |_| rail_dms.set(false),
+                        "Members"
+                    }
+                    button {
+                        class: if rail_dms() { "rail-tab on" } else { "rail-tab" },
+                        onclick: move |_| rail_dms.set(true),
+                        "Direct Messages"
+                        // Unread DMs are always pings, so the count belongs
+                        // on the tab you can't see from.
+                        {
+                            let waiting: i64 = channels()
+                                .iter()
+                                .filter(|c| c.kind == "dm")
+                                .filter_map(|c| unread().get(&c.id).map(|(count, _, _)| *count))
+                                .sum();
+                            rsx! {
+                                if waiting > 0 && !rail_dms() {
+                                    span { class: "unread-badge ping", "{waiting}" }
+                                }
+                            }
+                        }
+                    }
+                }
+                if rail_dms() {
+                    {
+                        // Most recent first, by the last thing said. A DM with
+                        // nothing in it yet sorts to the bottom rather than
+                        // vanishing — you just opened it on purpose.
+                        let mut dms: Vec<Channel> =
+                            channels().into_iter().filter(|c| c.kind == "dm").collect();
+                        dms.sort_by_key(|c| std::cmp::Reverse(c.last_at.unwrap_or(0)));
+                        let me_id = session().user.id;
+                        rsx! {
+                            if dms.is_empty() {
+                                div { class: "rail-empty",
+                                    "No conversations yet. Open someone's profile in Members and hit Message."
+                                }
+                            }
+                            for channel in dms {
+                                button {
+                                    key: "raildm{channel.id}",
+                                    class: if selected().is_some_and(|c| c.id == channel.id) {
+                                        "rail-dm on"
+                                    } else {
+                                        "rail-dm"
+                                    },
+                                    onclick: {
+                                        let channel = channel.clone();
+                                        move |_| open_channel(channel.clone())
+                                    },
+                                    oncontextmenu: {
+                                        let id = channel.id;
+                                        move |e: Event<MouseData>| {
+                                            let mut items = Vec::new();
+                                            if unread().contains_key(&id) {
+                                                items.push(menu::item("Mark as read", "check-square", move || {
+                                                    mark_channel_read(id)
+                                                }));
+                                            }
+                                            menu::open(ctx_menu, &e, items);
+                                        }
+                                    },
+                                    if let Some(peer) = dm_peer(&channel, me_id) {
+                                        UserAvatar { user: peer, class: "dm-avatar" }
+                                    }
+                                    div { class: "rail-dm-who",
+                                        span { class: "rail-dm-name", "{dm_peer_name(&channel, me_id)}" }
+                                        if let Some(at) = channel.last_at {
+                                            span { class: "rail-dm-when", {format_time(at)} }
+                                        }
+                                    }
+                                    if let Some((count, _, _)) = unread().get(&channel.id).copied() {
+                                        if !selected().is_some_and(|c| c.id == channel.id) {
+                                            span { class: "unread-badge ping", "{count}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
                 for member in members() {
                     div {
                         key: "{member.user.id}",
@@ -5121,6 +5104,7 @@ fn MainView(session: api::Session) -> Element {
                         }
                         span { class: "member-dot" }
                     }
+                }
                 }
             }
             }
@@ -6267,6 +6251,49 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                 }
                 for link in links {
                     LinkCard { key: "{link}", url: link }
+                }
+                // The picker belongs under the message it is for, not
+                // pinned above the composer — Jon: "otherwise the reaction
+                // replies button bar for emojis will show right below that
+                // current message (easier to press)".
+                if react_target() == Some(msg_id) {
+                    div { class: "react-palette",
+                        for emoji in REACTION_EMOJIS {
+                            button {
+                                key: "{emoji}",
+                                onclick: move |_| {
+                                    ws.send(ClientEvent::ToggleReaction {
+                                        message_id: msg_id,
+                                        emoji: emoji.to_string(),
+                                    });
+                                    react_target.set(None);
+                                },
+                                "{emoji}"
+                            }
+                        }
+                        for custom in emojis_ctx() {
+                            button {
+                                key: "c{custom.id}",
+                                title: ":{custom.name}:",
+                                onclick: {
+                                    let token = format!(":{}:", custom.name);
+                                    move |_| {
+                                        ws.send(ClientEvent::ToggleReaction {
+                                            message_id: msg_id,
+                                            emoji: token.clone(),
+                                        });
+                                        react_target.set(None);
+                                    }
+                                },
+                                img { class: "custom-emoji", src: "{custom.url}" }
+                            }
+                        }
+                        button {
+                            class: "react-palette-close",
+                            onclick: move |_| react_target.set(None),
+                            "✕"
+                        }
+                    }
                 }
                 if !reaction_groups.is_empty() {
                     div { class: "reactions",

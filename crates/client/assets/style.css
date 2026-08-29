@@ -717,16 +717,19 @@ button.sidebar-title:hover { background: #35373c; }
 
 /* ---------- Reaction palette (above compose) ---------- */
 
+/* Sits directly under the message it belongs to, so the emoji you want is
+   near the button you pressed rather than down by the composer. */
 .react-palette {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 2px;
-    margin: 0 16px 6px;
+    margin: 4px 0 2px;
     background: #2b2d31;
     border: 1px solid #232428;
     border-radius: 10px;
-    padding: 6px 10px;
+    padding: 6px 8px;
+    max-width: 100%;
 }
 .react-palette-label { color: #949ba4; font-size: 12px; margin-right: 6px; }
 .react-palette button {
@@ -737,9 +740,12 @@ button.sidebar-title:hover { background: #35373c; }
 }
 .react-palette button:hover { background: #404249; }
 .react-palette-close {
-    margin-left: auto;
+    /* Sits in the row with the emojis, not pushed to a line of its own —
+       margin-left:auto made it wrap alone under them. */
     color: #949ba4;
     font-size: 13px !important;
+    align-self: center;
+    padding: 4px 6px !important;
 }
 .me-name { font-weight: 600; color: #fff; }
 .me-status { color: #949ba4; font-size: 11px; }
@@ -2637,3 +2643,48 @@ ul.md-list { list-style-type: disc; }
 .t-n { color: #d4a76a; }
 .t-k { color: #cf8ee0; }
 .t-t { color: #6cb6ff; }
+
+/* The right rail's two halves: the room, or your conversations. */
+.rail-tabs {
+    display: flex;
+    gap: 10px;
+    padding: 8px 8px 6px;
+    align-items: baseline;
+    /* One row, always — a wrapped "DIRECT MESSAGES" reads as two headings. */
+    white-space: nowrap;
+}
+.rail-tab {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: #6d7079;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.rail-tab:hover { color: #949ba4; }
+.rail-tab.on { color: #dbdee1; }
+.rail-empty { color: #949ba4; font-size: 12px; padding: 10px; line-height: 1.5; }
+.rail-dm {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    text-align: left;
+    color: #b5bac1;
+}
+.rail-dm:hover { background: #35373c; }
+.rail-dm.on { background: #404249; color: #fff; }
+.rail-dm-who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.rail-dm-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-dm-when { font-size: 11px; color: #80848e; }

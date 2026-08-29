@@ -175,13 +175,18 @@ pub async fn recipients(
     .fetch_all(&state.db)
     .await?;
 
-    let online: std::collections::HashSet<i64> =
-        state.presence.lock().unwrap().keys().copied().collect();
     let mut out = Vec::new();
     for row in rows {
         let user_id: i64 = row.get(0);
         let level: String = row.get(4);
-        if user_id == message.author.id || online.contains(&user_id) || level == "none" {
+        // Presence deliberately isn't consulted. It counts a user as "here"
+        // when ANY of their devices holds a socket, and the desktop client
+        // lives in the tray all day — so switchb's phone was silenced from
+        // the moment their PC booted, which is every waking hour. A push is
+        // addressed to one device; whether it should appear is a question
+        // only that device can answer, and its service worker does (it stays
+        // quiet when one of its own windows is open and focused).
+        if user_id == message.author.id || level == "none" {
             continue;
         }
         // A DM only notifies its participants, whatever their level says.
@@ -204,6 +209,106 @@ pub async fn recipients(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn state_with_people() -> crate::SharedState {
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&db).await.unwrap();
+        for (id, name, level) in [
+            (1, "author", "all"),
+            (2, "atdesk", "all"),
+            (3, "mentions_only", "mentions"),
+            (4, "silenced", "none"),
+        ] {
+            sqlx::query("INSERT INTO users (id, username, password_hash, created_at, notify_level) VALUES (?, ?, 'x', 0, ?)")
+                .bind(id)
+                .bind(name)
+                .bind(level)
+                .execute(&db)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) \
+                 VALUES (?, ?, 'BBBB', 'AAAA', 0)",
+            )
+            .bind(id)
+            .bind(format!("https://push.example/{name}"))
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        std::sync::Arc::new(crate::AppState {
+            db,
+            events,
+            presence: std::sync::Mutex::new(std::collections::HashMap::new()),
+            voice: std::sync::Mutex::new(std::collections::HashMap::new()),
+            voice_left: std::sync::Mutex::new(std::collections::HashMap::new()),
+            bot: std::sync::Mutex::new(shared::User {
+                id: 99,
+                username: "NotBot".into(),
+                avatar: None,
+                role: "member".into(),
+            }),
+            music_watch: std::sync::Mutex::new(false),
+            music_player: std::sync::Mutex::new(None),
+            uploads: crate::ratelimit::UploadLimits::default(),
+        })
+    }
+
+    fn message_from(author_id: i64, content: &str) -> shared::Message {
+        shared::Message {
+            id: 1,
+            channel_id: 1,
+            author: shared::User {
+                id: author_id,
+                username: "author".into(),
+                avatar: None,
+                role: "member".into(),
+            },
+            content: content.into(),
+            created_at: 0,
+            edited_at: None,
+            reactions: Vec::new(),
+            reply_to: None,
+            reply_preview: None,
+            pinned: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn another_device_being_awake_does_not_silence_the_phone() {
+        let state = state_with_people().await;
+        // "atdesk" has the desktop client open — a socket in presence. That
+        // used to suppress every push they had, forever, because the desktop
+        // sits in the tray all day (switchb's phone, silent since v0.63.0).
+        state.presence.lock().unwrap().insert(2, 1);
+
+        let got = recipients(&state, &message_from(1, "anyone about?"), &[], None).await.unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+
+        assert!(ids.contains(&2), "a phone must still buzz while the desktop is open");
+        assert!(!ids.contains(&1), "never notify the person who just typed it");
+        assert!(!ids.contains(&3), "mentions-only, and this mentions nobody");
+        assert!(!ids.contains(&4), "they asked for nothing");
+    }
+
+    #[tokio::test]
+    async fn level_and_dm_membership_still_decide() {
+        let state = state_with_people().await;
+        // A mention reaches the mentions-only account.
+        let got = recipients(&state, &message_from(1, "oi @mentions_only"), &[3], None).await.unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&3) && ids.contains(&2));
+        assert!(!ids.contains(&4), "\"nothing\" outranks being mentioned");
+
+        // A DM reaches its participants and nobody else, whatever their level.
+        let got = recipients(&state, &message_from(1, "just us"), &[], Some(&[1, 4])).await.unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, Vec::<i64>::new(), "4 asked for no notifications at all");
+        let got = recipients(&state, &message_from(1, "just us"), &[], Some(&[1, 3])).await.unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![3], "a DM pings its participant regardless of level");
+    }
 
     fn fake_subscription() -> (Subscription, SecretKey) {
         let ua_secret = SecretKey::random(&mut rand_core::OsRng);

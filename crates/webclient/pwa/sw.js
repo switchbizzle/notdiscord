@@ -16,17 +16,30 @@ self.addEventListener("push", (event) => {
     data = { title: "NotDiscord", body: event.data ? event.data.text() : "" };
   }
   const title = data.title || "NotDiscord";
+  // Whether this device should buzz is a question only this device can
+  // answer, so the server no longer guesses: it sends, and we stay quiet if
+  // one of our own windows is already open and in front of the user. Having
+  // the desktop app running on another machine is not a reason for a phone
+  // to say nothing.
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body: data.body || "",
-      icon: "/app/icon-192.png",
-      badge: "/app/icon-192.png",
-      // One notification per channel: a busy channel replaces rather than
-      // stacking twenty times.
-      tag: "nd-channel-" + (data.channel_id || "x"),
-      renotify: true,
-      data: { channel_id: data.channel_id, message_id: data.message_id },
-    }),
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((windows) => {
+        const looking = windows.some(
+          (w) => w.visibilityState === "visible" && w.focused,
+        );
+        if (looking) return;
+        return self.registration.showNotification(title, {
+          body: data.body || "",
+          icon: "/app/icon-192.png",
+          badge: "/app/icon-192.png",
+          // One notification per channel: a busy channel replaces rather
+          // than stacking twenty times.
+          tag: "nd-channel-" + (data.channel_id || "x"),
+          renotify: true,
+          data: { channel_id: data.channel_id, message_id: data.message_id },
+        });
+      }),
   );
 });
 

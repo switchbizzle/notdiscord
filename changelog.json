@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.73.0",
+    "date": "2026-08-28",
+    "changes": [
+      "📬 Phone notifications actually arrive now. The server was skipping anyone with a live connection — and the desktop app sits in the tray all day, so switchb's phone had been silenced since the feature shipped. Your phone decides for itself now, and stays quiet only when you're looking at the app on that phone",
+      "💬 DIRECT MESSAGES tab in the right sidebar, beside MEMBERS (JunkfoodJon's spec): your conversations newest-first with avatar, name and time, opening in the main view. DMs left the channel list, which is the pile-up switchb pointed at a while back",
+      "😊 The emoji picker opens right under the message you're reacting to instead of down by the text box — easier to hit, and it no longer matters whether that message was the most recent one (JunkfoodJon)"
+    ]
+  },
+  {
     "version": "0.72.0",
     "date": "2026-08-28",
     "changes": [

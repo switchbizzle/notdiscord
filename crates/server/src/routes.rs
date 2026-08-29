@@ -728,12 +728,16 @@ pub async fn list_channels(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
 ) -> ApiResult<Json<Vec<Channel>>> {
+    // last_at rides along so the client can order DMs by recency without a
+    // second round trip per conversation.
     let rows = sqlx::query(
-        "SELECT id, name, kind FROM channels WHERE kind != 'dm' \
+        "SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) \
+         FROM channels c WHERE c.kind != 'dm' \
          UNION ALL \
-         SELECT c.id, c.name, c.kind FROM channels c \
-         JOIN dm_members m ON m.channel_id = c.id \
-         WHERE c.kind = 'dm' AND m.user_id = ? \
+         SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) \
+         FROM channels c \
+         JOIN dm_members d ON d.channel_id = c.id \
+         WHERE c.kind = 'dm' AND d.user_id = ? \
          ORDER BY id",
     )
     .bind(user.id)
@@ -743,7 +747,13 @@ pub async fn list_channels(
 
     let mut channels: Vec<Channel> = rows
         .into_iter()
-        .map(|r| Channel { id: r.get(0), name: r.get(1), kind: r.get(2), dm_members: Vec::new() })
+        .map(|r| Channel {
+            id: r.get(0),
+            name: r.get(1),
+            kind: r.get(2),
+            dm_members: Vec::new(),
+            last_at: r.get(3),
+        })
         .collect();
 
     for channel in channels.iter_mut().filter(|c| c.kind == "dm") {
@@ -821,11 +831,18 @@ pub async fn create_dm(
         }
     };
 
+    let last_at: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(created_at) FROM messages WHERE channel_id = ?")
+            .bind(channel_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(internal)?;
     let channel = Channel {
         id: channel_id,
         name: "dm".into(),
         kind: "dm".into(),
         dm_members: dm_member_users(&state, channel_id).await?,
+        last_at,
     };
     if existing.is_none() {
         state.broadcast_only(vec![user.id, req.user_id], ServerEvent::ChannelCreated { channel: channel.clone() });
@@ -987,7 +1004,8 @@ pub async fn create_channel(
         Err(e) => return Err(internal(e)),
     };
 
-    let channel = Channel { id, name, kind: kind.into(), dm_members: Vec::new() };
+    // Brand new, so nothing has been said in it yet.
+    let channel = Channel { id, name, kind: kind.into(), dm_members: Vec::new(), last_at: None };
     state.broadcast(ServerEvent::ChannelCreated { channel: channel.clone() });
     Ok(Json(channel))
 }

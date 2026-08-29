@@ -65,6 +65,11 @@ pub struct Channel {
     /// For dm channels: both participants. Empty otherwise.
     #[serde(default)]
     pub dm_members: Vec<User>,
+    /// When the newest message here was posted, if there is one. The DM list
+    /// is ordered by it, so the conversation you're actually having is at the
+    /// top.
+    #[serde(default)]
+    pub last_at: Option<i64>,
 }
 
 /// Body for POST /api/dms — open (or find) a DM with another user.
