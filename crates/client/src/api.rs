@@ -30,7 +30,16 @@ pub struct ServersFile {
 }
 
 impl ServersFile {
+    /// The active server, if we're actually signed in to it. An entry with
+    /// no token is a server you've left the account on — it stays in the rail
+    /// so you can get back without retyping the address.
     pub fn active_session(&self) -> Option<&Session> {
+        self.servers.get(self.active).filter(|s| !s.token.is_empty())
+    }
+
+    /// The active entry whether or not it has a session, for the login form
+    /// to fill in the address you were last on.
+    pub fn active_entry(&self) -> Option<&Session> {
         self.servers.get(self.active)
     }
 }
@@ -98,6 +107,19 @@ pub fn update_saved_server(session: &Session) {
         *entry = session.clone();
         save_servers(&file);
     }
+}
+
+/// Sign out of one server without forgetting it: the token goes, the address
+/// and its name stay, so the rail still shows it and clicking it offers a
+/// login rather than a blank form. Removing it outright is a separate,
+/// deliberate act — see `remove_server`.
+pub fn sign_out(index: usize) -> ServersFile {
+    let mut file = load_servers();
+    if let Some(entry) = file.servers.get_mut(index) {
+        entry.token = String::new();
+    }
+    save_servers(&file);
+    file
 }
 
 pub fn remove_server(index: usize) -> ServersFile {

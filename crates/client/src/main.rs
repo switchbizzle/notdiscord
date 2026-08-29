@@ -503,26 +503,51 @@ fn App() -> Element {
 #[component]
 fn ServerRail(adding: Signal<bool>) -> Element {
     let mut servers = use_context::<Signal<api::ServersFile>>();
+    // No context menu here. The rail renders above the component that
+    // provides one, and use_context panics rather than returning None.
+    // Forgetting a server lives on the login screen instead, which is
+    // exactly where you are when you're deciding whether you still want it.
     let file = servers();
     rsx! {
         div { class: "server-rail",
             for (i, s) in file.servers.iter().enumerate() {
-                button {
-                    key: "{s.base_url}",
-                    class: if i == file.active && !adding() { "rail-server active" } else { "rail-server" },
-                    title: "{s.server_name} — {s.user.username}",
-                    style: "background: hsl({rail_hue(s)}, 55%, 42%)",
-                    onclick: move |_| {
-                        let mut file = api::load_servers();
-                        file.active = i;
-                        api::save_servers(&file);
-                        servers.set(file);
-                        adding.set(false);
-                    },
-                    if let Some(icon) = s.server_icon.clone() {
-                        img { class: "rail-img", src: "{icon}" }
+                {
+                    // Signed out: still yours, still one click away, just not
+                    // logged in. It stays greyed until you sign back in.
+                    let signed_out = s.token.is_empty();
+                    let label = if signed_out {
+                        format!("{} — signed out", s.server_name)
                     } else {
-                        {initial(&s.server_name)}
+                        format!("{} — {}", s.server_name, s.user.username)
+                    };
+                    let name = s.server_name.clone();
+                    let icon = s.server_icon.clone();
+                    let hue = rail_hue(s);
+                    let initial_letter = initial(&name);
+                    rsx! {
+                        button {
+                            key: "{s.base_url}",
+                            class: match (i == file.active && !adding(), signed_out) {
+                                (true, true) => "rail-server active signed-out",
+                                (true, false) => "rail-server active",
+                                (false, true) => "rail-server signed-out",
+                                (false, false) => "rail-server",
+                            },
+                            title: "{label}",
+                            style: "background: hsl({hue}, 55%, 42%)",
+                            onclick: move |_| {
+                                let mut file = api::load_servers();
+                                file.active = i;
+                                api::save_servers(&file);
+                                servers.set(file);
+                                adding.set(false);
+                            },
+                            if let Some(icon) = icon {
+                                img { class: "rail-img", src: "{icon}" }
+                            } else {
+                                {initial_letter}
+                            }
+                        }
                     }
                 }
             }
@@ -548,13 +573,24 @@ fn LoginView(adding: Signal<bool>) -> Element {
     let mut base_url = use_signal(move || {
         servers
             .peek()
-            .active_session()
+            // active_entry, not active_session: a signed-out server has no
+            // session, and its address is exactly what this form wants.
+            .active_entry()
             .filter(|_| !*adding.peek())
             .map(|s| s.base_url.clone())
             .or_else(|| std::env::var("NOTDISCORD_SERVER").ok())
             .unwrap_or_else(|| "https://notdiscord.switchbhost.com".into())
     });
-    let mut username = use_signal(String::new);
+    let mut username = use_signal(move || {
+        // A signed-out entry remembers whose account it was. Retyping the
+        // password is the point of signing out; retyping the name isn't.
+        servers
+            .peek()
+            .active_entry()
+            .filter(|s| !*adding.peek() && s.token.is_empty())
+            .map(|s| s.user.username.clone())
+            .unwrap_or_default()
+    });
     let mut password = use_signal(String::new);
     let mut invite = use_signal(String::new);
     let mut error = use_signal(String::new);
@@ -826,6 +862,19 @@ fn LoginView(adding: Signal<bool>) -> Element {
                         class: "login-cancel",
                         onclick: move |_| adding.set(false),
                         "cancel"
+                    }
+                }
+                // The deliberate half of what "Log out" used to do by
+                // accident. Only for a server already in the rail, and only
+                // once there's another one to fall back to.
+                if !adding() && servers().servers.len() > 1 {
+                    button {
+                        class: "login-cancel",
+                        onclick: move |_| {
+                            let active = api::load_servers().active;
+                            servers.set(api::remove_server(active));
+                        },
+                        "forget this server"
                     }
                 }
             }
@@ -1890,8 +1939,12 @@ fn MainView(session: api::Session) -> Element {
     };
 
     let logout = move |_| {
+        // Signing out is not the same as leaving. The server stays in the
+        // rail, signed out, because "I'm done for now" and "forget this place
+        // exists" are different things — and until now they were the same
+        // button, which is how switchb's second server disappeared.
         let active = api::load_servers().active;
-        servers_file.set(api::remove_server(active));
+        servers_file.set(api::sign_out(active));
     };
 
     let selected_id = selected().map(|c| c.id);

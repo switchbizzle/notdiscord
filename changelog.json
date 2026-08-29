@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.80.0",
+    "date": "2026-08-29",
+    "changes": [
+      "🚪 Logging out no longer forgets the server. It stays in the rail, greyed out, with your username already filled in — sign back in with just the password. Until now \"Log out\" quietly deleted the whole entry, which is how switchb's second server vanished",
+      "To actually drop a server, click its greyed tile and choose \"forget this server\" on the login screen"
+    ]
+  },
+  {
     "version": "0.79.0",
     "date": "2026-08-29",
     "changes": [

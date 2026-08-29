@@ -2716,3 +2716,7 @@ ul.md-list { list-style-type: disc; }
 .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: #949ba4; margin-top: 2px; }
 .stat-bar { height: 8px; border-radius: 4px; background: #1e1f22; overflow: hidden; margin: 6px 0; }
 .stat-bar-fill { height: 100%; border-radius: 4px; background: #5865f2; }
+
+/* A server you're signed out of: still in the rail, visibly dormant. */
+.rail-server.signed-out { filter: grayscale(0.7); opacity: 0.55; }
+.rail-server.signed-out:hover { filter: none; opacity: 1; }
