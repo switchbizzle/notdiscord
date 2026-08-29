@@ -275,9 +275,13 @@ fn planned_from(track: &serde_json::Value, fallback_art: Option<&str>) -> Option
     let art = biggest_image(&track["album"]["images"])
         .or_else(|| fallback_art.map(str::to_owned));
     let duration = track["duration_ms"].as_f64().map(|ms| ms / 1000.0);
-    // The artist first: SoundCloud's search leans on the uploader's name, and
-    // a bare title matches every cover ever posted.
-    let query = if artist.is_empty() { title.clone() } else { format!("{artist} {title}") };
+    // Search on the primary artist only. Every featured name joined with
+    // commas narrows SoundCloud's search to almost nothing — measured on "DJ
+    // Seinfeld, Dan Whitlam - If This Is It": three hits with both names,
+    // ten with one. The sidecar checks the title before playing anything, so
+    // a wider net doesn't mean a worse match.
+    let primary = artist.split(',').next().unwrap_or_default().trim();
+    let query = if primary.is_empty() { title.clone() } else { format!("{primary} {title}") };
     Some(Planned { query, title, artist, art, duration })
 }
 
@@ -431,8 +435,9 @@ mod tests {
         let planned = planned_from(&track, None).unwrap();
         assert_eq!(planned.title, "My Heart Has Teeth");
         assert_eq!(planned.artist, "deadmau5, Venture 5");
-        // Artist first, because a bare title matches every cover on SoundCloud.
-        assert_eq!(planned.query, "deadmau5, Venture 5 My Heart Has Teeth");
+        // The primary artist only: the full comma-joined list barely
+        // matches anything on SoundCloud.
+        assert_eq!(planned.query, "deadmau5 My Heart Has Teeth");
         assert_eq!(planned.art.as_deref(), Some("https://i.example/big.jpg"));
         assert_eq!(planned.duration, Some(240.0));
     }

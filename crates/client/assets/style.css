@@ -1669,7 +1669,6 @@ ul.md-list { list-style-type: disc; }
 .music-btn.primary:hover { background: #1f8b4c; }
 .music-vol { display: flex; align-items: center; gap: 8px; margin-left: 8px; color: #949ba4; }
 .music-vol input { width: 116px; accent-color: #5865f2; }
-.music-vol-label { font-size: 11px; }
 
 .music-empty { display: flex; align-items: center; gap: 14px; padding: 26px 20px; }
 .music-empty-note { font-size: 38px; color: #4e5058; }
@@ -1815,12 +1814,13 @@ ul.md-list { list-style-type: disc; }
 .music-tab .music-artist { font-size: 13px; }
 .music-tab .music-scrub { margin-top: 10px; }
 .music-tab .music-controls { margin-top: 12px; gap: 7px; flex-wrap: nowrap; }
-/* The tab used to let this row grow into whatever space was left, which on a
-   wide window meant a volume slider the width of the card (Jon). It's the
-   same size as the one on the chat player now, parked at the right end of the
-   transport row. */
-.music-tab .music-vol { margin-left: auto; flex: none; }
-.music-tab .music-vol input { width: 116px; flex: none; }
+/* Jon's spec: the volume bar runs to the same right edge as the song bar
+   above it, starting wherever it starts. The pad matches the duration label
+   that sits after the song bar, which is what the two rows have to agree on.
+   (The tab only; the chat player card keeps its compact 116px.) */
+.music-tab .music-vol { margin-left: 4px; min-width: 0; flex: 1; }
+.music-tab .music-vol input { width: auto; flex: 1; min-width: 60px; margin: 0; padding: 0; }
+.music-tab .music-vol-pad { min-width: 36px; }
 .music-tab .music-now { padding: 14px 16px 12px; gap: 14px; }
 
 /* ---------- Unread badges + NEW divider ---------- */

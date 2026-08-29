@@ -5875,10 +5875,11 @@ fn MusicPlayer(music: Signal<shared::MusicState>, volume: Signal<i64>) -> Elemen
                                         }
                                     },
                                 }
-                                span { class: "music-vol-label",
-                                    Icon { name: "user", size: 12 }
-                                    "just you"
-                                }
+                                // The song bar above ends short of the card
+                                // edge, because a duration label sits after it.
+                                // This spacer is that label's width, so the two
+                                // bars finish on the same line (Jon).
+                                span { class: "music-vol-pad" }
                             }
                         }
                     }

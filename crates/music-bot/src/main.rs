@@ -512,10 +512,18 @@ const SEARCH_ATTEMPTS: usize = 4;
 /// narrow enough to reject the 8-minute remix and the 30-second preview.
 const DURATION_TOLERANCE: f64 = 20.0;
 
+/// How much longer than the real song a candidate may be before it's assumed
+/// to be a mix rather than the track. Ten minutes leaves room for an extended
+/// cut or a live version without letting a two-hour set through.
+const MAX_EXTRA_LENGTH: f64 = 600.0;
+
+/// And how much shorter, as a fraction — below this it's a preview clip.
+const MIN_LENGTH_RATIO: f64 = 0.4;
+
 /// Find a SoundCloud page for a song we only know by name. Length is the
 /// tiebreaker: the top text match is often a cover, a sped-up edit, or a
 /// mix that happens to mention the title, and all of those miss badly.
-async fn search_soundcloud(query: &str, want: Option<f64>) -> anyhow::Result<Vec<String>> {
+async fn search_soundcloud(query: &str, want: Option<f64>, title: &str) -> anyhow::Result<Vec<String>> {
     let cmd = ytdlp_cmd();
     let output = Command::new(&cmd[0])
         .args(&cmd[1..])
@@ -528,15 +536,23 @@ async fn search_soundcloud(query: &str, want: Option<f64>) -> anyhow::Result<Vec
         anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("search failed"));
     }
     let info: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let ranked = rank_candidates(&search_candidates(&info), want);
+    let ranked = rank_candidates(&search_candidates(&info), want, title);
     if ranked.is_empty() {
         anyhow::bail!("nothing on SoundCloud for that");
     }
     Ok(ranked)
 }
 
-/// The (url, seconds) pairs a flat search returns.
-fn search_candidates(info: &serde_json::Value) -> Vec<(String, Option<f64>)> {
+/// What a flat search gives us about each hit: where it is, how long it runs,
+/// and what it calls itself.
+#[derive(Debug, Clone)]
+struct Candidate {
+    url: String,
+    duration: Option<f64>,
+    title: String,
+}
+
+fn search_candidates(info: &serde_json::Value) -> Vec<Candidate> {
     info["entries"]
         .as_array()
         .map(|entries| {
@@ -544,11 +560,29 @@ fn search_candidates(info: &serde_json::Value) -> Vec<(String, Option<f64>)> {
                 .iter()
                 .filter_map(|e| {
                     let url = e["url"].as_str().or(e["webpage_url"].as_str())?;
-                    Some((url.to_owned(), e["duration"].as_f64()))
+                    Some(Candidate {
+                        url: url.to_owned(),
+                        duration: e["duration"].as_f64(),
+                        title: e["title"].as_str().unwrap_or_default().to_owned(),
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Lowercase alphanumerics and single spaces — enough to see past "(Official
+/// Video)", punctuation and casing when comparing two titles.
+fn normalise(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    out.trim().to_owned()
 }
 
 /// Order the search hits by how likely each is to be the song we asked for.
@@ -557,22 +591,41 @@ fn search_candidates(info: &serde_json::Value) -> Vec<(String, Option<f64>)> {
 /// rest follow in the search engine's own order, because a candidate can
 /// still fall over at play time: SoundCloud's Go+ catalogue is DRM protected,
 /// and the caller works down this list until something actually plays.
-fn rank_candidates(candidates: &[(String, Option<f64>)], want: Option<f64>) -> Vec<String> {
+fn rank_candidates(candidates: &[Candidate], want: Option<f64>, title: &str) -> Vec<String> {
+    // The title is the gate. Length alone can't tell "If This Is It" from an
+    // unrelated four-minute track, and a search wide enough to find the real
+    // upload is wide enough to return several of those — measured on
+    // switchb's report, where the only playable hits of a plausible length
+    // were a rave edit and a Maxo Kream bootleg.
+    let wanted = normalise(title);
+    let by_title: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| wanted.is_empty() || normalise(&c.title).contains(&wanted))
+        .collect();
+
     let Some(want) = want else {
-        return candidates.iter().map(|(url, _)| url.clone()).collect();
+        return by_title.iter().map(|c| c.url.clone()).collect();
     };
     let delta = |d: Option<f64>| (d.unwrap_or(f64::INFINITY) - want).abs();
-    let mut close: Vec<&(String, Option<f64>)> =
-        candidates.iter().filter(|(_, d)| delta(*d) <= DURATION_TOLERANCE).collect();
-    close.sort_by(|a, b| delta(a.1).total_cmp(&delta(b.1)));
-    let mut ranked: Vec<String> = close.iter().map(|(url, _)| url.clone()).collect();
-    let rest: Vec<String> = candidates
-        .iter()
-        .filter(|(url, _)| !ranked.contains(url))
-        .map(|(url, _)| url.clone())
-        .collect();
-    ranked.extend(rest);
-    ranked
+
+    // Anything far longer than the song is a DJ set, a full-album rip or a
+    // radio show that happens to contain it — playing one in place of a
+    // four-minute track hijacks the queue for two hours, which is exactly
+    // what happened to switchb ("one song came in as 121 minutes"). Anything
+    // far shorter is a preview or an intro.
+    let plausible = |d: Option<f64>| match d {
+        Some(d) => d <= want + MAX_EXTRA_LENGTH && d >= want * MIN_LENGTH_RATIO,
+        // Unknown length: no reason to think it's wrong, so keep it.
+        None => true,
+    };
+
+    let mut usable: Vec<&&Candidate> =
+        by_title.iter().filter(|c| plausible(c.duration)).collect();
+    // Nearest length first, all the way down — the previous rule only sorted
+    // the ones already within tolerance and left the rest in the search
+    // engine's order, which is how a two-hour mix reached the front.
+    usable.sort_by(|a, b| delta(a.duration).total_cmp(&delta(b.duration)));
+    usable.iter().map(|c| c.url.clone()).collect()
 }
 
 /// The biggest thumbnail that isn't enormous — cover art for the music tab.
@@ -649,7 +702,7 @@ async fn ytdlp_resolve(page_url: &str, cookies: Vec<String>) -> anyhow::Result<s
 async fn prepare(track: &Track) -> Option<(String, Resolved)> {
     let candidates = match track.url.strip_prefix(SEARCH_PREFIX) {
         None => vec![track.url.clone()],
-        Some(query) => match search_soundcloud(query, track.duration).await {
+        Some(query) => match search_soundcloud(query, track.duration, &track.title).await {
             Ok(urls) => urls,
             Err(e) => {
                 tracing::warn!("could not find {}: {e}", track.title);
@@ -660,16 +713,21 @@ async fn prepare(track: &Track) -> Option<(String, Resolved)> {
     first_playable(&candidates).await
 }
 
-/// How long before a track ends to go and fetch the next one. Long enough to
-/// cover a search and a resolve (a few seconds each), short enough that the
-/// stream URL — which SoundCloud signs with an expiry — is still fresh when
-/// the track actually starts. MUSIC_PREFETCH_LEAD overrides it; 0 turns the
-/// look-ahead off, which is also how its effect gets measured.
+/// How long before a track ends to go and fetch the next one.
+///
+/// This started at 90 seconds, to keep the signed stream URL fresh. That made
+/// a skip slow: skip at ten seconds and the look-ahead is still sleeping, so
+/// it gets abandoned and the next track is resolved from scratch — the exact
+/// wait Jon asked to be rid of ("tell it to load songs faster when skipped").
+/// Fetching immediately makes a skip instant, and a stale URL is already
+/// handled: the player retries once with a fresh resolve, which is no worse
+/// than not having prefetched. MUSIC_PREFETCH_LEAD still overrides it, and 0
+/// turns the look-ahead off entirely.
 fn prefetch_lead() -> f64 {
     std::env::var("MUSIC_PREFETCH_LEAD")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(90.0)
+        .unwrap_or(f64::INFINITY)
 }
 
 /// Work down a candidate list until one actually plays. The best guess can
@@ -978,14 +1036,18 @@ mod tests {
         assert!(cookie_args().is_empty());
     }
 
-    fn candidates() -> Vec<(String, Option<f64>)> {
+    fn hit(url: &str, secs: f64, title: &str) -> Candidate {
+        Candidate { url: url.into(), duration: Some(secs), title: title.into() }
+    }
+
+    /// A realistic search for a four-minute song: what SoundCloud's ranking
+    /// actually leads with is rarely the track itself.
+    fn candidates() -> Vec<Candidate> {
         vec![
-            // What SoundCloud's text ranking loves: a sped-up edit and an hour
-            // long mix that both mention the song by name.
-            ("https://soundcloud.com/x/sped-up".into(), Some(140.0)),
-            ("https://soundcloud.com/x/dj-mix-2024".into(), Some(3600.0)),
-            ("https://soundcloud.com/x/the-actual-song".into(), Some(238.0)),
-            ("https://soundcloud.com/x/extended".into(), Some(255.0)),
+            hit("https://soundcloud.com/x/sped-up", 140.0, "Some Song (sped up)"),
+            hit("https://soundcloud.com/x/dj-mix-2024", 3600.0, "DJ Mix 2024 ft Some Song"),
+            hit("https://soundcloud.com/x/the-actual-song", 238.0, "Some Song"),
+            hit("https://soundcloud.com/x/extended", 255.0, "Some Song (Extended Mix)"),
         ]
     }
 
@@ -993,32 +1055,81 @@ mod tests {
     fn length_decides_which_upload_is_the_song() {
         let c = candidates();
         // 240s from Spotify: the real thing leads, not the edit at the top.
-        assert_eq!(rank_candidates(&c, Some(240.0))[0], "https://soundcloud.com/x/the-actual-song");
-        // Knowing nothing, defer to the search ranking.
-        assert_eq!(rank_candidates(&c, None)[0], "https://soundcloud.com/x/sped-up");
-        // Nothing close enough: still offer something rather than nothing.
-        assert_eq!(rank_candidates(&c, Some(30.0))[0], "https://soundcloud.com/x/sped-up");
+        assert_eq!(rank_candidates(&c, Some(240.0), "Some Song")[0], "https://soundcloud.com/x/the-actual-song");
+        // Knowing no length, the search engine's order stands.
+        assert_eq!(rank_candidates(&c, None, "Some Song")[0], "https://soundcloud.com/x/sped-up");
         // Ties within tolerance go to the nearer length.
-        assert_eq!(rank_candidates(&c, Some(250.0))[0], "https://soundcloud.com/x/extended");
+        assert_eq!(rank_candidates(&c, Some(250.0), "Some Song")[0], "https://soundcloud.com/x/extended");
         // Durationless entries cannot outrank one that matches.
         let mut unknown = c.clone();
-        unknown.insert(0, ("https://soundcloud.com/x/mystery".into(), None));
-        assert_eq!(rank_candidates(&unknown, Some(240.0))[0], "https://soundcloud.com/x/the-actual-song");
-        assert!(rank_candidates(&[], Some(240.0)).is_empty());
+        unknown.insert(0, hit("https://soundcloud.com/x/mystery", 0.0, "Some Song"));
+        unknown[0].duration = None;
+        assert_eq!(rank_candidates(&unknown, Some(240.0), "Some Song")[0], "https://soundcloud.com/x/the-actual-song");
+        assert!(rank_candidates(&[], Some(240.0), "Some Song").is_empty());
     }
 
     #[test]
-    fn every_hit_stays_on_the_list_as_a_fallback() {
-        // The best guess can be DRM protected or dead, so nothing may be
-        // dropped — just reordered, once each.
-        let c = candidates();
-        let ranked = rank_candidates(&c, Some(240.0));
-        assert_eq!(ranked.len(), c.len());
-        let unique: std::collections::HashSet<_> = ranked.iter().collect();
-        assert_eq!(unique.len(), c.len(), "a candidate was listed twice");
-        for (url, _) in &c {
-            assert!(ranked.contains(url), "{url} was dropped");
+    fn a_two_hour_mix_is_never_the_song() {
+        // switchb: "one song came in as 121 minutes". The real upload was
+        // DRM protected, so the player walked past it to the only thing that
+        // would play — a two-hour guest mix — and the queue sat on it.
+        let c = vec![
+            hit("https://soundcloud.com/x/the-song", 243.0, "If This Is It"),
+            hit("https://soundcloud.com/x/2-hour-set", 7292.0, "What's On My Mind 175: Guest Mix"),
+        ];
+        assert_eq!(rank_candidates(&c, Some(244.0), "If This Is It"), vec!["https://soundcloud.com/x/the-song"]);
+
+        // And with the real one gone, nothing is offered: not playing the
+        // song beats playing two hours of something else.
+        let only_the_set = vec![hit("https://soundcloud.com/x/2-hour-set", 7292.0, "What's On My Mind 175")];
+        assert!(rank_candidates(&only_the_set, Some(244.0), "If This Is It").is_empty());
+    }
+
+    #[test]
+    fn a_different_song_of_the_right_length_is_still_the_wrong_song() {
+        // The wider search that finds the real upload also turns up unrelated
+        // tracks that happen to run four minutes. Length can't tell them
+        // apart; the title can.
+        let c = vec![
+            hit("https://soundcloud.com/x/rave-edit", 108.0, "(((dj officer down))) a rave but if it goes on"),
+            hit("https://soundcloud.com/x/maxo", 204.0, "Dj ListenRx Slowed Up Series Maxo Kream"),
+            hit("https://soundcloud.com/x/real", 243.0, "If This Is It (Official Audio)"),
+        ];
+        assert_eq!(
+            rank_candidates(&c, Some(244.0), "If This Is It"),
+            vec!["https://soundcloud.com/x/real"]
+        );
+        // Nothing by that name: play nothing rather than a stranger's track.
+        assert!(rank_candidates(&c[..2], Some(244.0), "If This Is It").is_empty());
+    }
+
+    #[test]
+    fn titles_match_past_punctuation_and_decoration() {
+        for title in [
+            "Some Song",
+            "SOME SONG",
+            "Some  Song",
+            "Some-Song",
+        ] {
+            let c = vec![hit("https://soundcloud.com/x/a", 240.0, "Artist - Some Song (Official Video) [HD]")];
+            assert!(
+                !rank_candidates(&c, Some(240.0), title).is_empty(),
+                "{title:?} should have matched"
+            );
         }
+    }
+
+    #[test]
+    fn plausible_hits_all_stay_on_the_list_as_fallbacks() {
+        // The best guess can be DRM protected or dead, so everything that
+        // could be the song stays available — reordered, once each. Only the
+        // implausible lengths and the wrong titles are dropped.
+        let c = candidates();
+        let ranked = rank_candidates(&c, Some(240.0), "Some Song");
+        assert_eq!(ranked.len(), 3, "the hour-long mix should be gone");
+        let unique: std::collections::HashSet<_> = ranked.iter().collect();
+        assert_eq!(unique.len(), ranked.len(), "a candidate was listed twice");
+        assert!(!ranked.iter().any(|u| u.contains("dj-mix")), "kept the mix");
     }
 
     #[test]
@@ -1043,7 +1154,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn a_real_search_returns_comparable_durations() {
-        let urls = search_soundcloud("deadmau5 Strobe", Some(637.0)).await.expect("search");
+        let urls = search_soundcloud("deadmau5 Strobe", Some(637.0), "Strobe").await.expect("search");
         assert!(urls.len() > 1, "need fallbacks, got {urls:?}");
         // What actually matters, through the same call the player makes:
         // one of these plays. (SoundCloud's own copies of anything on a label

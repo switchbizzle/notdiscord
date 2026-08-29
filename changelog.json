@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.77.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🎚️ The volume bar runs the length of the song bar above it and finishes in the same place, starting right after the transport buttons. The \"just you\" label is gone (JunkfoodJon, switchb)",
+      "⏭️ Skipping loads the next song immediately. The look-ahead used to wait until near the end of a track, so a skip arrived before it had started and the next song was fetched from scratch — it now fetches straight away, and re-resolves if the link has gone stale (JunkfoodJon)",
+      "🎯 Fixed a song arriving as 121 minutes. When the real upload is DRM protected (SoundCloud's copies of label releases usually are), the bot used to fall through to whatever else the search returned — in switchb's case a two-hour guest mix, which then held the queue. It now only plays a hit whose title actually matches the song and whose length is in the right ballpark, and skips rather than playing something else entirely"
+    ]
+  },
+  {
     "version": "0.76.1",
     "date": "2026-08-28",
     "changes": [
