@@ -962,6 +962,11 @@ fn MainView(session: api::Session) -> Element {
     // messages still arrive and still count as unread — a mute is about
     // noise, not about hiding what people said.
     let mut muted = use_signal(std::collections::HashSet::<i64>::new);
+    // The sidebar's groups. Empty on a server nobody has organised, which is
+    // the same list it always drew.
+    let mut categories = use_signal(Vec::<shared::ChannelCategory>::new);
+    let mut new_category = use_signal(String::new);
+    let mut stats = use_signal(|| None::<shared::ServerStats>);
     let mut rail_dms = use_signal(|| false);
     let mut jump_to = use_signal(|| None::<i64>);
     use_context_provider(|| JumpTo(jump_to));
@@ -1326,6 +1331,7 @@ fn MainView(session: api::Session) -> Element {
     // first channel.
     use_future(move || async move {
         muted.set(api::mutes(&session()).await.into_iter().collect());
+        categories.set(api::categories(&session()).await);
         match api::channels(&session()).await {
             Ok(chs) => {
                 if let Ok(counts) = api::unread(&session()).await {
@@ -1674,6 +1680,17 @@ fn MainView(session: api::Session) -> Element {
                                 api::update_saved_server(&s);
                                 session.set(s);
                                 servers_file.set(api::load_servers());
+                            }
+                            ServerEvent::CategoriesChanged => {
+                                // Coarse by design: an admin was editing
+                                // settings, so refetch both lists rather than
+                                // trying to patch them.
+                                spawn(async move {
+                                    categories.set(api::categories(&session()).await);
+                                    if let Ok(chs) = api::channels(&session()).await {
+                                        channels.set(chs);
+                                    }
+                                });
                             }
                             ServerEvent::ChannelRenamed { channel_id, name } => {
                                 if let Some(channel) =
@@ -2674,6 +2691,20 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                     if is_admin {
                                         button {
+                                            class: if srv_pane() == "stats" { "srv-nav-item active" } else { "srv-nav-item" },
+                                            onclick: move |_| {
+                                                srv_pane.set("stats");
+                                                spawn(async move {
+                                                    match api::server_stats(&session()).await {
+                                                        Ok(s) => stats.set(Some(s)),
+                                                        Err(e) => status.set(e),
+                                                    }
+                                                });
+                                            },
+                                            Icon { name: "eye", size: 15 }
+                                            "Stats"
+                                        }
+                                        button {
                                             class: if srv_pane() == "bot" { "srv-nav-item active" } else { "srv-nav-item" },
                                             onclick: move |_| srv_pane.set("bot"),
                                             Icon { name: "message", size: 15 }
@@ -2696,6 +2727,7 @@ fn MainView(session: api::Session) -> Element {
                                                 "roles" => "Roles & members",
                                                 "permissions" => "Permissions",
                                                 "bot" => "Bot",
+                                                "stats" => "Stats",
                                                 _ => "Storage",
                                             }}
                                         }
@@ -2760,6 +2792,35 @@ fn MainView(session: api::Session) -> Element {
                                                                     span { class: "srv-chip", "you're here" }
                                                                 }
                                                                 span { class: "grow" }
+                                                                if is_admin && !categories().is_empty() && channel.kind == "text" {
+                                                                    select {
+                                                                        class: "srv-input srv-cat-pick",
+                                                                        title: "Which group this sits in",
+                                                                        onchange: move |e| {
+                                                                            let pick = e.value().parse::<i64>().ok().filter(|v| *v > 0);
+                                                                            spawn(async move {
+                                                                                if let Err(err) =
+                                                                                    api::set_channel_category(&session(), id, pick).await
+                                                                                {
+                                                                                    status.set(err);
+                                                                                }
+                                                                            });
+                                                                        },
+                                                                        option {
+                                                                            value: "0",
+                                                                            selected: channel.category_id.is_none(),
+                                                                            "No category"
+                                                                        }
+                                                                        for category in categories() {
+                                                                            option {
+                                                                                key: "{category.id}",
+                                                                                value: "{category.id}",
+                                                                                selected: channel.category_id == Some(category.id),
+                                                                                "{category.name}"
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                                 if is_admin {
                                                                     button {
                                                                         class: "srv-btn",
@@ -2827,6 +2888,151 @@ fn MainView(session: api::Session) -> Element {
                                                         "Create"
                                                     }
                                                 }
+                                                div { class: "srv-label srv-cat-head", "Categories" }
+                                                div { class: "srv-hint",
+                                                    "Groups for the channel list. Each one folds shut on its own, and deleting a group leaves its channels where they were before you made it."
+                                                }
+                                                for category in categories() {
+                                                    {
+                                                        let id = category.id;
+                                                        let name = category.name.clone();
+                                                        let count = channels()
+                                                            .iter()
+                                                            .filter(|c| c.category_id == Some(id))
+                                                            .count();
+                                                        rsx! {
+                                                            div { key: "cat{id}", class: "srv-row",
+                                                                Icon { name: "list-x", size: 15 }
+                                                                input {
+                                                                    class: "srv-input",
+                                                                    value: "{name}",
+                                                                    spellcheck: "false",
+                                                                    // Saved when you leave the box, so
+                                                                    // renaming isn't a round trip per key.
+                                                                    onchange: move |e| {
+                                                                        let name = e.value();
+                                                                        spawn(async move {
+                                                                            if let Err(err) =
+                                                                                api::rename_category(&session(), id, name).await
+                                                                            {
+                                                                                status.set(err);
+                                                                            }
+                                                                        });
+                                                                    },
+                                                                }
+                                                                span { class: "srv-chip",
+                                                                    if count == 1 { "1 channel" } else { "{count} channels" }
+                                                                }
+                                                                button {
+                                                                    class: "srv-btn danger",
+                                                                    onclick: move |_| {
+                                                                        spawn(async move {
+                                                                            if let Err(err) =
+                                                                                api::delete_category(&session(), id).await
+                                                                            {
+                                                                                status.set(err);
+                                                                            }
+                                                                        });
+                                                                    },
+                                                                    Icon { name: "trash", size: 13 }
+                                                                    "Delete"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                div { class: "srv-create",
+                                                    input {
+                                                        class: "srv-input",
+                                                        placeholder: "new category name",
+                                                        value: "{new_category}",
+                                                        spellcheck: "false",
+                                                        oninput: move |e| new_category.set(e.value()),
+                                                        onkeydown: move |e| {
+                                                            if e.key() == Key::Enter {
+                                                                let name = new_category().trim().to_string();
+                                                                if !name.is_empty() {
+                                                                    new_category.set(String::new());
+                                                                    spawn(async move {
+                                                                        if let Err(err) =
+                                                                            api::create_category(&session(), name).await
+                                                                        {
+                                                                            status.set(err);
+                                                                        }
+                                                                    });
+                                                                }
+                                                            }
+                                                        },
+                                                    }
+                                                    button {
+                                                        class: "srv-btn",
+                                                        disabled: new_category().trim().is_empty(),
+                                                        onclick: move |_| {
+                                                            let name = new_category().trim().to_string();
+                                                            if name.is_empty() {
+                                                                return;
+                                                            }
+                                                            new_category.set(String::new());
+                                                            spawn(async move {
+                                                                if let Err(err) =
+                                                                    api::create_category(&session(), name).await
+                                                                {
+                                                                    status.set(err);
+                                                                }
+                                                            });
+                                                        },
+                                                        Icon { name: "plus", size: 13 }
+                                                        "Add category"
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ---- Stats ----
+                                        else if srv_pane() == "stats" {
+                                            if let Some(s) = stats() {
+                                                {
+                                                    let pct = if s.uploads_cap_bytes > 0 {
+                                                        (s.uploads_bytes as f64 / s.uploads_cap_bytes as f64 * 100.0).min(100.0)
+                                                    } else {
+                                                        0.0
+                                                    };
+                                                    rsx! {
+                                                        div { class: "stat-grid",
+                                                            for (label, value) in [
+                                                                ("People".to_string(), format!("{}", s.people)),
+                                                                ("Online now".to_string(), format!("{}", s.online)),
+                                                                ("Admins".to_string(), format!("{}", s.admins)),
+                                                                ("Messages".to_string(), thousands(s.messages)),
+                                                                ("Text channels".to_string(), format!("{}", s.text_channels)),
+                                                                ("Voice channels".to_string(), format!("{}", s.voice_channels)),
+                                                                ("Conversations".to_string(), format!("{}", s.dms)),
+                                                                ("Files kept".to_string(), thousands(s.upload_count)),
+                                                                ("Database".to_string(), human_bytes(s.database_bytes)),
+                                                                ("Uptime".to_string(), human_duration(s.uptime_secs)),
+                                                            ] {
+                                                                div { key: "{label}", class: "stat-cell",
+                                                                    div { class: "stat-value", "{value}" }
+                                                                    div { class: "stat-label", "{label}" }
+                                                                }
+                                                            }
+                                                        }
+                                                        div { class: "srv-field",
+                                                            div { class: "srv-label", "Uploads" }
+                                                            div { class: "stat-bar",
+                                                                div { class: "stat-bar-fill", style: "width: {pct:.1}%" }
+                                                            }
+                                                            div { class: "srv-hint",
+                                                                "{human_bytes(s.uploads_bytes)} of {human_bytes(s.uploads_cap_bytes)} — older files are swept on the schedule in Storage."
+                                                            }
+                                                        }
+                                                        if let Some(founded) = s.founded_at {
+                                                            div { class: "srv-hint", "Running since {day_label(founded)}." }
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                div { class: "srv-note", "Counting…" }
                                             }
                                         }
 
@@ -3747,7 +3953,61 @@ fn MainView(session: api::Session) -> Element {
                     "{session().server_name}"
                 }
                 div { class: "channel-list",
-                    for channel in channels().into_iter().filter(|c| c.kind == "text") {
+                    // Channels nobody has filed stay at the top, exactly where
+                    // they were before categories existed. Then one collapsible
+                    // section per category, in the order an admin made them.
+                    for group in std::iter::once(None).chain(categories().into_iter().map(Some)) {
+                        {
+                            let group_id = group.as_ref().map(|c: &shared::ChannelCategory| c.id);
+                            let in_group: Vec<Channel> = channels()
+                                .into_iter()
+                                .filter(|c| c.kind == "text" && c.category_id == group_id)
+                                .collect();
+                            let collapsed = group_id.is_some_and(|id| {
+                                audio_settings().collapsed_categories.contains(&id)
+                            });
+                            // An empty category still shows its heading, or an
+                            // admin who just made one would think it failed.
+                            let hide_section = group.is_none() && in_group.is_empty();
+                            rsx! {
+                                if !hide_section {
+                                    if let Some(category) = group.clone() {
+                                        {
+                                            let id = category.id;
+                                            let chevron: &'static str =
+                                                if collapsed { "chevron-down" } else { "chevron-up" };
+                                            rsx! {
+                                                button {
+                                                    class: "section-row section-toggle",
+                                                    title: if collapsed { "Show" } else { "Hide" },
+                                                    onclick: move |_| {
+                                                        let mut settings = audio_settings.write();
+                                                        if let Some(at) = settings
+                                                            .collapsed_categories
+                                                            .iter()
+                                                            .position(|c| *c == id)
+                                                        {
+                                                            settings.collapsed_categories.remove(at);
+                                                        } else {
+                                                            settings.collapsed_categories.push(id);
+                                                        }
+                                                        let saved = settings.clone();
+                                                        drop(settings);
+                                                        api::save_settings(&saved);
+                                                    },
+                                                    span { class: "section-label", "{category.name}" }
+                                                    Icon { name: chevron, size: 12 }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Collapsed hides the quiet ones; anything
+                                    // unread or currently open stays visible.
+                                    for channel in in_group.into_iter().filter(|c| {
+                                        !collapsed
+                                            || unread().contains_key(&c.id)
+                                            || selected_id == Some(c.id)
+                                    }) {
                         button {
                             key: "{channel.id}",
                             // A muted channel stays legible but stops asking
@@ -3854,6 +4114,10 @@ fn MainView(session: api::Session) -> Element {
                             }
                         }
                     }
+                                    }
+                                }
+                            }
+                        }
                     // Direct messages live in the right rail now (Jon's
                     // spec), which is also the redundancy switchb flagged when
                     // the same name appeared three times down this side.
@@ -5258,6 +5522,56 @@ fn MainView(session: api::Session) -> Element {
             }
             }
         }
+    }
+}
+
+/// 1234567 -> "1,234,567". Long numbers in a stats grid are unreadable
+/// without it.
+fn thousands(n: i64) -> String {
+    let digits = n.abs().to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0 {
+        format!("-{out}")
+    } else {
+        out
+    }
+}
+
+/// Bytes at whatever scale reads best — nobody wants a disk figure in bytes.
+fn human_bytes(bytes: i64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else if value < 10.0 {
+        format!("{value:.1} {}", UNITS[unit])
+    } else {
+        format!("{value:.0} {}", UNITS[unit])
+    }
+}
+
+/// Uptime, at one unit of precision: "3d 4h", "12m".
+fn human_duration(secs: i64) -> String {
+    let (d, h, m) = (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        format!("{secs}s")
     }
 }
 

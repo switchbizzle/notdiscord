@@ -731,10 +731,10 @@ pub async fn list_channels(
     // last_at rides along so the client can order DMs by recency without a
     // second round trip per conversation.
     let rows = sqlx::query(
-        "SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) \
+        "SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id), c.category_id \
          FROM channels c WHERE c.kind != 'dm' \
          UNION ALL \
-         SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) \
+         SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id), c.category_id \
          FROM channels c \
          JOIN dm_members d ON d.channel_id = c.id \
          WHERE c.kind = 'dm' AND d.user_id = ? \
@@ -753,6 +753,7 @@ pub async fn list_channels(
             kind: r.get(2),
             dm_members: Vec::new(),
             last_at: r.get(3),
+            category_id: r.get(4),
         })
         .collect();
 
@@ -843,6 +844,8 @@ pub async fn create_dm(
         kind: "dm".into(),
         dm_members: dm_member_users(&state, channel_id).await?,
         last_at,
+        // A DM is never filed under a category.
+        category_id: None,
     };
     if existing.is_none() {
         state.broadcast_only(vec![user.id, req.user_id], ServerEvent::ChannelCreated { channel: channel.clone() });
@@ -1005,7 +1008,14 @@ pub async fn create_channel(
     };
 
     // Brand new, so nothing has been said in it yet.
-    let channel = Channel { id, name, kind: kind.into(), dm_members: Vec::new(), last_at: None };
+    let channel = Channel {
+        id,
+        name,
+        kind: kind.into(),
+        dm_members: Vec::new(),
+        last_at: None,
+        category_id: None,
+    };
     state.broadcast(ServerEvent::ChannelCreated { channel: channel.clone() });
     Ok(Json(channel))
 }
@@ -1301,6 +1311,7 @@ mod setup_tests {
             music_watch: std::sync::Mutex::new(false),
             music_player: std::sync::Mutex::new(None),
             uploads: crate::ratelimit::UploadLimits::default(),
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -1898,6 +1909,95 @@ pub async fn get_storage(
     Ok(Json(shared::StorageInfo { used_bytes: uploads_size().await, cap_gb }))
 }
 
+/// The numbers an owner would otherwise go looking for on the box.
+pub async fn get_stats(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<shared::ServerStats>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let bot_id = state.bot_user().id;
+    let one = |sql: &'static str| {
+        let db = state.db.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&db).await }
+    };
+
+    // NotBot is not a person, and never has been in any of these counts.
+    let people: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id != ?")
+        .bind(bot_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let admins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = 'admin' AND id != ?")
+        .bind(bot_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let founded_at: Option<i64> = sqlx::query_scalar("SELECT MIN(created_at) FROM users WHERE id != ?")
+        .bind(bot_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+
+    let messages = one("SELECT COUNT(*) FROM messages").await.map_err(internal)?;
+    let text_channels = one("SELECT COUNT(*) FROM channels WHERE kind = 'text'").await.map_err(internal)?;
+    let voice_channels = one("SELECT COUNT(*) FROM channels WHERE kind = 'voice'").await.map_err(internal)?;
+    let dms = one("SELECT COUNT(*) FROM channels WHERE kind = 'dm'").await.map_err(internal)?;
+
+    let cap_gb: i64 = meta_value(&state, "storage_cap_gb").await?.parse().unwrap_or(30);
+    let (uploads_bytes, upload_count) = uploads_usage().await;
+    // Both halves of a WAL database, or the number is wrong right after a
+    // busy hour and right again after a checkpoint.
+    let db_path = std::env::var("NOTDISCORD_DB").unwrap_or_else(|_| "notdiscord.db".into());
+    let database_bytes: i64 = [String::new(), "-wal".into(), "-shm".into()]
+        .iter()
+        .filter_map(|suffix| std::fs::metadata(format!("{db_path}{suffix}")).ok())
+        .map(|m| m.len() as i64)
+        .sum();
+
+    let online = state.presence.lock().unwrap().len() as i64;
+
+    Ok(Json(shared::ServerStats {
+        people,
+        online,
+        admins,
+        messages,
+        text_channels,
+        voice_channels,
+        dms,
+        uploads_bytes,
+        uploads_cap_bytes: cap_gb * 1024 * 1024 * 1024,
+        upload_count,
+        database_bytes,
+        uptime_secs: state.started_at.elapsed().as_secs() as i64,
+        founded_at,
+    }))
+}
+
+/// Bytes on disk and how many files that is, in one walk.
+async fn uploads_usage() -> (i64, i64) {
+    let mut bytes = 0i64;
+    let mut files = 0i64;
+    let mut stack = vec![crate::uploads_dir()];
+    while let Some(dir) = stack.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else { continue };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(meta) = entry.metadata().await else { continue };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                bytes += meta.len() as i64;
+                // Thumbnails are ours, not something anybody uploaded.
+                if !entry.file_name().to_string_lossy().starts_with('.') {
+                    files += 1;
+                }
+            }
+        }
+    }
+    (bytes, files)
+}
+
 pub async fn set_storage_cap(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
@@ -1957,6 +2057,139 @@ pub async fn set_invite(
 /// Unread counts per visible channel. DMs only count for their participants.
 /// The channels this person has muted. The client dims them and keeps quiet;
 /// the server skips them when deciding who to push to.
+/// The sidebar's groups, in the order they should appear.
+pub async fn list_categories(
+    State(state): State<SharedState>,
+    _user: AuthUser,
+) -> ApiResult<Json<Vec<shared::ChannelCategory>>> {
+    let rows = sqlx::query("SELECT id, name, position FROM channel_categories ORDER BY position, id")
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| shared::ChannelCategory { id: r.get(0), name: r.get(1), position: r.get(2) })
+            .collect(),
+    ))
+}
+
+fn clean_category_name(name: &str) -> Result<String, (StatusCode, Json<shared::ApiError>)> {
+    let name = name.trim().to_owned();
+    if name.is_empty() || name.chars().count() > 32 {
+        return Err(err(StatusCode::BAD_REQUEST, "category name must be 1-32 characters"));
+    }
+    Ok(name)
+}
+
+pub async fn create_category(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::CategoryRequest>,
+) -> ApiResult<Json<shared::ChannelCategory>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let name = clean_category_name(&req.name)?;
+    // New ones land at the end rather than jumping the queue.
+    let position: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(position), 0) + 1 FROM channel_categories")
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let result = sqlx::query("INSERT INTO channel_categories (name, position, created_at) VALUES (?, ?, ?)")
+        .bind(&name)
+        .bind(position)
+        .bind(now_ms())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    let category = shared::ChannelCategory { id: result.last_insert_rowid(), name, position };
+    state.broadcast(ServerEvent::CategoriesChanged);
+    Ok(Json(category))
+}
+
+pub async fn rename_category(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+    Json(req): Json<shared::CategoryRequest>,
+) -> ApiResult<StatusCode> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    let name = clean_category_name(&req.name)?;
+    sqlx::query("UPDATE channel_categories SET name = ? WHERE id = ?")
+        .bind(&name)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::CategoriesChanged);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deleting a category never deletes channels — they come back out to the
+/// top of the list, which is where they were before anyone filed them.
+pub async fn delete_category(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    sqlx::query("UPDATE channels SET category_id = NULL WHERE category_id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    sqlx::query("DELETE FROM channel_categories WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::CategoriesChanged);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn set_channel_category(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<shared::SetCategoryRequest>,
+) -> ApiResult<StatusCode> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    // A DM has no place in the sidebar's groups, and a category that doesn't
+    // exist would leave the channel invisible under a heading nobody renders.
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    if kind.as_deref() == Some("dm") || kind.is_none() {
+        return Err(err(StatusCode::BAD_REQUEST, "not a server channel"));
+    }
+    if let Some(category_id) = req.category_id {
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM channel_categories WHERE id = ?")
+            .bind(category_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(internal)?;
+        if exists == 0 {
+            return Err(err(StatusCode::BAD_REQUEST, "no such category"));
+        }
+    }
+    sqlx::query("UPDATE channels SET category_id = ? WHERE id = ?")
+        .bind(req.category_id)
+        .bind(channel_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::CategoriesChanged);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn list_mutes(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,

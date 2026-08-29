@@ -70,6 +70,29 @@ pub struct Channel {
     /// top.
     #[serde(default)]
     pub last_at: Option<i64>,
+    /// The sidebar group this sits in, if an admin has filed it.
+    #[serde(default)]
+    pub category_id: Option<i64>,
+}
+
+/// A collapsible group in the channel list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelCategory {
+    pub id: i64,
+    pub name: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryRequest {
+    pub name: String,
+}
+
+/// Body for POST /api/channels/{id}/category — None takes it out of any group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetCategoryRequest {
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 /// Body for POST /api/dms — open (or find) a DM with another user.
@@ -437,6 +460,27 @@ pub struct StorageInfo {
     pub cap_gb: i64,
 }
 
+/// What GET /api/server/stats reports (admin). Everything an owner would
+/// otherwise SSH in to find out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerStats {
+    pub people: i64,
+    pub online: i64,
+    pub admins: i64,
+    pub messages: i64,
+    pub text_channels: i64,
+    pub voice_channels: i64,
+    pub dms: i64,
+    pub uploads_bytes: i64,
+    pub uploads_cap_bytes: i64,
+    pub upload_count: i64,
+    pub database_bytes: i64,
+    /// How long the server process has been running.
+    pub uptime_secs: i64,
+    /// When the first person registered — the server's own birthday.
+    pub founded_at: Option<i64>,
+}
+
 /// Body for POST /api/server/storage (admin).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageCapSetting {
@@ -687,6 +731,10 @@ pub enum ServerEvent {
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
     ChannelRenamed { channel_id: i64, name: String },
+    /// Categories or channel filing changed; clients refetch both lists.
+    /// Coarse on purpose — it happens while an admin edits settings, never
+    /// on the hot path.
+    CategoriesChanged,
     ServerRenamed { name: String },
     ServerIconChanged { icon: String },
     /// Tags or assignments changed; clients refetch /api/tags and /api/users.

@@ -2699,3 +2699,20 @@ ul.md-list { list-style-type: disc; }
 /* A muted channel: still readable, no longer shouting. */
 .channel.muted .chan-name { color: #6d7079; }
 .chan-muted { color: #6d7079; display: inline-flex; margin-left: 4px; }
+
+/* Category management in Server settings → Channels. */
+.srv-cat-head { margin-top: 18px; }
+.srv-cat-pick { max-width: 160px; padding: 4px 6px; font-size: 12px; }
+
+/* Server stats: a grid of plain numbers, biggest thing first. */
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+    margin-bottom: 18px;
+}
+.stat-cell { background: #2b2d31; border-radius: 8px; padding: 12px 14px; }
+.stat-value { font-size: 22px; font-weight: 600; color: #f2f3f5; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: #949ba4; margin-top: 2px; }
+.stat-bar { height: 8px; border-radius: 4px; background: #1e1f22; overflow: hidden; margin: 6px 0; }
+.stat-bar-fill { height: 100%; border-radius: 4px; background: #5865f2; }

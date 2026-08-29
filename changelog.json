@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.79.0",
+    "date": "2026-08-29",
+    "changes": [
+      "🗂️ Channel categories. Admins can group the channel list in Server settings → Channels; everyone can fold a group shut, and which ones you keep open is remembered on your machine. Channels you haven't filed stay at the top, so nothing moves until someone makes a category",
+      "📊 A Stats page for admins: people, messages, channels, files, database size and uptime, with the upload cap as a bar. Everything you'd otherwise have to log into the server to find out"
+    ]
+  },
+  {
     "version": "0.78.0",
     "date": "2026-08-29",
     "changes": [

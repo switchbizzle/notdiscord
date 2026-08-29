@@ -49,6 +49,8 @@ pub struct AppState {
     pub music_player: Mutex<Option<(i64, i64)>>,
     /// Per-user upload budget (see ratelimit).
     pub uploads: ratelimit::UploadLimits,
+    /// When this process came up, for the uptime an admin sees.
+    pub started_at: std::time::Instant,
 }
 
 impl AppState {
@@ -221,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
         music_watch: Mutex::new(false),
         music_player: Mutex::new(None),
         uploads: ratelimit::UploadLimits::default(),
+        started_at: std::time::Instant::now(),
     });
 
     // NotBot announces new client releases in chat.
@@ -282,6 +285,12 @@ async fn main() -> anyhow::Result<()> {
             post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/api/gifs", get(routes::gifs))
+        .route("/api/categories", get(routes::list_categories).post(routes::create_category))
+        .route(
+            "/api/categories/{id}",
+            post(routes::rename_category).delete(routes::delete_category),
+        )
+        .route("/api/channels/{id}/category", post(routes::set_channel_category))
         .route("/api/mutes", get(routes::list_mutes))
         .route("/api/channels/{id}/mute", post(routes::set_mute))
         .route("/api/preview", get(preview::preview))
@@ -298,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/server/name", post(routes::rename_server))
         .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
         .route("/api/server/storage", get(routes::get_storage).post(routes::set_storage_cap))
+        .route("/api/server/stats", get(routes::get_stats))
         .route("/api/server/invite", get(routes::get_invite).post(routes::set_invite))
         .route("/api/server/bot", get(routes::get_bot_settings).post(routes::set_bot_settings))
         .route("/api/server/icon", post(routes::set_server_icon))

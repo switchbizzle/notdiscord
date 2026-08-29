@@ -345,6 +345,10 @@ pub struct Settings {
     /// Sidebar DM section folded away (unread DMs still surface).
     #[serde(default)]
     pub dms_collapsed: bool,
+    /// Categories this person has folded shut. Local, like dms_collapsed —
+    /// which sections you keep open is nobody else's business.
+    #[serde(default)]
+    pub collapsed_categories: Vec<i64>,
 }
 
 fn vad() -> String {
@@ -914,4 +918,65 @@ pub async fn set_mute(session: &Session, channel_id: i64, muted: bool) -> Result
         .json(&shared::MuteRequest { muted }))
         .await?;
     expect_no_content(resp, "could not change that").await
+}
+
+/// The sidebar's groups. A failure means "no categories", which renders the
+/// channel list exactly as it looked before anyone made one.
+pub async fn categories(session: &Session) -> Vec<shared::ChannelCategory> {
+    let Ok(resp) = send_retry(
+        http().get(format!("{}/api/categories", session.base_url)).bearer_auth(&session.token),
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    resp.json().await.unwrap_or_default()
+}
+
+pub async fn create_category(session: &Session, name: String) -> Result<shared::ChannelCategory, String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/categories", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::CategoryRequest { name }))
+        .await?;
+    handle(resp).await
+}
+
+pub async fn rename_category(session: &Session, id: i64, name: String) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/categories/{id}", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::CategoryRequest { name }))
+        .await?;
+    expect_no_content(resp, "could not rename that category").await
+}
+
+pub async fn delete_category(session: &Session, id: i64) -> Result<(), String> {
+    let resp = send_retry(http()
+        .delete(format!("{}/api/categories/{id}", session.base_url))
+        .bearer_auth(&session.token))
+        .await?;
+    expect_no_content(resp, "could not delete that category").await
+}
+
+pub async fn set_channel_category(
+    session: &Session,
+    channel_id: i64,
+    category_id: Option<i64>,
+) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/channels/{channel_id}/category", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::SetCategoryRequest { category_id }))
+        .await?;
+    expect_no_content(resp, "could not move that channel").await
+}
+
+/// Server-wide counts, for the admin Stats pane.
+pub async fn server_stats(session: &Session) -> Result<shared::ServerStats, String> {
+    let resp = send_retry(
+        http().get(format!("{}/api/server/stats", session.base_url)).bearer_auth(&session.token),
+    )
+    .await?;
+    handle(resp).await
 }

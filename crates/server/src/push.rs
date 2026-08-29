@@ -264,6 +264,7 @@ mod tests {
             music_watch: std::sync::Mutex::new(false),
             music_player: std::sync::Mutex::new(None),
             uploads: crate::ratelimit::UploadLimits::default(),
+            started_at: std::time::Instant::now(),
         })
     }
 
