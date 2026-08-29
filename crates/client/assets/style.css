@@ -556,9 +556,12 @@ button.sidebar-title:hover { background: #35373c; }
     background: #232428;
     font-size: 13px;
 }
+.me-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 .me-info {
     display: flex;
     align-items: center;
+    /* Takes the slack, so the buttons stay together on the right. */
+    flex: 1;
     gap: 8px;
     min-width: 0;
     cursor: pointer;

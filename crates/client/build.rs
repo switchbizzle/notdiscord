@@ -6,6 +6,8 @@ use std::fmt::Write;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/icons");
+    println!("cargo:rerun-if-changed=assets/app.ico");
+    embed_exe_icon();
     let out_dir = std::env::var("OUT_DIR").unwrap();
 
     let mut entries: Vec<(String, String)> = std::fs::read_dir("assets/icons")
@@ -31,3 +33,22 @@ fn main() {
 
     std::fs::write(format!("{out_dir}/icons_gen.rs"), code).unwrap();
 }
+
+/// Give the executable its icon. Windows reads this from the binary's
+/// resource table, not from anything at runtime — without it the taskbar and
+/// Explorer fall back to the generic "unknown application" page.
+#[cfg(windows)]
+fn embed_exe_icon() {
+    if std::path::Path::new("assets/app.ico").exists() {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/app.ico");
+        if let Err(e) = res.compile() {
+            // Not fatal: an iconless build still runs, and failing here would
+            // block every build on a machine without the resource compiler.
+            println!("cargo:warning=could not embed the exe icon: {e}");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_exe_icon() {}

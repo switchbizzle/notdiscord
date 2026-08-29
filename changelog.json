@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.74.0",
+    "date": "2026-08-28",
+    "changes": [
+      "🎧 NotDiscord has a logo. A headset ring around a gradient N with a speech-bubble tail — on the exe, in the taskbar and alt-tab, in the tray, and as the icon when you install the web app to your phone. It replaces the plain white letter that was standing in",
+      "🪟 The window's title bar is our own grey now instead of the one Windows picked — it stopped sticking out above the app (JunkfoodJon)",
+      "⚙️ The settings gear sits next to log out instead of floating in the middle of the bar (switchb)",
+      "The mark is drawn by a script rather than exported once, so tweaking a colour or a curve is an edit and a re-run, not a redraw"
+    ]
+  },
+  {
     "version": "0.73.0",
     "date": "2026-08-28",
     "changes": [

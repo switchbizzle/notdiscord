@@ -63,44 +63,33 @@ pub struct Tray {
 pub type TrayHandle = Rc<RefCell<Option<Tray>>>;
 
 /// Render a simple circular icon; `unread` adds a red badge.
+/// The tray icon: the app's own logo, with a red dot when something is
+/// waiting. Drawn from the same PNG as the window and exe icons, so the three
+/// places Windows shows this app all show the same thing.
 fn make_icon(unread: bool) -> Icon {
-    const S: i32 = 32;
-    let mut data = vec![0u8; (S * S * 4) as usize];
-    let center = (S - 1) as f32 / 2.0;
-    let radius = S as f32 / 2.0 - 1.5;
-
-    let mut put = |x: i32, y: i32, rgba: [u8; 4]| {
-        if (0..S).contains(&x) && (0..S).contains(&y) {
-            let i = ((y * S + x) * 4) as usize;
-            data[i..i + 4].copy_from_slice(&rgba);
-        }
+    const S: u32 = 32;
+    let mut img = match crate::logo_rgba() {
+        Some((rgba, w, h)) => image::RgbaImage::from_raw(w, h, rgba)
+            .map(|img| image::imageops::resize(&img, S, S, image::imageops::FilterType::Lanczos3))
+            .unwrap_or_else(|| image::RgbaImage::new(S, S)),
+        None => image::RgbaImage::new(S, S),
     };
 
-    for y in 0..S {
-        for x in 0..S {
-            let d = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
-            if d <= radius {
-                // Blurple disc with a soft edge.
-                let alpha = ((radius - d + 1.0).clamp(0.0, 1.0) * 255.0) as u8;
-                put(x, y, [88, 101, 242, alpha]);
-            }
-        }
-    }
-
     if unread {
+        // Bottom-right, clear of the mark itself.
         let (bx, by, br) = (23.0f32, 23.0f32, 8.0f32);
         for y in 0..S {
             for x in 0..S {
                 let d = ((x as f32 - bx).powi(2) + (y as f32 - by).powi(2)).sqrt();
                 if d <= br {
                     let alpha = ((br - d + 1.0).clamp(0.0, 1.0) * 255.0) as u8;
-                    put(x, y, [242, 63, 67, alpha.max(200)]);
+                    img.put_pixel(x, y, image::Rgba([242, 63, 67, alpha.max(200)]));
                 }
             }
         }
     }
 
-    Icon::from_rgba(data, S as u32, S as u32).expect("valid icon rgba")
+    Icon::from_rgba(img.into_raw(), S, S).expect("valid icon rgba")
 }
 
 pub fn create() -> Option<Tray> {

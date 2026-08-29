@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.73.0"
+version = "0.74.0"
 edition = "2021"
 
 [dependencies]
@@ -33,4 +33,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 fontdue = "0.9.4"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase"] }
+winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase", "dwmapi"] }
+
+[target.'cfg(windows)'.build-dependencies]
+# Stamps assets/app.ico into the exe, which is what Explorer, the taskbar and
+# the SmartScreen dialog all read.
+winresource = "0.1"

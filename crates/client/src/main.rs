@@ -25,6 +25,58 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 
 use shared::{Channel, ClientEvent, GifResult, Message, Profile, ServerEvent, Tag, UpdateProfileRequest, User, UserStatus};
 
+/// The logo as raw RGBA, for the places Windows wants pixels rather than a
+/// resource: the window's own corner and the tray. Baked into the binary so
+/// there's no file to lose next to the exe.
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo-256.png");
+
+pub fn logo_rgba() -> Option<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(LOGO_PNG).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some((img.into_raw(), w, h))
+}
+
+/// Paint the OS title bar in the app's own colours.
+///
+/// Windows draws the caption itself, so a dark app gets a bar in whatever
+/// shade the system picked — Jon: "it sticks out too much". Windows 11 lets
+/// an app name the colours; Windows 10 ignores these and keeps its own bar,
+/// which is why the results aren't checked.
+#[cfg(windows)]
+fn style_title_bar(hwnd: isize) {
+    use winapi::um::dwmapi::DwmSetWindowAttribute;
+
+    // COLORREF is 0x00BBGGRR, not RGB.
+    const CAPTION: u32 = 0x0022_1f1e; // #1e1f22, the sidebar's own grey
+    const TEXT: u32 = 0x00a4_9b94; // #949ba4, the muted grey used for labels
+    const BORDER: u32 = 0x0031_2d2b; // #2b2d31, one step up from the caption
+    // Attribute ids, from dwmapi.h. winapi 0.3 predates the Windows 11 ones.
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+
+    unsafe {
+        let dark: u32 = 1;
+        for (attr, value) in [
+            (DWMWA_USE_IMMERSIVE_DARK_MODE, dark),
+            (DWMWA_CAPTION_COLOR, CAPTION),
+            (DWMWA_TEXT_COLOR, TEXT),
+            (DWMWA_BORDER_COLOR, BORDER),
+        ] {
+            DwmSetWindowAttribute(
+                hwnd as _,
+                attr,
+                &value as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn style_title_bar(_hwnd: isize) {}
+
 fn main() {
     // Panics land in a crash log (release builds have no console to read).
     let default_panic = std::panic::take_hook();
@@ -96,6 +148,13 @@ fn main() {
             None => LogicalSize::new(1100.0, 720.0),
         })
         .with_min_inner_size(LogicalSize::new(900.0, 560.0));
+    // The exe's icon comes from the resource table (build.rs); this is the one
+    // the window itself carries, which is what alt-tab and the title bar show.
+    if let Some((rgba, w, h)) = logo_rgba() {
+        if let Ok(icon) = dioxus::desktop::tao::window::Icon::from_rgba(rgba, w, h) {
+            window = window.with_window_icon(Some(icon));
+        }
+    }
     if let Some(state) = saved {
         if let (Some(x), Some(y)) = (state.x, state.y) {
             window = window.with_position(dioxus::desktop::tao::dpi::LogicalPosition::new(x, y));
@@ -245,6 +304,15 @@ fn App() -> Element {
     let mut adding = use_signal(|| false);
     let mut restoring = use_signal(|| true);
     let window = use_window();
+
+    // The title bar is the OS's, so it has to be told our colours.
+    use_hook(|| {
+        #[cfg(windows)]
+        {
+            use dioxus::desktop::tao::platform::windows::WindowExtWindows;
+            style_title_bar(window.hwnd() as isize);
+        }
+    });
 
     // System tray: created once, lives for the app's lifetime.
     let tray_handle: tray::TrayHandle = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(tray::create())));
@@ -4125,13 +4193,17 @@ fn MainView(session: api::Session) -> Element {
                             }
                         }
                     }
-                    button {
-                        class: "logout",
-                        title: "Settings",
-                        onclick: move |_| open_settings("voice"),
-                        Icon { name: "settings", size: 16 }
+                    // Grouped, so the gear sits beside log out instead of
+                    // being spread into the middle of the bar (switchb).
+                    div { class: "me-actions",
+                        button {
+                            class: "logout",
+                            title: "Settings",
+                            onclick: move |_| open_settings("voice"),
+                            Icon { name: "settings", size: 16 }
+                        }
+                        button { class: "logout", title: "Log out", onclick: logout, Icon { name: "power", size: 16 } }
                     }
-                    button { class: "logout", title: "Log out", onclick: logout, Icon { name: "power", size: 16 } }
                 }
             }
             div { class: "main",
@@ -6425,6 +6497,22 @@ fn MicMeter(level: voice::MicLevelSignal) -> Element {
         div { class: "mic-meter",
             div { class: "mic-meter-fill", style: "width: {pct}%" }
         }
+    }
+}
+
+#[cfg(test)]
+mod logo_tests {
+    #[test]
+    fn the_logo_decodes_at_a_usable_size() {
+        // The window and tray icons are built from this at runtime, and a
+        // missing or truncated asset would only show up as a blank icon on
+        // someone's taskbar.
+        let (rgba, w, h) = super::logo_rgba().expect("assets/logo-256.png decodes");
+        assert_eq!((w, h), (256, 256));
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        // Not a blank square: the mark has to actually be in there.
+        let opaque = rgba.chunks(4).filter(|p| p[3] > 200).count();
+        assert!(opaque > (w * h / 2) as usize, "logo looks empty: {opaque} solid pixels");
     }
 }
 
