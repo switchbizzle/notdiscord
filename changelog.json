@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.76.1",
+    "date": "2026-08-28",
+    "changes": [
+      "🔊 The volume slider in the Music tab is a normal size again. It had been set to fill whatever space was left, so on a wide window it ran the width of the player — it's the same 116px as the one on the chat player now, over on the right of the transport row (JunkfoodJon)"
+    ]
+  },
+  {
     "version": "0.76.0",
     "date": "2026-08-28",
     "changes": [

@@ -1815,8 +1815,12 @@ ul.md-list { list-style-type: disc; }
 .music-tab .music-artist { font-size: 13px; }
 .music-tab .music-scrub { margin-top: 10px; }
 .music-tab .music-controls { margin-top: 12px; gap: 7px; flex-wrap: nowrap; }
-.music-tab .music-vol { margin-left: 4px; min-width: 0; flex: 1; }
-.music-tab .music-vol input { width: auto; flex: 1; min-width: 60px; }
+/* The tab used to let this row grow into whatever space was left, which on a
+   wide window meant a volume slider the width of the card (Jon). It's the
+   same size as the one on the chat player now, parked at the right end of the
+   transport row. */
+.music-tab .music-vol { margin-left: auto; flex: none; }
+.music-tab .music-vol input { width: 116px; flex: none; }
 .music-tab .music-now { padding: 14px 16px 12px; gap: 14px; }
 
 /* ---------- Unread badges + NEW divider ---------- */
