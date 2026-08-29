@@ -178,7 +178,10 @@ fn music_gain() -> f32 {
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|g| *g > 0.0 && *g <= 2.0)
-        .unwrap_or(0.35)
+        // Was 0.35, which left everyone reaching for their slider — and on a
+        // phone the slider did nothing, so the music was just quiet. 0.5 is
+        // about 3dB louder and still well under a talking voice.
+        .unwrap_or(0.5)
 }
 
 #[tokio::main]

@@ -36,7 +36,16 @@ window.ndVoice = (() => {
     state.connecting = true;
     state.error = "";
     try {
-      const r = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
+      // webAudioMix routes remote audio through an AudioContext, which is
+      // the only way the per-friend volume works on a phone: without it
+      // livekit falls back to setting element.volume, and Chrome on Android
+      // ignores that outright — the slider moved and nothing happened
+      // (switchb). A gain node is honoured everywhere.
+      const r = new LivekitClient.Room({
+        adaptiveStream: true,
+        dynacast: true,
+        webAudioMix: true,
+      });
       r.on("trackSubscribed", (track, pub, participant) => {
         if (track.kind === "audio") {
           const el = track.attach();

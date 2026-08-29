@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.78.0",
+    "date": "2026-08-29",
+    "changes": [
+      "🔊 The volume slider works on the phone. It was setting the audio element's volume, which Chrome on Android ignores outright — the slider moved and nothing happened. Audio now runs through a gain control that every browser honours (switchb)",
+      "That also un-sticks the top half of the slider everywhere: an audio element caps at 100%, so anything above it did nothing. 200% is genuinely twice as loud now",
+      "🎚️ And the bot plays a bit louder to begin with — it was mixing itself down to 35% so it wouldn't drown out talking, which was more than it needed"
+    ]
+  },
+  {
     "version": "0.77.0",
     "date": "2026-08-28",
     "changes": [
