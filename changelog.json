@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.76.0",
+    "date": "2026-08-28",
+    "changes": [
+      "⏭️ Songs run into each other now. The bot used to finish a track and only then go looking for the next one — a search and a download check, about five seconds of silence between every Spotify track. It now gets the next one ready while the current one plays. Measured: 4.9 seconds of dead air, gone"
+    ]
+  },
+  {
     "version": "0.75.0",
     "date": "2026-08-28",
     "changes": [

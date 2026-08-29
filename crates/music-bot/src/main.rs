@@ -642,6 +642,36 @@ async fn ytdlp_resolve(page_url: &str, cookies: Vec<String>) -> anyhow::Result<s
         .await?)
 }
 
+/// Everything between "this is next" and "sound comes out": find pages for it
+/// if it's a search, then resolve one to a stream. Both the player and the
+/// look-ahead go through here, so a prefetched track is prepared exactly the
+/// way an immediate one is.
+async fn prepare(track: &Track) -> Option<(String, Resolved)> {
+    let candidates = match track.url.strip_prefix(SEARCH_PREFIX) {
+        None => vec![track.url.clone()],
+        Some(query) => match search_soundcloud(query, track.duration).await {
+            Ok(urls) => urls,
+            Err(e) => {
+                tracing::warn!("could not find {}: {e}", track.title);
+                return None;
+            }
+        },
+    };
+    first_playable(&candidates).await
+}
+
+/// How long before a track ends to go and fetch the next one. Long enough to
+/// cover a search and a resolve (a few seconds each), short enough that the
+/// stream URL — which SoundCloud signs with an expiry — is still fresh when
+/// the track actually starts. MUSIC_PREFETCH_LEAD overrides it; 0 turns the
+/// look-ahead off, which is also how its effect gets measured.
+fn prefetch_lead() -> f64 {
+    std::env::var("MUSIC_PREFETCH_LEAD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(90.0)
+}
+
 /// Work down a candidate list until one actually plays. The best guess can
 /// still be a DRM protected Go+ upload or a dead link, and the next one
 /// usually is not.
@@ -728,6 +758,10 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         )
         .await?;
 
+    // The next track, resolved ahead of time, and the task doing it.
+    let mut ahead: Option<(u64, (String, Resolved))> = None;
+    let mut ahead_task: Option<tokio::task::JoinHandle<Option<(u64, (String, Resolved))>>> = None;
+
     loop {
         if controls.stop.load(Ordering::Relaxed) {
             break;
@@ -742,19 +776,27 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         let Some(track) = next else { break };
 
         controls.skip.store(false, Ordering::Relaxed);
-        // A planned track only knows what to search for; find pages for it.
-        let candidates = match track.url.strip_prefix(SEARCH_PREFIX) {
-            None => Ok(vec![track.url.clone()]),
-            Some(query) => search_soundcloud(query, track.duration).await,
+        // Use the look-ahead if it was for this track. The queue can be
+        // reordered or cleared while a song plays, so it's only good when the
+        // id still matches what actually came off the front.
+        let ready = match ahead.take() {
+            Some((id, prepared)) if id == track.id => Some(prepared),
+            _ => None,
         };
-        let candidates = match candidates {
-            Ok(urls) => urls,
-            Err(e) => {
-                tracing::warn!("could not find {}: {e}", track.title);
-                continue;
-            }
+        let ready_was_used = ready.is_some();
+        let waited = std::time::Instant::now();
+        let outcome = match ready {
+            Some(prepared) => Some(prepared),
+            None => prepare(&track).await,
         };
-        match first_playable(&candidates).await {
+        tracing::info!(
+            "gap before {}: {}ms{}",
+            track.title,
+            waited.elapsed().as_millis(),
+            if ready_was_used { " (prefetched)" } else { "" }
+        );
+
+        match outcome {
             Some((page_url, resolved)) => {
                 // A Spotify link already knew the title; whatever upload we
                 // found shouldn't rename the song mid-queue.
@@ -777,9 +819,55 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
                     session.now_playing = Some(playing);
                 }
                 tracing::info!("playing: {announce}");
+
+                // Get the next one ready while this one plays. Timed to land
+                // shortly before the end rather than immediately: a stream URL
+                // fetched at the start of a ten-minute track can expire before
+                // anyone hears it.
+                let next = state
+                    .session
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|s| s.queue.front().cloned());
+                if let Some(next) = next {
+                    let lead = resolved
+                        .duration
+                        .map(|d| (d - prefetch_lead()).max(0.0))
+                        .unwrap_or(0.0);
+                    ahead_task = Some(tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(lead)).await;
+                        prepare(&next).await.map(|prepared| (next.id, prepared))
+                    }));
+                }
+
                 if let Err(e) = stream_pcm(&source, &resolved.stream, &controls).await {
                     tracing::warn!("track failed ({announce}): {e}");
+                    // A prefetched stream URL is up to a lead's worth of
+                    // minutes old, and SoundCloud signs them with an expiry.
+                    // Resolve once more before giving up — silently dropping a
+                    // song is a worse trade than the gap prefetching saved.
+                    if ready_was_used && !controls.skip.load(Ordering::Relaxed) {
+                        if let Some((_, fresh)) = prepare(&track).await {
+                            tracing::info!("retrying {announce} with a fresh stream");
+                            if let Err(e) = stream_pcm(&source, &fresh.stream, &controls).await {
+                                tracing::warn!("second attempt failed ({announce}): {e}");
+                            }
+                        }
+                    }
                 }
+
+                // Take the look-ahead only if it finished. A skip can land
+                // while it's still sleeping, and waiting out that sleep would
+                // be a longer gap than not having prefetched at all.
+                ahead = match ahead_task.take() {
+                    Some(handle) if handle.is_finished() => handle.await.ok().flatten(),
+                    Some(handle) => {
+                        handle.abort();
+                        None
+                    }
+                    None => None,
+                };
             }
             None => tracing::warn!("gave up on {}", track.title),
         }
