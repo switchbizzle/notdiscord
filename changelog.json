@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.85.0",
+    "date": "2026-08-30",
+    "changes": [
+      "🌈 Names are coloured on the phone, same as the desktop — your role's colour if you have one, otherwise the colour your avatar already uses (switchb)",
+      "🧩 Stickers on the phone. You could always SEE them (a sticker is just an image), but there was no way to send one — there's a sticker button in the composer now, and a sticker on its own renders sticker-sized instead of filling the screen",
+      "🔄 The web app notices when a new version has been deployed and reloads itself. Installed to a home screen it used to run whatever it first booted with, which is why a feature could ship and your phone would carry on without it"
+    ]
+  },
+  {
     "version": "0.84.0",
     "date": "2026-08-30",
     "changes": [

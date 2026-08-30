@@ -110,6 +110,17 @@ pub async fn categories(session: &Session) -> Vec<shared::ChannelCategory> {
     get(session, "categories").await.unwrap_or_default()
 }
 
+/// Role tags, for colouring names the way the desktop does.
+pub async fn tags(session: &Session) -> Vec<shared::Tag> {
+    get(session, "tags").await.unwrap_or_default()
+}
+
+/// The server's stickers. A sticker is sent as its plain URL, so the phone
+/// could always SEE them — it just had no way to pick one.
+pub async fn stickers(session: &Session) -> Vec<shared::Sticker> {
+    get(session, "stickers").await.unwrap_or_default()
+}
+
 pub async fn unread(session: &Session) -> Result<Vec<shared::UnreadInfo>, String> {
     get(session, "unread").await
 }

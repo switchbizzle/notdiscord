@@ -112,6 +112,19 @@ const CSS: Asset = asset!("/assets/style.css");
 /// How long a typing indicator stays up after the last Typing event, and how
 /// rarely we send one while someone types. Same numbers as the desktop, so a
 /// phone and a desktop agree about who is typing.
+/// A name's colour: the first tag assigned to that person, else the hue their
+/// avatar already uses. Same rule as the desktop, so one person is the same
+/// colour on both.
+fn name_color(user_id: i64, members: &[UserStatus], tags: &[shared::Tag]) -> String {
+    members
+        .iter()
+        .find(|m| m.user.id == user_id)
+        .and_then(|m| m.tag_ids.first())
+        .and_then(|tid| tags.iter().find(|t| t.id == *tid))
+        .map(|t| t.color.clone())
+        .unwrap_or_else(|| format!("hsl({}, 65%, 68%)", (user_id * 137) % 360))
+}
+
 fn now_ms() -> i64 {
     js_sys::Date::now() as i64
 }
@@ -306,6 +319,9 @@ fn App() -> Element {
         document::Script { src: "/app/voice.js" }
         document::Script { src: "/app/push.js" }
         document::Script { src: "/app/install.js" }
+        // Notices when a newer build is on the server and reloads, because an
+        // installed app otherwise runs whatever it booted with forever.
+        document::Script { src: "/app/freshen.js" }
         if session().is_some() {
             Main { session }
         } else {
@@ -518,7 +534,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // this snapshot can't outlive the account it belongs to.
     use_context_provider(|| Signal::new(sess()));
     let mut channels = use_signal(Vec::<Channel>::new);
-    let mut members = use_signal(Vec::<UserStatus>::new);
+    // Provided as well as held: the message row needs it to colour a name.
+    let mut members = use_context_provider(|| Signal::new(Vec::<UserStatus>::new()));
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
     // Provided rather than passed: the renderer needs it several components
@@ -531,6 +548,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // The server's own name, so the drawer says where you are rather than
     // what the app is called.
     let mut server_name = use_signal(String::new);
+    // Tags colour names; provided because the message row is a component away.
+    let tags = use_context_provider(|| Signal::new(Vec::<shared::Tag>::new()));
+    let mut stickers = use_context_provider(|| Signal::new(Vec::<shared::Sticker>::new()));
+    let mut sticker_open = use_signal(|| false);
     // Which groups this person keeps shut, remembered on this device only —
     // it's a per-phone preference, not something the server should carry.
     let mut collapsed = use_signal(|| {
@@ -679,6 +700,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             if let Some(info) = api::server_info().await {
                 server_name.set(info.name);
             }
+            {
+                let mut tags = tags;
+                tags.set(api::tags(&sess()).await);
+            }
+            stickers.set(api::stickers(&sess()).await);
         });
     });
 
@@ -845,10 +871,22 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                             ServerEvent::ServerRenamed { name } => server_name.set(name),
                             ServerEvent::Error { message } => status.set(message),
-                            // Stickers are a desktop feature; the phone has
-                            // nothing to update. Listed rather than left to
-                            // the catch-all so it reads as decided, not missed.
-                            ServerEvent::StickerCreated { .. } | ServerEvent::StickerDeleted { .. } => {}
+                            ServerEvent::StickerCreated { sticker } => {
+                                let mut list = stickers.write();
+                                if !list.iter().any(|s| s.id == sticker.id) {
+                                    list.push(sticker);
+                                    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                                }
+                            }
+                            ServerEvent::StickerDeleted { sticker_id } => {
+                                stickers.write().retain(|s| s.id != sticker_id);
+                            }
+                            ServerEvent::TagsChanged => {
+                                spawn(async move {
+                                    let mut tags = tags;
+                                    tags.set(api::tags(&sess()).await);
+                                });
+                            }
                             ServerEvent::CategoriesChanged => {
                                 spawn(async move {
                                     categories.set(api::categories(&sess()).await);
@@ -1546,7 +1584,56 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     }
                 }
             }
+            // The sticker sheet. A sticker is just its URL in a message, so
+            // picking one is a send, not an upload.
+            if sticker_open() {
+                div { class: "drawer-overlay", onclick: move |_| sticker_open.set(false) }
+                div { class: "sheet sticker-sheet",
+                    div { class: "sheet-head",
+                        div { class: "sheet-title", "Stickers" }
+                        button { class: "sheet-x", onclick: move |_| sticker_open.set(false),
+                            Icon { name: "x", size: 14 }
+                        }
+                    }
+                    if stickers().is_empty() {
+                        div { class: "sheet-hint",
+                            "No stickers yet. Anyone on the desktop app can add them."
+                        }
+                    }
+                    div { class: "sticker-grid",
+                        for sticker in stickers() {
+                            img {
+                                key: "{sticker.id}",
+                                class: "sticker-cell",
+                                src: "{sticker.url}",
+                                alt: "{sticker.name}",
+                                title: "{sticker.name}",
+                                loading: "lazy",
+                                onclick: {
+                                    let url = sticker.url.clone();
+                                    move |_| {
+                                        if let Some(channel) = selected() {
+                                            ws.send(ClientEvent::SendMessage {
+                                                channel_id: channel.id,
+                                                content: url.clone(),
+                                                reply_to: None,
+                                            });
+                                        }
+                                        sticker_open.set(false);
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
             footer { class: "composer",
+                button {
+                    class: "attach sticker-btn",
+                    title: "Send a sticker",
+                    onclick: move |_| sticker_open.set(!sticker_open()),
+                    Icon { name: "smile", size: 18 }
+                }
                 label { class: "attach",
                     input {
                         r#type: "file",
@@ -1804,6 +1891,9 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
     let mut replying = use_context::<Signal<Option<Message>>>();
     let mut lightbox = use_context::<Signal<Option<Lightbox>>>();
     let gallery = use_context::<Gallery>().0;
+    let stickers_ctx = try_consume_context::<Signal<Vec<shared::Sticker>>>();
+    let members_ctx = try_consume_context::<Signal<Vec<UserStatus>>>();
+    let tags_ctx = try_consume_context::<Signal<Vec<shared::Tag>>>();
     let mut strip_open = use_signal(|| false);
     // Editing and deleting your own words, the way the desktop app allows.
     // Deleting asks first: these are thumb-sized targets on a phone.
@@ -1821,6 +1911,17 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
         };
     }
     let (images, videos, files, text) = extract_media(&msg.content);
+    // A message that is nothing but one of the server's stickers renders
+    // small. Full width is right for a photo someone took and absurd for a
+    // reaction sticker, and a sticker arrives as a bare URL so this is the
+    // only way to tell the two apart.
+    let is_sticker = text.is_empty()
+        && images.len() == 1
+        && videos.is_empty()
+        && files.is_empty()
+        && stickers_ctx.is_some_and(|list| {
+            list.read().iter().any(|s| images[0].ends_with(&s.url))
+        });
 
     // Aggregate raw reaction entries into (emoji, count, reacted-by-me).
     let mut reaction_groups: Vec<(String, usize, bool)> = Vec::new();
@@ -1837,7 +1938,21 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
     rsx! {
         div { class: "msg",
             div { class: "msg-head",
-                span { class: "msg-author", "{msg.author.username}" }
+                {
+                    let colour = match (members_ctx, tags_ctx) {
+                        (Some(m), Some(t)) => name_color(msg.author.id, &m.read(), &t.read()),
+                        // No context is not worth a panic; the default colour
+                        // is perfectly readable.
+                        _ => String::new(),
+                    };
+                    rsx! {
+                        span {
+                            class: "msg-author",
+                            style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                            "{msg.author.username}"
+                        }
+                    }
+                }
                 span { class: "msg-time", {format_time(msg.created_at)} }
                 // Pinning is a desktop action, but the phone should at least
                 // show which messages someone thought were worth keeping.
@@ -1942,7 +2057,7 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
                     rsx! {
                         img {
                             key: "{i}",
-                            class: "msg-img",
+                            class: if is_sticker { "msg-img sticker-msg" } else { "msg-img" },
                             src: "{shown}",
                             loading: "lazy",
                             onclick: {
