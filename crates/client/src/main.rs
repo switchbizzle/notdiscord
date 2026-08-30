@@ -1161,6 +1161,8 @@ fn MainView(session: api::Session) -> Element {
     let mut now_playing = use_context_provider(|| Signal::new(None::<NowPlaying>));
     let mut player_volume = use_signal(|| 100i64);
     let mut mention_sel = use_signal(|| 0usize);
+    let mut emoji_sel = use_signal(|| 0usize);
+    let mut emoji_dismissed = use_signal(|| None::<String>);
     let mut incoming_call = use_signal(|| None::<(i64, User)>);
     let mut search_query = use_signal(String::new);
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
@@ -5229,6 +5231,37 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
                 {
+                    let hits = emoji_suggestions(&draft(), &emojis(), emoji_dismissed().as_deref());
+                    rsx! {
+                        if !hits.is_empty() {
+                            div { class: "mention-pop emoji-pop",
+                                for (i, hit) in hits.iter().enumerate() {
+                                    div {
+                                        key: "{hit.insert}",
+                                        class: if i == emoji_sel() % hits.len() { "mention-row selected" } else { "mention-row" },
+                                        onclick: {
+                                            let insert = hit.insert.clone();
+                                            move |_| {
+                                                draft.set(complete_emoji(&draft(), &insert));
+                                                emoji_sel.set(0);
+                                            }
+                                        },
+                                        if let Some(url) = hit.url.clone() {
+                                            img { class: "custom-emoji", src: "{url}" }
+                                        } else {
+                                            span { class: "emoji-pop-glyph", "{hit.glyph}" }
+                                        }
+                                        span { class: "emoji-pop-name", ":{hit.name}:" }
+                                        if hit.face {
+                                            span { class: "emoji-pop-key", "tab" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                {
                     let suggestions = mention_suggestions(&draft(), &members());
                     rsx! {
                         if !suggestions.is_empty() {
@@ -5378,6 +5411,17 @@ fn MainView(session: api::Session) -> Element {
                         oninput: move |e| {
                             draft.set(e.value());
                             mention_sel.set(0);
+                            emoji_sel.set(0);
+                            // Only the word that was dismissed stays dismissed.
+                            if let Some(d) = emoji_dismissed() {
+                                let still_typing_it = emoji_partial(&draft())
+                                    .is_some_and(|p| p.starts_with(&d))
+                                    || emoticon_partial(&draft())
+                                        .is_some_and(|t| t == d && emoji::emoticon(&t).is_some());
+                                if !still_typing_it {
+                                    emoji_dismissed.set(None);
+                                }
+                            }
                             slash_sel.set(0);
                             notify_typing();
                         },
@@ -5410,6 +5454,49 @@ fn MainView(session: api::Session) -> Element {
                                         e.prevent_default();
                                         draft.set(format!("{} ", commands[sel].0));
                                         slash_sel.set(0);
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            let hits = emoji_suggestions(&draft(), &emojis(), emoji_dismissed().as_deref());
+                            if !hits.is_empty() {
+                                let sel = emoji_sel() % hits.len();
+                                // A typed face is already a message people
+                                // mean to send, so Enter keeps sending it and
+                                // only Tab (or a click) takes the emoji. A
+                                // half-typed `:name` is nobody's intended
+                                // message, so there Enter completes.
+                                let takes_enter = !hits[sel].face;
+                                match e.key() {
+                                    Key::ArrowDown => {
+                                        e.prevent_default();
+                                        emoji_sel.set(sel + 1);
+                                        return;
+                                    }
+                                    Key::ArrowUp => {
+                                        e.prevent_default();
+                                        emoji_sel.set((sel + hits.len() - 1) % hits.len());
+                                        return;
+                                    }
+                                    Key::Tab => {
+                                        e.prevent_default();
+                                        draft.set(complete_emoji(&draft(), &hits[sel].insert));
+                                        emoji_sel.set(0);
+                                        return;
+                                    }
+                                    Key::Enter if takes_enter => {
+                                        e.prevent_default();
+                                        draft.set(complete_emoji(&draft(), &hits[sel].insert));
+                                        emoji_sel.set(0);
+                                        return;
+                                    }
+                                    Key::Escape => {
+                                        e.prevent_default();
+                                        let face = emoticon_partial(&draft())
+                                            .filter(|t| emoji::emoticon(t).is_some());
+                                        emoji_dismissed.set(face.or_else(|| emoji_partial(&draft())));
+                                        emoji_sel.set(0);
                                         return;
                                     }
                                     _ => {}
@@ -6999,6 +7086,115 @@ fn avatar_hue(user_id: i64) -> i64 {
 
 /// The partial name being typed after a trailing `@`, if the draft ends
 /// mid-mention (e.g. "hey @jo").
+/// One row of the `:` autocomplete.
+#[derive(Clone, PartialEq)]
+struct EmojiHit {
+    /// What lands in the message. A server emoji goes in as `:name:` because
+    /// that is what the renderer looks up; a unicode one goes in as itself,
+    /// which needs no decoding at the other end.
+    insert: String,
+    name: String,
+    /// Some for a server emoji (its image), None for a unicode one.
+    url: Option<String>,
+    glyph: String,
+    /// A typed face like ":)" rather than a `:name`. Enter still sends the
+    /// message for these — see the keydown handler.
+    face: bool,
+}
+
+/// The `:word` being typed at the caret, if there is one.
+///
+/// Deliberately strict, because a colon is a common character: a URL
+/// ("https://"), a clock ("12:30") and an already-completed ":shrug:" all
+/// contain one and none of them should open a popup.
+fn emoji_partial(draft: &str) -> Option<String> {
+    let idx = draft.rfind(':')?;
+    let boundary_ok = idx == 0 || !draft[..idx].chars().last().unwrap().is_alphanumeric();
+    let partial = &draft[idx + 1..];
+    if !boundary_ok || !partial.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    // One letter matches most of the catalog, which is noise, not help.
+    if partial.chars().count() < 2 {
+        return None;
+    }
+    Some(partial.to_lowercase())
+}
+
+/// `dismissed` is a partial the typist pressed Escape on: the popup stays
+/// shut while they keep typing that same word, and opens again for the next
+/// one. Closing it shouldn't mean editing their message, and it shouldn't
+/// mean it springs back on the next keystroke either.
+/// The `:`- or `;`-led tail at the caret that might be a typed face.
+///
+/// Matched whole, which is what keeps it clear of everything else a colon
+/// appears in: "https://x" leaves "//x" after the last colon, and no face is
+/// spelled that way.
+fn emoticon_partial(draft: &str) -> Option<String> {
+    let idx = draft.rfind([':', ';'])?;
+    let boundary_ok = idx == 0 || !draft[..idx].chars().last().unwrap().is_alphanumeric();
+    if !boundary_ok {
+        return None;
+    }
+    let tail = &draft[idx..];
+    (tail.chars().count() <= 4).then(|| tail.to_owned())
+}
+
+fn emoji_suggestions(
+    draft: &str,
+    customs: &[shared::CustomEmoji],
+    dismissed: Option<&str>,
+) -> Vec<EmojiHit> {
+    if let Some(tail) = emoticon_partial(draft) {
+        if let Some((glyph, name)) = emoji::emoticon(&tail) {
+            if dismissed.is_some_and(|d| d == tail) {
+                return Vec::new();
+            }
+            return vec![EmojiHit {
+                insert: glyph.to_owned(),
+                name: name.to_owned(),
+                url: None,
+                glyph: glyph.to_owned(),
+                face: true,
+            }];
+        }
+    }
+    let Some(partial) = emoji_partial(draft) else {
+        return Vec::new();
+    };
+    if dismissed.is_some_and(|d| partial.starts_with(d)) {
+        return Vec::new();
+    }
+    // Server emojis first: they're the ones this crew actually made.
+    let mut hits: Vec<EmojiHit> = customs
+        .iter()
+        .filter(|e| e.name.to_lowercase().starts_with(&partial))
+        .map(|e| EmojiHit {
+            insert: format!(":{}:", e.name),
+            name: e.name.clone(),
+            url: Some(e.url.clone()),
+            glyph: String::new(),
+            face: false,
+        })
+        .collect();
+    hits.extend(emoji::autocomplete(&partial).into_iter().map(|(glyph, name)| EmojiHit {
+        insert: glyph.to_owned(),
+        name: name.to_owned(),
+        url: None,
+        glyph: glyph.to_owned(),
+        face: false,
+    }));
+    hits.truncate(8);
+    hits
+}
+
+fn complete_emoji(draft: &str, insert: &str) -> String {
+    match draft.rfind([':', ';']) {
+        Some(idx) => format!("{}{insert} ", &draft[..idx]),
+        None => draft.to_owned(),
+    }
+}
+
 fn mention_partial(draft: &str) -> Option<String> {
     let idx = draft.rfind('@')?;
     let boundary_ok = idx == 0 || !draft[..idx].chars().last().unwrap().is_alphanumeric();

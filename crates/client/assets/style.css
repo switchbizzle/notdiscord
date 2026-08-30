@@ -2738,3 +2738,14 @@ ul.md-list { list-style-type: disc; }
 /* A server you're signed out of: still in the rail, visibly dormant. */
 .rail-server.signed-out { filter: grayscale(0.7); opacity: 0.55; }
 .rail-server.signed-out:hover { filter: none; opacity: 1; }
+
+/* The `:` autocomplete reuses the mention popup's frame and adds a preview
+   column, so a row reads as picture-then-name rather than a wall of text. */
+.emoji-pop .mention-row { display: flex; align-items: center; gap: 10px; }
+.emoji-pop-glyph { font-size: 18px; line-height: 1; width: 22px; text-align: center; }
+.emoji-pop .custom-emoji { width: 22px; height: 22px; object-fit: contain; }
+.emoji-pop-name { color: #dbdee1; }
+.emoji-pop-key {
+    margin-left: auto; color: #6b6f78; font-size: 11px;
+    border: 1px solid #3f4147; border-radius: 4px; padding: 1px 5px;
+}

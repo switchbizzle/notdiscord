@@ -485,6 +485,90 @@ pub const CATALOG: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// Typed faces, as (emoticon, emoji, name). Matched whole and lowercased, so
+/// `:D` and `:d` both land on the grin.
+///
+/// These are only ever *offered*, never substituted behind your back: ":)" is
+/// a perfectly good message on its own and plenty of people mean to send it
+/// exactly as typed (switchb).
+pub const EMOTICONS: &[(&str, &str, &str)] = &[
+    (":)", "\u{1F642}", "slight smile"),
+    (":-)", "\u{1F642}", "slight smile"),
+    (":]", "\u{1F642}", "slight smile"),
+    (":d", "\u{1F604}", "grin"),
+    (":-d", "\u{1F604}", "grin"),
+    (":(", "\u{1F641}", "frown"),
+    (":-(", "\u{1F641}", "frown"),
+    (":[", "\u{1F641}", "frown"),
+    (":'(", "\u{1F622}", "crying"),
+    (":o", "\u{1F62E}", "surprised"),
+    (":-o", "\u{1F62E}", "surprised"),
+    (":p", "\u{1F61B}", "tongue"),
+    (":-p", "\u{1F61B}", "tongue"),
+    (":/", "\u{1F615}", "unsure"),
+    (":\\", "\u{1F615}", "unsure"),
+    (":|", "\u{1F610}", "neutral"),
+    (":*", "\u{1F618}", "kiss"),
+    (":3", "\u{1F63A}", "cat"),
+    (":x", "\u{1F910}", "lips sealed"),
+    (":$", "\u{1F633}", "flushed"),
+    (";)", "\u{1F609}", "wink"),
+    (";-)", "\u{1F609}", "wink"),
+    (";p", "\u{1F61C}", "wink tongue"),
+    (";d", "\u{1F61C}", "wink tongue"),
+];
+
+/// The face `tail` spells, if it spells one.
+pub fn emoticon(tail: &str) -> Option<(&'static str, &'static str)> {
+    let lower = tail.to_lowercase();
+    EMOTICONS
+        .iter()
+        .find(|(pattern, ..)| *pattern == lower)
+        .map(|(_, glyph, name)| (*glyph, *name))
+}
+
+/// Matches for the composer's `:` autocomplete, as (emoji, name).
+///
+/// Prefix matching on whole keywords, not the substring search the picker
+/// does: typing `:fi` wants fire, not every emoji with "fi" buried somewhere
+/// in its keywords.
+///
+/// Ranked so the emoji's own name wins. Matching any keyword is what makes
+/// `:lol` find joy, but without the ranking `:fi` leads with a pinched hand
+/// (whose keywords include "fingers") and pushes fire off the end. The name
+/// reported is the keyword that actually matched, so a row never looks like
+/// it has nothing to do with what you typed.
+pub fn autocomplete(partial: &str) -> Vec<(&'static str, &'static str)> {
+    let q = partial.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<(u8, &'static str, &'static str)> = Vec::new();
+    for (glyph, keywords) in CATALOG.iter().flat_map(|(_, list)| list.iter()) {
+        let name = keywords.split_whitespace().next().unwrap_or(keywords);
+        let rank = if name == q {
+            0
+        } else if name.starts_with(&q) {
+            1
+        } else if keywords.split_whitespace().any(|w| w.starts_with(&q)) {
+            2
+        } else {
+            continue;
+        };
+        // Label with the word that matched: for a secondary hit that is the
+        // word the typist had in mind, not the catalog's first keyword.
+        let label = if rank == 2 {
+            keywords.split_whitespace().find(|w| w.starts_with(&q)).unwrap_or(name)
+        } else {
+            name
+        };
+        hits.push((rank, *glyph, label));
+    }
+    // Stable, so within a rank the catalog's own order survives.
+    hits.sort_by_key(|(rank, ..)| *rank);
+    hits.into_iter().map(|(_, glyph, name)| (glyph, name)).collect()
+}
+
 /// All (emoji, keywords) pairs whose keywords match the query, or the full
 /// catalog when the query is empty (grouped by category for display).
 pub fn search(query: &str) -> Vec<(&'static str, &'static str)> {

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.82.0",
+    "date": "2026-08-30",
+    "changes": [
+      "😀 Emoji autocomplete in the composer (Jon's #6). Type `:fi` and it offers 🔥 and any server emoji whose name starts that way — server ones first. ↑↓ to choose, Enter or Tab to take it, Escape to dismiss just that word",
+      "🙂 Typed faces get offered too — `:)` `:D` `:O` `:P` `;)` and friends. These only ever suggest: Enter still sends your message exactly as you typed it, and only Tab swaps in the emoji, because \":)\" is a message plenty of people mean to send as-is (switchb)"
+    ]
+  },
+  {
     "version": "0.81.0",
     "date": "2026-08-29",
     "changes": [
