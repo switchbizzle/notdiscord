@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.83.0",
+    "date": "2026-08-30",
+    "changes": [
+      "📱 Server emojis finally show up in the web app. Until now a message using one arrived on your phone as the literal text \":blobwave:\" — the phone had no idea the server had emojis at all. They render, and the list updates when someone adds one",
+      "Ordinary text with colons in it is left alone, as before: a link, a time like 12:30, and an emoji name nobody has made all stay exactly as typed"
+    ]
+  },
+  {
     "version": "0.82.0",
     "date": "2026-08-30",
     "changes": [

@@ -509,6 +509,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut members = use_signal(Vec::<UserStatus>::new);
     let mut selected = use_signal(|| None::<Channel>);
     let mut messages = use_signal(Vec::<Message>::new);
+    // Provided rather than passed: the renderer needs it several components
+    // deep, in the middle of a message body.
+    let mut emojis = use_context_provider(|| Signal::new(Vec::<shared::CustomEmoji>::new()));
     let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
     // Where a finger went down, so touchend can measure how far it travelled.
     let mut swipe_from = use_signal(|| None::<f64>);
@@ -645,6 +648,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             if let Ok(list) = api::unread(&sess()).await {
                 unread.set(list.into_iter().filter(|u| u.count > 0).map(|u| (u.channel_id, u.count)).collect());
             }
+            if let Ok(list) = api::emojis(&sess()).await {
+                emojis.set(list);
+            }
         });
     });
 
@@ -780,6 +786,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         voice_users.write().remove(&user.id);
                                     }
                                 }
+                            }
+                            ServerEvent::EmojisChanged => {
+                                spawn(async move {
+                                    if let Ok(list) = api::emojis(&sess()).await {
+                                        emojis.set(list);
+                                    }
+                                });
                             }
                             _ => {}
                         }

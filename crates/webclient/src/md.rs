@@ -154,10 +154,15 @@ fn MdOne(node: MdNode) -> Element {
     }
 }
 
-/// Plain text runs still get bare-URL links and @mention highlights.
+/// Plain text runs still get bare-URL links, @mention highlights and
+/// `:name:` server emojis.
 #[component]
 fn RichText(text: String) -> Element {
-    let mut segs: Vec<(u8, String)> = Vec::new(); // 0 plain, 1 url, 2 mention
+    // try_consume_context, not use_context: this renders inside link cards and
+    // anywhere else a message body appears, and an unprovided context panics
+    // in wasm, taking the whole page down rather than one emoji.
+    let emojis = try_consume_context::<Signal<Vec<shared::CustomEmoji>>>();
+    let mut segs: Vec<(u8, String)> = Vec::new(); // 0 plain, 1 url, 2 mention, 3 emoji
     let chars: Vec<char> = text.chars().collect();
     let mut plain = String::new();
     let mut i = 0;
@@ -181,6 +186,24 @@ fn RichText(text: String) -> Element {
                     i = j;
                     continue;
                 }
+            }
+        }
+        // :emoji_name: — lowercase, digits and underscores, closing colon,
+        // and at least two characters, so a bare ":" or a ":)" stays text.
+        if chars[i] == ':' {
+            let mut j = i + 1;
+            while j < chars.len()
+                && (chars[j].is_ascii_lowercase() || chars[j].is_ascii_digit() || chars[j] == '_')
+            {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == ':' && j >= i + 3 {
+                if !plain.is_empty() {
+                    segs.push((0, std::mem::take(&mut plain)));
+                }
+                segs.push((3, chars[i + 1..j].iter().collect()));
+                i = j + 1;
+                continue;
             }
         }
         if chars[i] == '@' && at_boundary {
@@ -210,6 +233,25 @@ fn RichText(text: String) -> Element {
                 a { key: "{i}", class: "md-link", href: "{s}", target: "_blank", rel: "noopener", "{s}" }
             } else if kind == 2 {
                 span { key: "{i}", class: "md-mention", "{s}" }
+            } else if kind == 3 {
+                // No emoji by that name (or no list yet) leaves the text as
+                // written, so ordinary colon-y prose is never eaten.
+                {
+                    let found = emojis
+                        .and_then(|list| list.read().iter().find(|e| e.name == s).cloned());
+                    match found {
+                        Some(e) => rsx! {
+                            img {
+                                key: "{i}",
+                                class: "custom-emoji",
+                                src: "{e.url}",
+                                alt: ":{s}:",
+                                title: ":{s}:",
+                            }
+                        },
+                        None => rsx! { span { key: "{i}", ":{s}:" } },
+                    }
+                }
             } else {
                 span { key: "{i}", "{s}" }
             }

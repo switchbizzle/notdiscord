@@ -404,3 +404,10 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
 .t-n { color: #d4a76a; }
 .t-k { color: #cf8ee0; }
 .t-t { color: #6cb6ff; }
+
+/* Server emojis inside a message. Same proportions as the desktop app, a
+   touch larger because a phone is held further from your face. */
+.custom-emoji {
+    height: 24px; width: auto; max-width: 88px;
+    vertical-align: -6px; object-fit: contain;
+}

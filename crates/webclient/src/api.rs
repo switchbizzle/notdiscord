@@ -98,6 +98,12 @@ pub async fn create_dm(session: &Session, user_id: i64) -> Result<shared::Channe
     handle(resp).await
 }
 
+/// The server's custom emojis, so `:name:` in a message can render as the
+/// picture everyone else is seeing.
+pub async fn emojis(session: &Session) -> Result<Vec<shared::CustomEmoji>, String> {
+    get(session, "emojis").await
+}
+
 pub async fn unread(session: &Session) -> Result<Vec<shared::UnreadInfo>, String> {
     get(session, "unread").await
 }
