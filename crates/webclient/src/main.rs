@@ -109,6 +109,18 @@ struct VoiceGlue {
 }
 
 const CSS: Asset = asset!("/assets/style.css");
+/// How long a typing indicator stays up after the last Typing event, and how
+/// rarely we send one while someone types. Same numbers as the desktop, so a
+/// phone and a desktop agree about who is typing.
+fn now_ms() -> i64 {
+    js_sys::Date::now() as i64
+}
+
+const TYPING_TTL_MS: i64 = 4000;
+const TYPING_SEND_INTERVAL_MS: i64 = 2500;
+
+/// Collapsed category ids, per device.
+const COLLAPSED_KEY: &str = "notdiscord_collapsed";
 const SESSION_KEY: &str = "nd_session";
 
 fn main() {
@@ -512,6 +524,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // Provided rather than passed: the renderer needs it several components
     // deep, in the middle of a message body.
     let mut emojis = use_context_provider(|| Signal::new(Vec::<shared::CustomEmoji>::new()));
+    let mut categories = use_signal(Vec::<shared::ChannelCategory>::new);
+    // user id -> (channel, name, expiry)
+    let mut typing = use_signal(std::collections::HashMap::<i64, (i64, String, i64)>::new);
+    let mut last_typing_sent = use_signal(|| 0i64);
+    // The server's own name, so the drawer says where you are rather than
+    // what the app is called.
+    let mut server_name = use_signal(String::new);
+    // Which groups this person keeps shut, remembered on this device only —
+    // it's a per-phone preference, not something the server should carry.
+    let mut collapsed = use_signal(|| {
+        gloo_storage::LocalStorage::get::<Vec<i64>>(COLLAPSED_KEY).unwrap_or_default()
+    });
     let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
     // Where a finger went down, so touchend can measure how far it travelled.
     let mut swipe_from = use_signal(|| None::<f64>);
@@ -651,7 +675,22 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             if let Ok(list) = api::emojis(&sess()).await {
                 emojis.set(list);
             }
+            categories.set(api::categories(&sess()).await);
+            if let Some(info) = api::server_info().await {
+                server_name.set(info.name);
+            }
         });
+    });
+
+    // Nobody sends a "stopped typing" event, so indicators expire on a timer.
+    use_future(move || async move {
+        loop {
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            let now = now_ms();
+            if typing.peek().values().any(|(_, _, expiry)| *expiry < now) {
+                typing.write().retain(|_, (_, _, expiry)| *expiry >= now);
+            }
+        }
     });
 
     // WebSocket: outgoing ClientEvents in, ServerEvents applied to signals.
@@ -706,6 +745,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         };
                         match event {
                             ServerEvent::MessageCreated { message } => {
+                                typing.write().remove(&message.author.id);
                                 if selected.peek().as_ref().map(|c| c.id) == Some(message.channel_id) {
                                     let (id, chan) = (message.id, message.channel_id);
                                     messages.write().push(message);
@@ -786,6 +826,33 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         voice_users.write().remove(&user.id);
                                     }
                                 }
+                            }
+                            ServerEvent::Typing { channel_id, user } => {
+                                // Your own keystrokes are not news to you.
+                                if user.id != sess().user.id {
+                                    typing.write().insert(
+                                        user.id,
+                                        (channel_id, user.username, now_ms() + TYPING_TTL_MS),
+                                    );
+                                }
+                            }
+                            ServerEvent::MessagePinChanged { message_id, pinned, .. } => {
+                                for list in messages.write().iter_mut() {
+                                    if list.id == message_id {
+                                        list.pinned = pinned;
+                                    }
+                                }
+                            }
+                            ServerEvent::ServerRenamed { name } => server_name.set(name),
+                            ServerEvent::Error { message } => status.set(message),
+                            // Stickers are a desktop feature; the phone has
+                            // nothing to update. Listed rather than left to
+                            // the catch-all so it reads as decided, not missed.
+                            ServerEvent::StickerCreated { .. } | ServerEvent::StickerDeleted { .. } => {}
+                            ServerEvent::CategoriesChanged => {
+                                spawn(async move {
+                                    categories.set(api::categories(&sess()).await);
+                                });
                             }
                             ServerEvent::EmojisChanged => {
                                 spawn(async move {
@@ -948,19 +1015,67 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             if drawer() {
                 div { class: "drawer-overlay", onclick: move |_| drawer.set(false) }
                 nav { class: "drawer",
-                    div { class: "drawer-head", "NotDiscord" }
-                    div { class: "drawer-section", "Channels" }
-                    for channel in channels().into_iter().filter(|c| c.kind == "text") {
-                        button {
-                            key: "{channel.id}",
-                            class: if selected().map(|c| c.id) == Some(channel.id) { "drawer-chan active" } else { "drawer-chan" },
-                            onclick: {
-                                let channel = channel.clone();
-                                move |_| open_channel(channel.clone())
-                            },
-                            span { class: "grow", "# {channel.name}" }
-                            if let Some(n) = unread().get(&channel.id).copied() {
-                                span { class: "unread-badge", "{n}" }
+                    div { class: "drawer-head",
+                        if server_name().is_empty() { "NotDiscord" } else { "{server_name}" }
+                    }
+                    // Ungrouped channels first, then each category — the
+                    // same order the desktop shows, so the two don't disagree
+                    // about where a channel lives.
+                    for group in std::iter::once(None).chain(categories().into_iter().map(Some)) {
+                        {
+                            let group_id = group.as_ref().map(|c: &shared::ChannelCategory| c.id);
+                            let in_group: Vec<Channel> = channels()
+                                .into_iter()
+                                .filter(|c| c.kind == "text" && c.category_id == group_id)
+                                .collect();
+                            let shut = group_id.is_some_and(|id| collapsed().contains(&id));
+                            rsx! {
+                                if let Some(category) = group.clone() {
+                                    {
+                                        let id = category.id;
+                                        // Bound with an explicit type: inline
+                                        // in the macro it infers String and
+                                        // Icon wants &'static str.
+                                        let chevron: &'static str =
+                                            if shut { "chevron-down" } else { "chevron-up" };
+                                        rsx! {
+                                            button {
+                                                class: "drawer-section drawer-group",
+                                                onclick: move |_| {
+                                                    let mut list = collapsed();
+                                                    match list.iter().position(|c| *c == id) {
+                                                        Some(at) => { list.remove(at); }
+                                                        None => list.push(id),
+                                                    }
+                                                    let _ = gloo_storage::LocalStorage::set(COLLAPSED_KEY, &list);
+                                                    collapsed.set(list);
+                                                },
+                                                span { class: "grow", "{category.name}" }
+                                                Icon { name: chevron, size: 12 }
+                                            }
+                                        }
+                                    }
+                                } else if !in_group.is_empty() {
+                                    div { class: "drawer-section", "Channels" }
+                                }
+                                // Shut hides the quiet ones. Anything unread,
+                                // or the channel you're in, stays put.
+                                for channel in in_group.into_iter().filter(|c| {
+                                    !shut || unread().contains_key(&c.id) || selected().map(|s| s.id) == Some(c.id)
+                                }) {
+                                    button {
+                                        key: "{channel.id}",
+                                        class: if selected().map(|c| c.id) == Some(channel.id) { "drawer-chan active" } else { "drawer-chan" },
+                                        onclick: {
+                                            let channel = channel.clone();
+                                            move |_| open_channel(channel.clone())
+                                        },
+                                        span { class: "grow", "# {channel.name}" }
+                                        if let Some(n) = unread().get(&channel.id).copied() {
+                                            span { class: "unread-badge", "{n}" }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1413,6 +1528,24 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     }
                 }
             }
+            {
+                let names: Vec<String> = typing()
+                    .values()
+                    .filter(|(channel_id, _, _)| Some(*channel_id) == selected().map(|c| c.id))
+                    .map(|(_, name, _)| name.clone())
+                    .collect();
+                let line = match names.as_slice() {
+                    [] => String::new(),
+                    [a] => format!("{a} is typing\u{2026}"),
+                    [a, b] => format!("{a} and {b} are typing\u{2026}"),
+                    _ => "several people are typing\u{2026}".into(),
+                };
+                rsx! {
+                    if !line.is_empty() {
+                        div { class: "typing-line", "{line}" }
+                    }
+                }
+            }
             footer { class: "composer",
                 label { class: "attach",
                     input {
@@ -1450,7 +1583,19 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     class: "draft",
                     placeholder: if tab() == "music" { "Paste a link to queue it" } else { "Message" },
                     value: "{draft}",
-                    oninput: move |e| draft.set(e.value()),
+                    oninput: move |e| {
+                        draft.set(e.value());
+                        // Throttled: one event every few seconds is enough to
+                        // hold the indicator up, and a phone keyboard fires a
+                        // lot of these.
+                        if let Some(channel) = selected() {
+                            let now = now_ms();
+                            if now - last_typing_sent() >= TYPING_SEND_INTERVAL_MS {
+                                last_typing_sent.set(now);
+                                ws.send(ClientEvent::Typing { channel_id: channel.id });
+                            }
+                        }
+                    },
                     onkeydown: move |e| {
                         if e.key() == Key::Enter {
                             send(());
@@ -1694,6 +1839,11 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
             div { class: "msg-head",
                 span { class: "msg-author", "{msg.author.username}" }
                 span { class: "msg-time", {format_time(msg.created_at)} }
+                // Pinning is a desktop action, but the phone should at least
+                // show which messages someone thought were worth keeping.
+                if msg.pinned {
+                    span { class: "msg-pinned", title: "pinned", "📌" }
+                }
                 span { class: "grow" }
                 button {
                     class: "msg-act",

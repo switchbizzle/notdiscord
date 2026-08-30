@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.84.0",
+    "date": "2026-08-30",
+    "changes": [
+      "📁 The phone groups channels the way the desktop does. Categories were shipped a while back and the web app was ignoring them entirely — tap a group to fold it, and which ones you keep shut is remembered on that phone. A folded group still shows anything unread",
+      "⌨️ Typing indicators on the phone, both ways: it shows who's typing and tells everyone else when you are",
+      "📌 Pinned messages are marked, the drawer shows the server's actual name (and notices when it's renamed), and errors from the server now appear instead of vanishing"
+    ]
+  },
+  {
     "version": "0.83.0",
     "date": "2026-08-30",
     "changes": [

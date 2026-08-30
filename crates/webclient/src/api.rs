@@ -104,6 +104,12 @@ pub async fn emojis(session: &Session) -> Result<Vec<shared::CustomEmoji>, Strin
     get(session, "emojis").await
 }
 
+/// The channel groups an admin set up on the desktop, so the phone's channel
+/// list is the same shape as everyone else's.
+pub async fn categories(session: &Session) -> Vec<shared::ChannelCategory> {
+    get(session, "categories").await.unwrap_or_default()
+}
+
 pub async fn unread(session: &Session) -> Result<Vec<shared::UnreadInfo>, String> {
     get(session, "unread").await
 }

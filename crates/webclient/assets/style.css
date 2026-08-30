@@ -411,3 +411,21 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
     height: 24px; width: auto; max-width: 88px;
     vertical-align: -6px; object-fit: contain;
 }
+
+/* A category heading is a button on the phone, so it needs to look tappable
+   without looking like a channel. Same type as the plain section labels. */
+.drawer-group {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    background: none; border: none; text-align: left; cursor: pointer;
+    font: inherit; letter-spacing: inherit;
+}
+.drawer-group .grow { flex: 1; }
+.drawer-group svg { opacity: 0.7; }
+.drawer-group:active { opacity: 0.6; }
+
+/* Who's typing, sat just above the composer where the desktop puts it. */
+.typing-line {
+    padding: 2px 14px 4px; font-size: 12px; color: #949ba4;
+    font-style: italic; flex: 0 0 auto;
+}
+.msg-pinned { font-size: 11px; opacity: 0.75; }
