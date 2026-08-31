@@ -66,19 +66,29 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
 .msg:not(.compact) { margin-top: 8px; }
 /* A message is now [avatar gutter][everything else], so consecutive messages
    from one person share a left edge and only the first is labelled. */
+/* One number for the action strip: what it may occupy, and what the message
+   body leaves clear for it. */
+:root { --msg-acts-w: 104px; }
 .msg { display: flex; gap: 10px; position: relative; }
 .msg-gutter { width: 30px; flex: 0 0 auto; }
 .msg-main {
     flex: 1; min-width: 0;
     display: flex; flex-direction: column; gap: 2px;
-    /* Room for the action strip, reserved on every message so a line wraps
-       in the same place whether or not it carries a header. */
-    padding-right: 82px;
+    /* Room for the action strip. Reserved on every message so a line wraps in
+       the same place whether or not it carries a header — and taken from the
+       same variable the strip is capped to, because guessing this number is
+       what put the icons on top of the text: 82px reserved against a strip
+       that is 111px wide when a message is your own and gains edit + trash. */
+    padding-right: var(--msg-acts-w);
 }
 .msg-acts {
     position: absolute; top: 0; right: 0;
     display: flex; align-items: center; gap: 2px;
+    max-width: var(--msg-acts-w);
 }
+/* Tighter than the desktop's: four of these have to fit a phone's width
+   without eating a third of every line. */
+.msg-acts .msg-act { padding: 0 3px; }
 .msg-head { display: flex; align-items: baseline; gap: 8px; }
 .msg-author { font-weight: 600; color: #f2f3f5; font-size: 14px; }
 .msg-time { font-size: 11px; color: #949ba4; }

@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.93.2",
+    "date": "2026-08-31",
+    "changes": [
+      "📱 Fixed the message buttons sitting on top of your own words on the phone (switchb). Your messages carry two more buttons than everyone else's — edit and delete — and the space set aside for them was measured for the shorter row"
+    ]
+  },
+  {
     "version": "0.93.1",
     "date": "2026-08-31",
     "changes": [
