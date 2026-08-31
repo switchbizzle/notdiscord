@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.86.0",
+    "date": "2026-08-30",
+    "changes": [
+      "👤 Avatars on the phone, and messages group the way they do on the desktop. Four messages in a row from one person used to repeat their name and the time four times; now it's one avatar, one name, and the rest of the run underneath it (switchb)"
+    ]
+  },
+  {
     "version": "0.85.0",
     "date": "2026-08-30",
     "changes": [

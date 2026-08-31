@@ -125,6 +125,21 @@ fn name_color(user_id: i64, members: &[UserStatus], tags: &[shared::Tag]) -> Str
         .unwrap_or_else(|| format!("hsl({}, 65%, 68%)", (user_id * 137) % 360))
 }
 
+/// Pair each message with whether it should render compactly: same author as
+/// the one before it, within five minutes. Identical rule to the desktop, so
+/// a conversation breaks into the same blocks on both.
+fn group_messages(messages: &[Message]) -> Vec<(Message, bool)> {
+    let mut out = Vec::with_capacity(messages.len());
+    for (i, msg) in messages.iter().enumerate() {
+        let compact = i > 0 && {
+            let prev = &messages[i - 1];
+            prev.author.id == msg.author.id && msg.created_at - prev.created_at < 5 * 60 * 1000
+        };
+        out.push((msg.clone(), compact));
+    }
+    out
+}
+
 fn now_ms() -> i64 {
     js_sys::Date::now() as i64
 }
@@ -1313,9 +1328,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
             } else {
                 main { class: "messages",
-                    // column-reverse pins the view to the newest message.
-                    for msg in messages().into_iter().rev() {
-                        MessageRow { key: "{msg.id}", msg, me_id, me_admin }
+                    // Grouped in reading order, then reversed: column-reverse
+                    // pins the view to the newest message.
+                    for (msg, compact) in group_messages(&messages()).into_iter().rev() {
+                        MessageRow { key: "{msg.id}", msg, compact, me_id, me_admin }
                     }
                     if has_more() {
                         button { class: "load-older", onclick: load_older, "Load older messages" }
@@ -1886,7 +1902,7 @@ fn LinkCard(url: String) -> Element {
 const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "🔥"];
 
 #[component]
-fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
+fn MessageRow(msg: Message, compact: bool, me_id: i64, me_admin: bool) -> Element {
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut replying = use_context::<Signal<Option<Message>>>();
     let mut lightbox = use_context::<Signal<Option<Lightbox>>>();
@@ -1936,30 +1952,46 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
     }
 
     rsx! {
-        div { class: "msg",
-            div { class: "msg-head",
-                {
-                    let colour = match (members_ctx, tags_ctx) {
-                        (Some(m), Some(t)) => name_color(msg.author.id, &m.read(), &t.read()),
-                        // No context is not worth a panic; the default colour
-                        // is perfectly readable.
-                        _ => String::new(),
-                    };
-                    rsx! {
-                        span {
-                            class: "msg-author",
-                            style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
-                            "{msg.author.username}"
+        div { class: if compact { "msg compact" } else { "msg" },
+            // The gutter holds the avatar on the first message of a block and
+            // stays empty (but present) on the rest, so every line in a block
+            // shares one left edge.
+            div { class: "msg-gutter",
+                if !compact {
+                    Avatar { user: msg.author.clone() }
+                }
+            }
+            div { class: "msg-main",
+            // Only the first message of a block names its author; the rest
+            // are plainly hers by position.
+            if !compact {
+                div { class: "msg-head",
+                    {
+                        let colour = match (members_ctx, tags_ctx) {
+                            (Some(m), Some(t)) => name_color(msg.author.id, &m.read(), &t.read()),
+                            // No context is not worth a panic; the default
+                            // colour is perfectly readable.
+                            _ => String::new(),
+                        };
+                        rsx! {
+                            span {
+                                class: "msg-author",
+                                style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                "{msg.author.username}"
+                            }
                         }
                     }
+                    span { class: "msg-time", {format_time(msg.created_at)} }
                 }
-                span { class: "msg-time", {format_time(msg.created_at)} }
+            }
+            // Lifted out of the header row: a compact message has no header,
+            // and the controls still have to be reachable.
+            div { class: "msg-acts",
                 // Pinning is a desktop action, but the phone should at least
                 // show which messages someone thought were worth keeping.
                 if msg.pinned {
                     span { class: "msg-pinned", title: "pinned", "📌" }
                 }
-                span { class: "grow" }
                 button {
                     class: "msg-act",
                     onclick: move |_| strip_open.set(!strip_open()),
@@ -2107,6 +2139,7 @@ fn MessageRow(msg: Message, me_id: i64, me_admin: bool) -> Element {
                         }
                     }
                 }
+            }
             }
         }
     }
