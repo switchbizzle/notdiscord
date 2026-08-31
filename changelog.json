@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.7",
+    "date": "2026-08-31",
+    "changes": [
+      "🔇 Push to mute (switchb). On open mic, hold a key and you go silent — push-to-talk backwards, for coughs, side conversations and whoever's at the door. Settings → Voice, with its own bindable key (F10 by default), and the voice bar turns red while you're holding it so silence never looks like a dead mic",
+      "It only appears on open mic, because in push-to-talk letting go already does it. If you bind it to the key push-to-talk is using, it says so"
+    ]
+  },
+  {
     "version": "0.94.6",
     "date": "2026-08-31",
     "changes": [

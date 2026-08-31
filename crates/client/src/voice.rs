@@ -46,6 +46,8 @@ pub struct VoiceStatus {
     pub camera_self: bool,
     /// Push-to-talk mode is active and the key is currently held.
     pub ptt_held: bool,
+    /// Push-to-mute is on and its key is currently held, so we are silent.
+    pub ptm_held: bool,
     pub participants: Vec<VoiceParticipant>,
     /// Playback volume per identity (1.0 = 100%).
     pub volumes: HashMap<String, f32>,
@@ -106,6 +108,8 @@ pub enum VoiceCmd {
     ToggleDeafen,
     /// mode: "vad" | "ptt"; key: device_query Keycode name.
     SetVoiceMode { mode: String, key: String },
+    /// Hold-to-go-quiet on open mic. key: device_query Keycode name.
+    SetPushToMute { enabled: bool, key: String },
     /// Voice-activity gate threshold (RMS, 0 = always transmit).
     SetVadThreshold(f32),
     StartScreenShare { target: crate::share::ShareTarget },
@@ -130,6 +134,15 @@ pub fn parse_ptt_key(name: &str) -> device_query::Keycode {
         "LAlt" => LAlt,
         _ => F9,
     }
+}
+
+/// Whether the poller should be watching the push-to-mute key this tick.
+///
+/// Push-to-mute is an open-mic feature. In push-to-talk, letting go of the
+/// talk key already produces silence, so a second key that also produces
+/// silence is at best redundant and at worst two keys fighting over one mic.
+fn watch_mute_key(ptt_mode: bool, ptm_enabled: bool) -> bool {
+    ptm_enabled && !ptt_mode
 }
 
 pub const PTT_KEY_CHOICES: &[&str] = &[
@@ -581,6 +594,9 @@ struct ActiveCall {
     vad_threshold: Arc<AtomicU32>,
     /// The configured PTT key, read by the polling thread each tick.
     ptt_key: Arc<Mutex<device_query::Keycode>>,
+    /// Push-to-mute, read by the same polling thread.
+    ptm_enabled: Arc<AtomicBool>,
+    ptm_key: Arc<Mutex<device_query::Keycode>>,
     /// Dropping ends the PTT polling thread.
     _ptt_stop: std_mpsc::Sender<()>,
     /// Active screen capture + its published track sid.
@@ -1172,6 +1188,16 @@ pub async fn voice_task(
                 settings.ptt_key = key;
                 crate::api::save_settings(&settings);
             }
+            VoiceCmd::SetPushToMute { enabled, key } => {
+                if let Some(active) = &call {
+                    active.ptm_enabled.store(enabled, Ordering::Relaxed);
+                    *active.ptm_key.lock().unwrap() = parse_ptt_key(&key);
+                }
+                let mut settings = crate::api::load_settings();
+                settings.push_to_mute = enabled;
+                settings.ptm_key = key;
+                crate::api::save_settings(&settings);
+            }
             VoiceCmd::SetVadThreshold(threshold) => {
                 let threshold = threshold.clamp(0.0, 32768.0);
                 if let Some(active) = &call {
@@ -1315,15 +1341,23 @@ async fn connect(
     let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
     let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
     let ptt_active = Arc::new(AtomicBool::new(false));
+    let ptm_enabled = Arc::new(AtomicBool::new(settings.push_to_mute));
+    let ptm_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptm_key)));
+    let ptm_active = Arc::new(AtomicBool::new(false));
     let vad_threshold = Arc::new(AtomicU32::new(settings.vad_threshold.clamp(0.0, 32768.0).to_bits()));
 
     // PTT key poller: 30ms ticks, no global hotkey registration, so the key
     // keeps working in other apps and is never swallowed system-wide.
+    // Push-to-mute rides the same tick — one read of the keyboard covers
+    // both, and they can never disagree about what is currently held.
     let (ptt_stop_tx, ptt_stop_rx) = std_mpsc::channel::<()>();
     {
         let key = ptt_key.clone();
         let active = ptt_active.clone();
         let mode = ptt_mode.clone();
+        let mute_key = ptm_key.clone();
+        let mute_on = ptm_enabled.clone();
+        let mute_active = ptm_active.clone();
         let mut ptt_status = status;
         std::thread::spawn(move || {
             use device_query::DeviceQuery;
@@ -1333,15 +1367,26 @@ async fn connect(
                     Err(std_mpsc::RecvTimeoutError::Timeout) => {}
                     _ => break,
                 }
-                let held = if mode.load(Ordering::Relaxed) {
-                    let target = *key.lock().unwrap();
-                    device.get_keys().contains(&target)
-                } else {
-                    false
-                };
-                let prev = active.swap(held, Ordering::Relaxed);
-                if prev != held {
+                let ptt = mode.load(Ordering::Relaxed);
+                let want_mute = watch_mute_key(ptt, mute_on.load(Ordering::Relaxed));
+                if !ptt && !want_mute {
+                    // Nothing to watch — don't wake the keyboard at all.
+                    if active.swap(false, Ordering::Relaxed) {
+                        ptt_status.write().ptt_held = false;
+                    }
+                    if mute_active.swap(false, Ordering::Relaxed) {
+                        ptt_status.write().ptm_held = false;
+                    }
+                    continue;
+                }
+                let keys = device.get_keys();
+                let held = ptt && keys.contains(&*key.lock().unwrap());
+                let muting = want_mute && keys.contains(&*mute_key.lock().unwrap());
+                if active.swap(held, Ordering::Relaxed) != held {
                     ptt_status.write().ptt_held = held;
+                }
+                if mute_active.swap(muting, Ordering::Relaxed) != muting {
+                    ptt_status.write().ptm_held = muting;
                 }
             }
         });
@@ -1353,6 +1398,7 @@ async fn connect(
     let pump_agc = agc_enabled.clone();
     let pump_ptt_mode = ptt_mode.clone();
     let pump_ptt_active = ptt_active.clone();
+    let pump_ptm_active = ptm_active.clone();
     let pump_vad = vad_threshold.clone();
     tokio::spawn(async move {
         const METER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -1442,7 +1488,9 @@ async fn connect(
                 } else {
                     vad_open
                 };
-                let transmitting = !muted && gate_open;
+                // Holding the mute key wins over anything the gate thinks.
+                let transmitting =
+                    !muted && gate_open && !pump_ptm_active.load(Ordering::Relaxed);
 
                 // In PTT mode with the key up, send nothing at all.
                 if !transmitting {
@@ -1604,6 +1652,8 @@ async fn connect(
         ptt_mode,
         vad_threshold,
         ptt_key,
+        ptm_enabled,
+        ptm_key,
         _ptt_stop: ptt_stop_tx,
         share: None,
         camera: None,
@@ -1844,3 +1894,20 @@ fn spawn_playback(
     stop_tx
 }
 
+
+#[cfg(test)]
+mod push_to_mute_tests {
+    use super::*;
+
+    #[test]
+    fn push_to_mute_only_applies_to_open_mic() {
+        // On open mic it does the work it exists for.
+        assert!(watch_mute_key(false, true));
+        // In push-to-talk, releasing the talk key is already the mute, so a
+        // second silencing key would just be two things fighting over one mic.
+        assert!(!watch_mute_key(true, true));
+        // Off is off, either way.
+        assert!(!watch_mute_key(false, false));
+        assert!(!watch_mute_key(true, false));
+    }
+}

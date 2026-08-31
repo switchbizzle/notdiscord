@@ -2675,6 +2675,48 @@ fn MainView(session: api::Session) -> Element {
                                             "transmits only while the bar crosses the marker"
                                         }
                                     }
+                                    // Push-to-talk inverted: only offered on
+                                    // open mic, since letting go of the PTT
+                                    // key already does exactly this.
+                                    label { class: "ns-toggle-row",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: audio_settings().push_to_mute,
+                                            onchange: move |e| {
+                                                let enabled = e.checked();
+                                                audio_settings.write().push_to_mute = enabled;
+                                                voice.send(voice::VoiceCmd::SetPushToMute {
+                                                    enabled,
+                                                    key: audio_settings().ptm_key,
+                                                });
+                                            },
+                                        }
+                                        " Push to mute — hold a key to go quiet"
+                                    }
+                                    if audio_settings().push_to_mute {
+                                        label { "Push-to-mute key (works while in game)" }
+                                        select {
+                                            onchange: move |e| {
+                                                let key = e.value();
+                                                audio_settings.write().ptm_key = key.clone();
+                                                voice.send(voice::VoiceCmd::SetPushToMute { enabled: true, key });
+                                            },
+                                            for key in voice::PTT_KEY_CHOICES {
+                                                option {
+                                                    value: "{key}",
+                                                    selected: audio_settings().ptm_key == *key,
+                                                    "{key}"
+                                                }
+                                            }
+                                        }
+                                        div { class: "settings-hint",
+                                            if audio_settings().ptm_key == audio_settings().ptt_key {
+                                                "that's your push-to-talk key too — pick another"
+                                            } else {
+                                                "hold it and nobody hears you, however loud the room gets"
+                                            }
+                                        }
+                                    }
                                 }
                                 if audio_settings().voice_mode == "ptt" {
                                     label { "Push-to-talk key (works while in game)" }
@@ -4670,6 +4712,17 @@ fn MainView(session: api::Session) -> Element {
                                         "transmitting — {audio_settings().ptt_key}"
                                     } else {
                                         "hold {audio_settings().ptt_key} to talk"
+                                    }
+                                }
+                            } else if audio_settings().push_to_mute {
+                                // Say it out loud while held: silence looks
+                                // identical to a broken mic otherwise.
+                                div {
+                                    class: if voice_status().ptm_held { "ptt-hint muted" } else { "ptt-hint" },
+                                    if voice_status().ptm_held {
+                                        "muted — holding {audio_settings().ptm_key}"
+                                    } else {
+                                        "hold {audio_settings().ptm_key} to mute"
                                     }
                                 }
                             }

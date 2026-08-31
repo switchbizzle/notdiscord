@@ -297,6 +297,8 @@ button.sidebar-title:hover { background: #35373c; }
     margin-top: 4px;
 }
 .ptt-hint.held { color: #fff; background: rgba(35, 165, 90, 0.25); }
+/* Red rather than green: this one means you are NOT being heard. */
+.ptt-hint.muted { color: #fff; background: rgba(242, 63, 67, 0.25); }
 .whatsnew-modal { width: 480px; }
 .whatsnew-head { padding: 18px 20px 12px; border-bottom: 1px solid #1a1b1e; }
 .whatsnew-title { color: #fff; font-size: 20px; font-weight: 700; }
