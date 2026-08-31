@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.8",
+    "date": "2026-08-31",
+    "changes": [
+      "🔇 The mute key is a toggle, not a hold (switchb). Yesterday's version made you hold it down like push-to-talk; press it once now and you're muted, press it again and you're back. Settings → Voice → \"Mute hotkey\", F10 by default, and it works while you're in a game",
+      "It presses the same button the mic icon does rather than reaching into the microphone itself, so the icon and the mic can't end up disagreeing about whether you're muted. While you are, the voice bar says which key brings you back — useful when you muted from inside a game and can't remember"
+    ]
+  },
+  {
     "version": "0.94.7",
     "date": "2026-08-31",
     "changes": [

@@ -365,14 +365,14 @@ pub struct Settings {
     /// Push-to-talk key name (device_query Keycode).
     #[serde(default = "default_ptt_key")]
     pub ptt_key: String,
-    /// Hold a key to go quiet while on open mic — push-to-talk inverted, for
-    /// coughs, side conversations and the dog. Only means anything in open
-    /// mic mode; in push-to-talk, letting go already does it.
+    /// A key that toggles mute from anywhere, game included — press once to
+    /// go quiet, again to come back. Not a hold: it flips the same mute the
+    /// mic button does, and stays flipped.
     #[serde(default)]
-    pub push_to_mute: bool,
-    /// The key that mutes while held (device_query Keycode).
-    #[serde(default = "default_ptm_key")]
-    pub ptm_key: String,
+    pub mute_hotkey: bool,
+    /// The key that toggles mute (device_query Keycode).
+    #[serde(default = "default_mute_key")]
+    pub mute_key: String,
     /// Play the notification sound on pings.
     #[serde(default = "yes")]
     pub notification_sounds: bool,
@@ -404,9 +404,9 @@ fn default_ptt_key() -> String {
     "F9".into()
 }
 
-/// Deliberately not F9: pick a different default so turning push-to-mute on
-/// while in push-to-talk mode can't bind both jobs to one key.
-fn default_ptm_key() -> String {
+/// Deliberately not F9: a different default from push-to-talk, so turning
+/// the mute hotkey on can never bind both jobs to one key.
+fn default_mute_key() -> String {
     "F10".into()
 }
 
@@ -478,7 +478,7 @@ pub fn load_settings() -> Settings {
             auto_gain: true,
             voice_mode: vad(),
             ptt_key: default_ptt_key(),
-            ptm_key: default_ptm_key(),
+            mute_key: default_mute_key(),
             vad_threshold: default_vad_threshold(),
             notification_sounds: true,
             ping_toasts: true,
