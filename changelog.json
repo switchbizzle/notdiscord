@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.5",
+    "date": "2026-08-31",
+    "changes": [
+      "🗕️ You choose what the X button does. Settings → App → \"Closing the window hides to the tray\" — on, and NotDiscord keeps running in the tray the way it always has; off, and X quits it properly (Jon). Takes effect straight away, no restart",
+      "⌄ And a dedicated hide-to-tray button next to Log out, so you can put it away in one click no matter which way that setting is pointed"
+    ]
+  },
+  {
     "version": "0.94.4",
     "date": "2026-08-31",
     "changes": [

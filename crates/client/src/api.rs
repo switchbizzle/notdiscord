@@ -371,6 +371,11 @@ pub struct Settings {
     /// Pop a toast for @mentions and DMs you aren't currently reading.
     #[serde(default = "yes")]
     pub ping_toasts: bool,
+    /// Whether closing the window hides to the tray instead of quitting.
+    /// On by default, which is how it has always behaved; the tray's Quit
+    /// and the chevron button mean neither choice traps you.
+    #[serde(default = "yes")]
+    pub close_to_tray: bool,
     /// Last client version whose changelog the user has seen.
     #[serde(default)]
     pub last_seen_version: Option<String>,
@@ -463,6 +468,7 @@ pub fn load_settings() -> Settings {
             notification_sounds: true,
             ping_toasts: true,
             voice_join_sounds: true,
+            close_to_tray: true,
             ..Default::default()
         })
 }

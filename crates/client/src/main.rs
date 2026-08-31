@@ -194,8 +194,10 @@ fn main() {
                             .unwrap(),
                     }
                 })
-                // X hides to the system tray; the tray menu's Quit exits.
-                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
+                // What X does is a setting (Settings → App). Read here as
+                // well as in the effect that tracks it, so the very first
+                // close obeys the choice rather than the default.
+                .with_close_behaviour(close_behaviour(api::load_settings().close_to_tray)),
         )
         .launch(App);
 }
@@ -1320,6 +1322,13 @@ fn MainView(session: api::Session) -> Element {
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
+    // Keep the X button in step with the setting, without a restart.
+    {
+        let window = use_window().clone();
+        use_effect(move || {
+            window.set_close_behavior(close_behaviour(audio_settings().close_to_tray));
+        });
+    }
     let mut input_devices = use_signal(Vec::<String>::new);
     let mut output_devices = use_signal(Vec::<String>::new);
 
@@ -2786,6 +2795,25 @@ fn MainView(session: api::Session) -> Element {
                                         },
                                     }
                                     " Popup for mentions and DMs"
+                                }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().close_to_tray,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.close_to_tray = e.checked();
+                                            api::save_settings(&s);
+                                        },
+                                    }
+                                    " Closing the window hides to the tray"
+                                }
+                                div { class: "settings-hint",
+                                    if audio_settings().close_to_tray {
+                                        "X keeps NotDiscord running in the tray. Quit from the tray icon, or turn this off to make X exit."
+                                    } else {
+                                        "X quits NotDiscord. The ⌄ button next to Log out still hides it to the tray."
+                                    }
                                 }
                                 button {
                                     class: "profile-btn",
@@ -4839,6 +4867,17 @@ fn MainView(session: api::Session) -> Element {
                             onclick: move |_| open_settings("voice"),
                             Icon { name: "settings", size: 16 }
                         }
+                        // Send to tray on purpose, whatever X is set to do —
+                        // Jon wanted one dedicated click for it (and with
+                        // "close quits" on, this is the only way there).
+                        button {
+                            class: "logout",
+                            title: "Hide to system tray",
+                            onclick: move |_| {
+                                use_window().set_visible(false);
+                            },
+                            Icon { name: "chevron-down", size: 16 }
+                        }
                         button { class: "logout", title: "Log out", onclick: logout, Icon { name: "power", size: 16 } }
                     }
                 }
@@ -6303,6 +6342,16 @@ fn PlayerCard(data: String) -> Element {
                 Icon { name: "stop", size: 16 }
             }
         }
+    }
+}
+
+/// What the window's X button does, from the setting.
+fn close_behaviour(to_tray: bool) -> dioxus::desktop::WindowCloseBehaviour {
+    use dioxus::desktop::WindowCloseBehaviour::{WindowCloses, WindowHides};
+    if to_tray {
+        WindowHides
+    } else {
+        WindowCloses
     }
 }
 
