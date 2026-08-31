@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.94.6",
+    "date": "2026-08-31",
+    "changes": [
+      "⬇️ The hide-to-tray button is findable now. It was a bare chevron — three strokes of ink sat between a gear and a power symbol, which read as a divider rather than a button, and switchb went looking for it and couldn't see it. It's an arrow landing on a shelf instead"
+    ]
+  },
+  {
     "version": "0.94.5",
     "date": "2026-08-31",
     "changes": [

@@ -4870,13 +4870,17 @@ fn MainView(session: api::Session) -> Element {
                         // Send to tray on purpose, whatever X is set to do —
                         // Jon wanted one dedicated click for it (and with
                         // "close quits" on, this is the only way there).
+                        // A bare chevron was three strokes of ink between a
+                        // gear and a power ring, and read as a divider rather
+                        // than a button; an arrow landing on a shelf says
+                        // what it does and can actually be found.
                         button {
                             class: "logout",
                             title: "Hide to system tray",
                             onclick: move |_| {
                                 use_window().set_visible(false);
                             },
-                            Icon { name: "chevron-down", size: 16 }
+                            Icon { name: "tray-down", size: 16 }
                         }
                         button { class: "logout", title: "Log out", onclick: logout, Icon { name: "power", size: 16 } }
                     }
