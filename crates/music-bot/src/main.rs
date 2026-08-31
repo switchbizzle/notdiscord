@@ -50,6 +50,13 @@ struct Track {
     /// SoundCloud upload we end up playing shouldn't rename it.
     #[serde(default)]
     meta_locked: bool,
+    /// True when the title was invented from the URL because the playlist
+    /// listing didn't carry one. SoundCloud sets return no titles at all in
+    /// flat mode, and for some listings the URL is a numeric API link, so the
+    /// invented name comes out as a row of digits. These get looked up
+    /// properly in the background.
+    #[serde(skip)]
+    title_guessed: bool,
 }
 
 fn next_track_id() -> u64 {
@@ -279,6 +286,8 @@ async fn play(
     match guard.as_mut() {
         Some(session) if session.room_name == req.room => {
             session.queue.extend(tracks);
+            drop(guard);
+            tokio::spawn(backfill_titles(state.clone()));
             Ok(Json(PlayResponse { queued, started: false }))
         }
         Some(session) => Err((
@@ -299,6 +308,7 @@ async fn play(
                 controls: controls.clone(),
             });
             drop(guard);
+            tokio::spawn(backfill_titles(state.clone()));
             let state = state.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_session(state.clone(), req, controls).await {
@@ -455,6 +465,92 @@ async fn queue_clear(State(state): State<Shared>) -> StatusCode {
 
 // ---------- Track resolution (yt-dlp) ----------
 
+/// How many tracks to look up in one yt-dlp invocation. One process for the
+/// batch is far cheaper than one per track, but a huge argument list is its
+/// own problem and a smaller chunk means titles land sooner.
+const TITLE_BATCH: usize = 12;
+
+/// Fill in the titles the playlist listing didn't give us.
+///
+/// `--flat-playlist` is what makes queueing a hundred-track set instant, and
+/// SoundCloud sets return no titles at all in that mode — so the queue fills
+/// with names invented from the URL, which for some listings is a bare
+/// numeric API link and reads as a row of digits (switchb). Playback fixes
+/// each title as it reaches it, so only the waiting ones look wrong; this
+/// walks the queue in the background and asks yt-dlp what they are actually
+/// called.
+async fn backfill_titles(state: Shared) {
+    loop {
+        // Collect under the lock, look up without it: yt-dlp takes seconds
+        // and nothing else could touch the queue meanwhile.
+        let batch: Vec<(u64, String)> = {
+            let guard = state.session.lock().unwrap();
+            let Some(session) = guard.as_ref() else { return };
+            session
+                .queue
+                .iter()
+                .filter(|t| t.title_guessed && !t.url.starts_with(SEARCH_PREFIX))
+                .take(TITLE_BATCH)
+                .map(|t| (t.id, t.url.clone()))
+                .collect()
+        };
+        if batch.is_empty() {
+            return;
+        }
+
+        let cmd = ytdlp_cmd();
+        let output = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .args(["-j", "--no-warnings", "--skip-download"])
+            .args(batch.iter().map(|(_, url)| url.as_str()))
+            .stdin(Stdio::null())
+            .output()
+            .await;
+        let Ok(output) = output else { return };
+
+        // One JSON object per line, in no guaranteed order, and a track that
+        // fails simply produces no line — so match on the URL rather than
+        // assuming the batch comes back whole.
+        let mut found: Vec<(String, String, Option<f64>)> = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Ok(info) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let Some(title) = info["title"].as_str().filter(|t| !t.is_empty()) else { continue };
+            // original_url is what we asked for; webpage_url is where the
+            // track actually lives. For a numeric API link those differ, and
+            // matching on webpage_url would miss every one of them — which is
+            // precisely the case this whole function exists to fix.
+            let url = info["original_url"]
+                .as_str()
+                .or(info["webpage_url"].as_str())
+                .unwrap_or_default()
+                .to_owned();
+            found.push((url, title.to_owned(), info["duration"].as_f64()));
+        }
+
+        {
+            let mut guard = state.session.lock().unwrap();
+            let Some(session) = guard.as_mut() else { return };
+            for (id, url) in &batch {
+                let Some(track) = session.queue.iter_mut().find(|t| t.id == *id) else { continue };
+                // It may have been played, moved or removed while we asked.
+                if !track.title_guessed {
+                    continue;
+                }
+                match found.iter().find(|(u, ..)| u == url) {
+                    Some((_, title, duration)) => {
+                        track.title = title.clone();
+                        track.duration = track.duration.or(*duration);
+                        track.title_guessed = false;
+                    }
+                    // Asked and got nothing: clear the flag anyway, or the
+                    // loop would ask about this track forever.
+                    None => track.title_guessed = false,
+                }
+            }
+        }
+    }
+}
+
 /// Expand a page URL into one or more playable tracks (flat, fast).
 async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -476,9 +572,9 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
     if let Some(entries) = info["entries"].as_array() {
         for entry in entries {
             let Some(track_url) = entry["url"].as_str().or(entry["webpage_url"].as_str()) else { continue };
-            let title = entry["title"]
-                .as_str()
-                .filter(|t| !t.is_empty())
+            let listed = entry["title"].as_str().filter(|t| !t.is_empty());
+            let guessed = listed.is_none();
+            let title = listed
                 .map(str::to_owned)
                 .unwrap_or_else(|| slug_title(track_url));
             tracks.push(Track {
@@ -489,6 +585,7 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
                 art: best_thumbnail(entry),
                 duration: entry["duration"].as_f64(),
                 meta_locked: false,
+                title_guessed: guessed,
             });
         }
     } else {
@@ -500,6 +597,7 @@ async fn resolve_tracks(url: &str) -> anyhow::Result<Vec<Track>> {
             art: best_thumbnail(&info),
             duration: info["duration"].as_f64(),
             meta_locked: false,
+            title_guessed: false,
         });
     }
     Ok(tracks)
@@ -518,6 +616,7 @@ fn planned_to_track(planned: &PlannedTrack) -> Track {
         art: planned.art.clone(),
         duration: planned.duration,
         meta_locked: true,
+        title_guessed: false,
     }
 }
 
@@ -897,6 +996,7 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
                     art: if track.meta_locked { track.art.clone().or(resolved.art) } else { resolved.art.or(track.art.clone()) },
                     duration: resolved.duration.or(track.duration),
                     meta_locked: track.meta_locked,
+                    title_guessed: false,
                 };
                 let announce = playing.title.clone();
                 controls.position_ms.store(0, Ordering::Relaxed);
@@ -1049,6 +1149,7 @@ mod tests {
             art: None,
             duration: None,
             meta_locked: false,
+            title_guessed: false,
         }
     }
 
@@ -1214,6 +1315,83 @@ mod tests {
         // Spotify knew the title; whatever upload wins must not rename it.
         assert!(track.meta_locked);
         assert_eq!(track.title, "Strobe");
+    }
+
+    /// Hits SoundCloud, so it is ignored by default like the search test.
+    /// Run with: cargo test -p music-bot -- --ignored backfill --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn backfill_replaces_the_names_invented_from_urls() {
+        // The shape switchb hit: a listing whose entries are numeric API
+        // links, so the invented name is a row of digits.
+        let api_urls = [
+            "https://api.soundcloud.com/tracks/soundcloud%3Atracks%3A417474360",
+            "https://api.soundcloud.com/tracks/soundcloud%3Atracks%3A1250206453",
+        ];
+        let queue: VecDeque<Track> = api_urls
+            .iter()
+            .enumerate()
+            .map(|(i, url)| Track {
+                id: i as u64 + 1,
+                url: (*url).to_owned(),
+                title: slug_title(url),
+                artist: String::new(),
+                art: None,
+                duration: None,
+                meta_locked: false,
+                title_guessed: true,
+            })
+            .collect();
+        let before: Vec<String> = queue.iter().map(|t| t.title.clone()).collect();
+        println!("invented from the URL: {before:?}");
+
+        let state: Shared = Arc::new(AppState {
+            session: Mutex::new(Some(Session {
+                room_name: "test".into(),
+                queue,
+                now_playing: None,
+                controls: Arc::new(Controls {
+                    skip: AtomicBool::new(false),
+                    stop: AtomicBool::new(false),
+                    paused: AtomicBool::new(false),
+                    position_ms: std::sync::atomic::AtomicU64::new(0),
+                }),
+            })),
+        });
+
+        backfill_titles(state.clone()).await;
+
+        let after = state.session.lock().unwrap().as_ref().unwrap().queue.clone();
+        let titles: Vec<String> = after.iter().map(|t| t.title.clone()).collect();
+        println!("looked up            : {titles:?}");
+        assert_eq!(titles.len(), before.len(), "no track lost along the way");
+        assert!(
+            after.iter().all(|t| !t.title_guessed),
+            "nothing still flagged, or the loop would keep asking about it"
+        );
+        assert_ne!(titles, before, "the invented names should have been replaced");
+        for t in &titles {
+            assert!(t.len() > 3, "still looks invented: {t:?}");
+            assert!(
+                !t.chars().all(|c| c.is_ascii_digit() || c == '%' || c.is_alphabetic() && t.contains('%')),
+                "still URL junk: {t:?}"
+            );
+        }
+    }
+
+    /// A SoundCloud set gives no titles at all in flat mode — the reason the
+    /// backfill has to exist.
+    #[tokio::test]
+    #[ignore]
+    async fn a_soundcloud_set_lists_no_titles_at_all() {
+        let tracks = resolve_tracks("https://soundcloud.com/deedecollective/sets/episode-6-single-tracks")
+            .await
+            .expect("playlist resolves");
+        assert!(!tracks.is_empty());
+        assert!(
+            tracks.iter().all(|t| t.title_guessed),
+            "every entry should be flagged, since flat mode gives none"
+        );
     }
 
     /// Hits SoundCloud, so it stays out of the normal run:

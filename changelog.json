@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.87.1",
+    "date": "2026-08-31",
+    "changes": [
+      "🎵 Queued songs show their real names. A SoundCloud playlist doesn't tell us any titles up front, so the queue filled with names invented from the link — and for some playlists the link is a bare id, which is why most of the queue read as a row of digits (switchb). The bot now looks the names up in the background while the first song plays"
+    ]
+  },
+  {
     "version": "0.87.0",
     "date": "2026-08-31",
     "changes": [
