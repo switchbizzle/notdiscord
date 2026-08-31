@@ -3764,6 +3764,31 @@ fn MainView(session: api::Session) -> Element {
                                                                 div { class: "srv-hint", "GB cap — uploads are refused past it" }
                                                             }
                                                         }
+                                                        div { class: "srv-field",
+                                                            div { class: "srv-label", "Biggest single file" }
+                                                            div { class: "srv-inline",
+                                                                input {
+                                                                    class: "srv-input narrow",
+                                                                    r#type: "number",
+                                                                    min: "1",
+                                                                    max: "512",
+                                                                    value: "{info.upload_max_mb}",
+                                                                    onchange: move |e| {
+                                                                        let Ok(mb) = e.value().parse::<i64>() else { return };
+                                                                        spawn(async move {
+                                                                            match api::set_upload_limit(&session(), mb).await {
+                                                                                Ok(updated) => storage_info.set(Some(updated)),
+                                                                                Err(e) => status.set(e),
+                                                                            }
+                                                                        });
+                                                                    },
+                                                                }
+                                                                div { class: "srv-hint", "MB per upload (1–512)" }
+                                                            }
+                                                            div { class: "srv-hint",
+                                                                "An upload is held in memory while it's received, so a big                                                                  limit costs RAM when several land at once."
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }

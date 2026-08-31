@@ -199,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
         ("name", || "NotDiscord".to_string()),
         ("upload_retention_days", || "21".to_string()),
         ("storage_cap_gb", || "30".to_string()),
+        ("upload_max_mb", || "64".to_string()),
         // Seeded from the env var once; after that admins manage it in-app.
         ("invite_code", || std::env::var("NOTDISCORD_INVITE").unwrap_or_default()),
     ];
@@ -282,7 +283,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/dms", post(routes::create_dm))
         .route(
             "/api/upload",
-            post(routes::upload).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+            // The limit is enforced inside the handler instead, so an admin
+            // can change it without restarting the server. A fixed layer here
+            // could only ever be the value this process started with.
+            post(routes::upload).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/api/gifs", get(routes::gifs))
         .route("/api/categories", get(routes::list_categories).post(routes::create_category))
@@ -307,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/server/name", post(routes::rename_server))
         .route("/api/server/retention", get(routes::get_retention).post(routes::set_retention))
         .route("/api/server/storage", get(routes::get_storage).post(routes::set_storage_cap))
+        .route("/api/server/upload-limit", post(routes::set_upload_limit))
         .route("/api/server/stats", get(routes::get_stats))
         .route("/api/server/invite", get(routes::get_invite).post(routes::set_invite))
         .route("/api/server/bot", get(routes::get_bot_settings).post(routes::set_bot_settings))

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.91.0",
+    "date": "2026-08-31",
+    "changes": [
+      "📎 The upload size limit is a setting now (switchb). It was 64 MB because that's what somebody typed once — it's in Server settings next to the storage cap, anywhere from 1 to 512 MB, and it takes effect straight away without restarting anything",
+      "Going over it now says what the limit is and that an admin can raise it, instead of the request just dying"
+    ]
+  },
+  {
     "version": "0.90.0",
     "date": "2026-08-31",
     "changes": [

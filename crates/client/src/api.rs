@@ -244,6 +244,16 @@ pub async fn set_storage_cap(session: &Session, cap_gb: i64) -> Result<shared::S
     handle(resp).await
 }
 
+/// Biggest single file anyone may upload, in MB.
+pub async fn set_upload_limit(session: &Session, upload_max_mb: i64) -> Result<shared::StorageInfo, String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/server/upload-limit", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::UploadLimitSetting { upload_max_mb }))
+        .await?;
+    handle(resp).await
+}
+
 /// The server's card for a link, or None when it hasn't got one. Failures are
 /// silent: a missing preview just means no card, never an error in the UI.
 pub async fn link_preview(session: &Session, url: &str) -> Option<shared::LinkPreview> {

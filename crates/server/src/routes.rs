@@ -1118,8 +1118,19 @@ pub async fn upload(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
     Query(q): Query<UploadQuery>,
-    body: Bytes,
+    body: axum::body::Body,
 ) -> ApiResult<Json<UploadResponse>> {
+    // Collected here rather than by a fixed layer, so the limit an admin sets
+    // applies immediately. to_bytes stops AT the limit, so an oversized file
+    // is refused without being held in memory first.
+    let max_mb = upload_max_mb(&state).await;
+    let limit = (max_mb as usize).saturating_mul(1024 * 1024);
+    let body = axum::body::to_bytes(body, limit).await.map_err(|_| {
+        err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("that file is over the {max_mb} MB limit — an admin can raise it in Settings → Server"),
+        )
+    })?;
     if body.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "empty upload"));
     }
@@ -1906,7 +1917,11 @@ pub async fn get_storage(
         return Err(err(StatusCode::FORBIDDEN, "admins only"));
     }
     let cap_gb = meta_value(&state, "storage_cap_gb").await?.parse().unwrap_or(30);
-    Ok(Json(shared::StorageInfo { used_bytes: uploads_size().await, cap_gb }))
+    Ok(Json(shared::StorageInfo {
+        used_bytes: uploads_size().await,
+        cap_gb,
+        upload_max_mb: upload_max_mb(&state).await,
+    }))
 }
 
 /// The numbers an owner would otherwise go looking for on the box.
@@ -1998,6 +2013,43 @@ async fn uploads_usage() -> (i64, i64) {
     (bytes, files)
 }
 
+/// Biggest single upload allowed right now, in MB.
+pub(crate) async fn upload_max_mb(state: &SharedState) -> i64 {
+    meta_value_opt(state, "upload_max_mb")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
+
+pub async fn set_upload_limit(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::UploadLimitSetting>,
+) -> ApiResult<Json<shared::StorageInfo>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    // The ceiling is memory, not policy: an upload is collected whole before
+    // it is written, so several large ones at once are several large ones in
+    // RAM. 512 MB is generous for a box that might have 2 GB.
+    if !(1..=512).contains(&req.upload_max_mb) {
+        return Err(err(StatusCode::BAD_REQUEST, "upload limit must be between 1 and 512 MB"));
+    }
+    sqlx::query("UPDATE server_meta SET value = ? WHERE key = 'upload_max_mb'")
+        .bind(req.upload_max_mb.to_string())
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    let cap_gb: i64 = meta_value(&state, "storage_cap_gb").await?.parse().unwrap_or(30);
+    Ok(Json(shared::StorageInfo {
+        used_bytes: uploads_size().await,
+        cap_gb,
+        upload_max_mb: req.upload_max_mb,
+    }))
+}
+
 pub async fn set_storage_cap(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
@@ -2014,7 +2066,11 @@ pub async fn set_storage_cap(
         .execute(&state.db)
         .await
         .map_err(internal)?;
-    Ok(Json(shared::StorageInfo { used_bytes: uploads_size().await, cap_gb: req.cap_gb }))
+    Ok(Json(shared::StorageInfo {
+        used_bytes: uploads_size().await,
+        cap_gb: req.cap_gb,
+        upload_max_mb: upload_max_mb(&state).await,
+    }))
 }
 
 pub async fn get_invite(

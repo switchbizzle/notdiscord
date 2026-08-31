@@ -458,6 +458,19 @@ pub const DEFAULT_BOT_MODEL: &str = "google/gemini-2.5-flash-lite";
 pub struct StorageInfo {
     pub used_bytes: i64,
     pub cap_gb: i64,
+    /// Biggest single file anyone may upload, in MB.
+    #[serde(default = "default_upload_max_mb")]
+    pub upload_max_mb: i64,
+}
+
+fn default_upload_max_mb() -> i64 {
+    64
+}
+
+/// Body for POST /api/server/upload-limit (admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadLimitSetting {
+    pub upload_max_mb: i64,
 }
 
 /// What GET /api/server/stats reports (admin). Everything an owner would
