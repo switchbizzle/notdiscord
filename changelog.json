@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.88.0",
+    "date": "2026-08-31",
+    "changes": [
+      "🖥️ Screen shares are readable now. The app told LiveKit every share was 1920×1080 no matter what the monitor really was, and LiveKit plans the encoder from that number — so anyone on a bigger screen was being encoded as if it were 1080p, at a bitrate meant for a desktop in motion rather than a page of code (switchb)",
+      "It now reports the real screen (aimed at 1440p on a 4K one, so encoding stays within a normal machine's means) and asks for far more bitrate at 15fps. A shared editor is nearly a still image; sharp text is worth more than smooth motion, and if the connection can't keep up it now costs frames rather than sharpness"
+    ]
+  },
+  {
     "version": "0.87.1",
     "date": "2026-08-31",
     "changes": [

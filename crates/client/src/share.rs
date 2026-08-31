@@ -189,6 +189,28 @@ pub fn list_windows() -> Vec<WindowChoice> {
         .collect()
 }
 
+/// The pixel size of whatever is about to be shared.
+///
+/// LiveKit computes the encoder's bitrate and target resolution from the size
+/// the video source DECLARES, not from the frames it later receives. We used
+/// to declare 1920x1080 always, so sharing a larger monitor got 1080p-class
+/// treatment and the encoder downscaled — which is a good part of why small
+/// text came out unreadable (switchb). None means "we couldn't tell", and the
+/// caller falls back.
+pub fn target_size(target: &ShareTarget) -> Option<(u32, u32)> {
+    let monitor = match target {
+        ShareTarget::PrimaryMonitor => Monitor::primary().ok()?,
+        ShareTarget::Monitor(index) => Monitor::from_index(*index).ok()?,
+        // A window's size changes as it is dragged and resized; its monitor is
+        // the sensible ceiling to encode for.
+        ShareTarget::Window(_) => Monitor::primary().ok()?,
+    };
+    match (monitor.width(), monitor.height()) {
+        (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w, h)),
+        _ => None,
+    }
+}
+
 /// All monitors, primary first, labeled for the share picker.
 pub fn list_monitors() -> Vec<MonitorChoice> {
     let primary_name = Monitor::primary().and_then(|m| m.device_name()).ok();

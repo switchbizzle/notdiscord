@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::prelude::*;
 use futures_util::StreamExt;
-use livekit::options::TrackPublishOptions;
+use livekit::options::{TrackPublishOptions, VideoEncoding};
 use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, RemoteTrack, RemoteVideoTrack, TrackSource};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
@@ -50,6 +50,40 @@ pub struct VoiceStatus {
     /// Playback volume per identity (1.0 = 100%).
     pub volumes: HashMap<String, f32>,
     pub error: String,
+}
+
+/// What to tell the encoder it is working on, given the screen's real size.
+///
+/// Anything up to 1440p is declared as-is. Above that we aim at 1440p: a 4K
+/// desktop encoded at 4K costs more CPU and uplink than a home machine
+/// reliably has, and the failure mode there (dropped frames) is worse than a
+/// slight downscale. Aspect ratio is preserved so an ultrawide isn't squashed.
+fn share_encode_size((width, height): (u32, u32)) -> (u32, u32) {
+    const MAX_HEIGHT: u32 = 1440;
+    if height <= MAX_HEIGHT || height == 0 {
+        return (width.max(1), height.max(1));
+    }
+    let scaled_w = (u64::from(width) * u64::from(MAX_HEIGHT) / u64::from(height)) as u32;
+    // Encoders want even dimensions.
+    ((scaled_w & !1).max(2), MAX_HEIGHT)
+}
+
+/// Bitrate ceiling for a screen share of the given size.
+///
+/// Scaled off the library's own screenshare presets but well above them,
+/// because those are tuned for a desktop in motion and this is usually
+/// somebody's editor. A ceiling is not a promise: congestion control still
+/// spends less when the link can't carry it.
+fn screen_share_bitrate(width: u32, height: u32) -> u64 {
+    let pixels = u64::from(width) * u64::from(height);
+    match pixels {
+        // Up to 1080p
+        0..=2_100_000 => 5_000_000,
+        // Up to 1440p
+        2_100_001..=3_700_000 => 8_000_000,
+        // 4K and beyond
+        _ => 12_000_000,
+    }
 }
 
 pub enum VoiceCmd {
@@ -297,6 +331,65 @@ impl VadGate {
         }
         let voice_recent = now.duration_since(self.last_voice) < SPEAK_HOLD;
         (threshold <= 0.0 || voice_recent, voice_recent)
+    }
+}
+
+#[cfg(test)]
+mod share_quality_tests {
+    use super::*;
+
+    #[test]
+    fn bitrate_follows_the_screen_being_shared() {
+        // The point of the change: a bigger screen is not encoded as if it
+        // were 1080p, which is what the hardcoded source resolution caused.
+        let hd = screen_share_bitrate(1920, 1080);
+        let qhd = screen_share_bitrate(2560, 1440);
+        let uhd = screen_share_bitrate(3840, 2160);
+        assert!(hd < qhd && qhd < uhd, "more pixels should get more bits");
+        // And every tier clears the library's own 1080p30 screenshare preset,
+        // which is 3 Mbps and the ceiling we were living under.
+        assert!(hd > 3_000_000, "1080p should beat the old default");
+
+        // Odd shapes still land somewhere sensible rather than panicking.
+        assert_eq!(screen_share_bitrate(1280, 720), hd, "smaller than 1080p uses the same tier");
+        assert_eq!(screen_share_bitrate(0, 0), hd, "a zero size falls in the lowest tier");
+        assert_eq!(screen_share_bitrate(5120, 2880), uhd, "5K lands in the top tier");
+        // An ultrawide has 1440p's height but far more pixels; it should be
+        // treated by area, not by height.
+        assert!(screen_share_bitrate(3440, 1440) >= qhd);
+    }
+
+    #[test]
+    fn a_4k_screen_is_aimed_at_1440p_without_squashing_it() {
+        // Below the cap, left exactly alone.
+        assert_eq!(share_encode_size((1920, 1080)), (1920, 1080));
+        assert_eq!(share_encode_size((2560, 1440)), (2560, 1440));
+
+        // 4K comes down to 1440p and keeps 16:9.
+        let (w, h) = share_encode_size((3840, 2160));
+        assert_eq!(h, 1440);
+        assert_eq!(w, 2560);
+
+        // An ultrawide keeps its shape rather than being squeezed to 16:9.
+        let (uw, uh) = share_encode_size((5120, 2160));
+        assert_eq!(uh, 1440);
+        assert!((uw as f32 / uh as f32 - 5120.0 / 2160.0).abs() < 0.01, "aspect kept");
+
+        // Even dimensions, and a zero height can't divide by zero.
+        assert_eq!(share_encode_size((3441, 2161)).0 % 2, 0);
+        assert_eq!(share_encode_size((0, 0)), (1, 1));
+    }
+
+    /// Depends on the machine's actual display, so it is not part of the
+    /// normal run. Proves the source no longer declares a hardcoded 1080p:
+    ///   cargo test -p client -- --ignored declared --nocapture
+    #[test]
+    #[ignore]
+    fn the_declared_size_is_the_real_screen() {
+        let size = crate::share::target_size(&crate::share::ShareTarget::PrimaryMonitor);
+        let (w, h) = size.expect("this machine has a primary monitor");
+        println!("primary monitor {w}x{h} -> {} bps", screen_share_bitrate(w, h));
+        assert!(w > 0 && h > 0);
     }
 }
 
@@ -818,8 +911,18 @@ pub async fn voice_task(
             VoiceCmd::StartScreenShare { target } => {
                 if let Some(active) = call.as_mut() {
                     if active.share.is_none() {
+                        // Declare the real size: the encoder's whole plan is
+                        // computed from this, not from the frames, and it used
+                        // to say 1920x1080 whatever the monitor actually was.
+                        // Capped at 1440p on the way, deliberately: encoding
+                        // 4K text in software is heavy enough to cost frames,
+                        // and 1440p is already far more readable than the
+                        // 1080p everyone was silently getting.
+                        let (cap_w, cap_h) = share_encode_size(
+                            crate::share::target_size(&target).unwrap_or((1920, 1080)),
+                        );
                         let source = NativeVideoSource::new(
-                            VideoResolution { width: 1920, height: 1080 },
+                            VideoResolution { width: cap_w, height: cap_h },
                             true,
                         );
                         let track = LocalVideoTrack::create_video_track(
@@ -833,6 +936,21 @@ pub async fn voice_task(
                                 LocalTrack::Video(track),
                                 TrackPublishOptions {
                                     source: TrackSource::Screenshare,
+                                    // The library's own screenshare presets
+                                    // stop at 3 Mbps for 1080p30, which is
+                                    // thin for a screen full of code: text is
+                                    // the hardest thing a video codec does.
+                                    // Buy sharpness with the framerate — a
+                                    // shared editor is nearly a still image,
+                                    // and 15fps of readable text beats 30 of
+                                    // mush. Congestion costs frames, not
+                                    // pixels, because the SDK already
+                                    // defaults screenshare to
+                                    // MaintainResolution.
+                                    video_encoding: Some(VideoEncoding {
+                                        max_bitrate: screen_share_bitrate(cap_w, cap_h),
+                                        max_framerate: 15.0,
+                                    }),
                                     ..Default::default()
                                 },
                             )
