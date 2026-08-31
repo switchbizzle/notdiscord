@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.92.1",
+    "date": "2026-08-31",
+    "changes": [
+      "📱 The phone app gets the NotDiscord icon on your home screen (switchb). The icon was always right — it was announced too late. The app declared it from inside the wasm, and a phone decides which icon to keep at the moment you tap \"add to home screen\", so it fell back to a screenshot of the page. It's declared in the page itself now, along with the proper name instead of the placeholder one",
+      "If you already added it, remove it and add it again — phones keep the old icon otherwise"
+    ]
+  },
+  {
     "version": "0.92.0",
     "date": "2026-08-31",
     "changes": [
