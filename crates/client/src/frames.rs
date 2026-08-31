@@ -22,13 +22,21 @@ use livekit::webrtc::video_stream::native::NativeVideoStream;
 /// Raw frames as the rest of the client passes them around: 0RGB in a u32.
 pub type SharedFrame = Arc<Mutex<Option<(u32, u32, Vec<u32>)>>>;
 
-/// Tiles are small; a screen share doesn't need to arrive pixel-perfect.
+/// A camera tile is small and a face survives being small.
 const MAX_EDGE: u32 = 960;
+/// A screen share is not a tile. It fills most of the Video tab, and what
+/// people share is usually an editor or a terminal — 960px across meant a
+/// 3440-wide desktop arrived at barely a quarter of its width, point-sampled,
+/// and no amount of network quality could put that back (switchb could never
+/// read Jon's shares). This is the one stream worth spending on.
+const MAX_EDGE_SCREEN: u32 = 1920;
 /// One frame every ~66ms. Smooth enough for a tile, cheap enough for six.
 const MIN_INTERVAL_MS: u64 = 60;
 /// How long after the last request a stream keeps encoding.
 const WANTED_FOR_MS: u64 = 1000;
 const QUALITY: u8 = 72;
+/// Text is all edges, which is exactly what JPEG spends its budget blurring.
+const QUALITY_SCREEN: u8 = 88;
 
 #[derive(Clone, Default)]
 struct Slot {
@@ -93,6 +101,7 @@ fn wanted(slot: &Slot, now: u64) -> bool {
 /// Pump a remote participant's video into `key` until the track ends.
 pub fn publish_track(key: String, track: &RemoteVideoTrack) {
     let slot = make_slot(&key);
+    let budget_key = key.clone();
     let rtc = track.rtc_track();
     tokio::spawn(async move {
         use futures_util::StreamExt;
@@ -120,7 +129,7 @@ pub fn publish_track(key: String, track: &RemoteVideoTrack) {
                 width as i32,
                 height as i32,
             );
-            if let Some(bytes) = encode(&rgba, width, height) {
+            if let Some(bytes) = encode(&budget_key, &rgba, width, height) {
                 *slot.jpeg.lock().unwrap() = Some(Arc::new(bytes));
             }
         }
@@ -136,6 +145,7 @@ pub fn publish_track(key: String, track: &RemoteVideoTrack) {
 /// copy for a preview nobody has open.
 pub fn publish_shared(key: String, source: SharedFrame) -> Arc<AtomicU64> {
     let slot = make_slot(&key);
+    let budget_key = key.clone();
     let interest = slot.last_wanted.clone();
     tokio::spawn(async move {
         loop {
@@ -155,7 +165,7 @@ pub fn publish_shared(key: String, source: SharedFrame) -> Arc<AtomicU64> {
             for px in &pixels {
                 rgba.extend_from_slice(&[(px >> 16) as u8, (px >> 8) as u8, *px as u8, 255]);
             }
-            if let Some(bytes) = encode(&rgba, width, height) {
+            if let Some(bytes) = encode(&budget_key, &rgba, width, height) {
                 *slot.jpeg.lock().unwrap() = Some(Arc::new(bytes));
             }
         }
@@ -177,9 +187,20 @@ pub fn is_wanted(stamp: &AtomicU64) -> bool {
     last != 0 && now_ms().saturating_sub(last) < WANTED_FOR_MS
 }
 
-/// RGBA -> JPEG, scaled down so a 1440p share doesn't cost 1440p of encoding.
-fn encode(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
-    encode_scaled(rgba, width, height, MAX_EDGE, QUALITY)
+/// How much to spend on a stream, by what it is. Screen shares carry text;
+/// camera tiles carry faces at a fraction of the size.
+fn budget(key: &str) -> (u32, u8) {
+    if key.ends_with(":screen") {
+        (MAX_EDGE_SCREEN, QUALITY_SCREEN)
+    } else {
+        (MAX_EDGE, QUALITY)
+    }
+}
+
+/// RGBA -> JPEG, scaled to whatever this stream is worth.
+fn encode(key: &str, rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let (max_edge, quality) = budget(key);
+    encode_scaled(rgba, width, height, max_edge, quality)
 }
 
 /// The same scale-and-encode at a caller-chosen size — share-picker
@@ -211,4 +232,105 @@ pub fn encode_scaled(
         .encode(&rgb, out_w, out_h, image::ExtendedColorType::Rgb8)
         .ok()?;
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 3440x1440 desktop of text-scale detail: 4px strokes on a 12px pitch,
+    /// roughly a column of monospaced code.
+    ///
+    /// The pitch matters. A 3px grating is below what EITHER budget can
+    /// represent, so comparing them there measures sampling phase rather than
+    /// quality. 12px survives 1920 across (about 6.7px) and barely survives
+    /// 960 (about 3.4px) — which is exactly the difference being made.
+    const PITCH: u32 = 12;
+    const INK: u32 = 4;
+
+    fn text_like(width: u32, height: u32) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                let v = if x % PITCH < INK { 20u8 } else { 235u8 };
+                rgba.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        rgba
+    }
+
+    /// Not a pass/fail, a budget check: this runs on the viewer's machine
+    /// once per frame per visible share. Ignored by default because timing in
+    /// a debug build under CI means nothing.
+    ///   cargo test -p client --release -- --ignored encode_cost --nocapture
+    #[test]
+    #[ignore]
+    fn encode_cost_for_a_share_frame() {
+        let (w, h) = (3440u32, 1440u32);
+        let rgba = text_like(w, h);
+        for (label, edge, q) in [("camera budget", MAX_EDGE, QUALITY), ("screen budget", MAX_EDGE_SCREEN, QUALITY_SCREEN)] {
+            let start = std::time::Instant::now();
+            let runs = 10;
+            let mut bytes = 0;
+            for _ in 0..runs {
+                bytes = encode_scaled(&rgba, w, h, edge, q).expect("encodes").len();
+            }
+            let each = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+            println!("{label}: {each:.1} ms/frame, {} KB/frame", bytes / 1024);
+        }
+    }
+
+    #[test]
+    fn a_screen_share_is_not_encoded_like_a_camera_tile() {
+        assert_eq!(budget("JunkfoodJon:screen"), (MAX_EDGE_SCREEN, QUALITY_SCREEN));
+        assert_eq!(budget("JunkfoodJon:camera"), (MAX_EDGE, QUALITY));
+        assert_eq!(budget("self:screen"), (MAX_EDGE_SCREEN, QUALITY_SCREEN));
+        // Anything unrecognised stays on the cheap path rather than
+        // accidentally costing screen-share money.
+        assert_eq!(budget("weird"), (MAX_EDGE, QUALITY));
+    }
+
+    #[test]
+    fn an_ultrawide_share_keeps_far_more_detail_than_it_used_to() {
+        let (w, h) = (3440u32, 1440u32);
+        let rgba = text_like(w, h);
+
+        let old = encode_scaled(&rgba, w, h, MAX_EDGE, QUALITY).expect("old path encodes");
+        let new = encode_scaled(&rgba, w, h, MAX_EDGE_SCREEN, QUALITY_SCREEN).expect("new path encodes");
+
+        let dims = |jpeg: &[u8]| {
+            let img = image::load_from_memory(jpeg).expect("decodes");
+            (image::GenericImageView::dimensions(&img).0, image::GenericImageView::dimensions(&img).1)
+        };
+        let (ow, _) = dims(&old);
+        let (nw, _) = dims(&new);
+        assert_eq!(ow, 960, "the old budget squeezed a 3440-wide desktop to 960");
+        assert_eq!(nw, 1920, "the new one keeps twice the width");
+        assert!(nw >= ow * 2, "at least double the horizontal detail");
+
+        // Contrast is the wrong measure here: point sampling doesn't blur,
+        // it aliases, so a squeezed row still hits full black and white while
+        // landing on the wrong pixels. What matters is how much of the
+        // original pattern survives a round trip, so scale each back up to
+        // the source width and compare against the truth.
+        let fidelity = |jpeg: &[u8]| -> f64 {
+            let img = image::load_from_memory(jpeg).expect("decodes").to_luma8();
+            let row_y = img.height() / 2;
+            let mut error = 0f64;
+            for x in 0..w {
+                let src_x = (x as u64 * img.width() as u64 / w as u64) as u32;
+                let got = img.get_pixel(src_x.min(img.width() - 1), row_y).0[0] as f64;
+                let want = if x % PITCH < INK { 20.0 } else { 235.0 };
+                error += (got - want).abs();
+            }
+            error / w as f64
+        };
+        let old_error = fidelity(&old);
+        let new_error = fidelity(&new);
+        println!("mean error per pixel rebuilding the row: old {old_error:.1}, new {new_error:.1}");
+        assert!(
+            new_error < old_error,
+            "the finer budget should reproduce the strokes more faithfully:              old {old_error:.1}, new {new_error:.1}"
+        );
+    }
 }

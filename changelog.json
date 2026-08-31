@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.88.1",
+    "date": "2026-08-31",
+    "changes": [
+      "🔍 The Video tab was throwing away most of a screen share before drawing it. Every stream was squeezed to 960 pixels across and re-encoded — fine for a camera tile the size of a stamp, ruinous for a 3440-wide desktop full of code. Shares now keep 1920 across at a much higher quality; camera tiles stay cheap (switchb)"
+    ]
+  },
+  {
     "version": "0.88.0",
     "date": "2026-08-31",
     "changes": [
