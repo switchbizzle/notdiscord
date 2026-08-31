@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.92.0",
+    "date": "2026-08-31",
+    "changes": [
+      "💓 Fixed the thing where new messages stop arriving and nothing tells you. If the connection died in a way that left the socket technically open — a wifi blip, a sleep, a router quietly forgetting you — the app carried on believing it was fine and simply never received anything again, which is why switchb got Jon's messages on his phone and nothing on his desktop until he switched servers and back",
+      "Both ends now check the line is still there every 20 seconds, and anything that's gone quiet for a minute gets dropped and reconnected. Whatever came in while you were away loads on reconnect"
+    ]
+  },
+  {
     "version": "0.91.0",
     "date": "2026-08-31",
     "changes": [

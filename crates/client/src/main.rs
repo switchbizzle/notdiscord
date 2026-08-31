@@ -882,6 +882,12 @@ fn LoginView(adding: Signal<bool>) -> Element {
     }
 }
 
+/// How often to ping the server, and how long total silence may last before
+/// the connection is treated as dead. The server pings every 20s of its own,
+/// so 70s of nothing means three missed beats in both directions.
+const WS_PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+const WS_SILENT_FOR: std::time::Duration = std::time::Duration::from_secs(70);
+
 /// How many times to try getting back into a dropped call before giving up.
 /// With the backoff below that spans a bit over a minute.
 const REJOIN_ATTEMPTS: u32 = 6;
@@ -1599,8 +1605,29 @@ fn MainView(session: api::Session) -> Element {
                 }
             }
 
+            // A socket whose path has died without either side closing it
+            // looks exactly like a quiet one: the read simply never returns.
+            // That is how switchb ended up getting Jon's messages on his phone
+            // and nothing at all on his desktop, with no error shown, until he
+            // switched servers and forced a reconnect. So: prove it is alive.
+            let mut beat = tokio::time::interval(WS_PING_EVERY);
+            beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut last_heard = std::time::Instant::now();
+
             loop {
                 tokio::select! {
+                    _ = beat.tick() => {
+                        if last_heard.elapsed() > WS_SILENT_FOR {
+                            // The server pings every 20s, so hearing nothing
+                            // for this long means the path is gone even though
+                            // the socket never said so.
+                            status.set("connection went quiet, reconnecting…".into());
+                            break;
+                        }
+                        if socket.send(WsMsg::Ping(Vec::new().into())).await.is_err() {
+                            break;
+                        }
+                    }
                     cmd = rx.next() => {
                         let Some(cmd) = cmd else { return };
                         let text = serde_json::to_string(&cmd).expect("serialize event");
@@ -1610,6 +1637,9 @@ fn MainView(session: api::Session) -> Element {
                     }
                     incoming = socket.next() => {
                         let Some(Ok(msg)) = incoming else { break };
+                        // Any frame counts, pings and pongs included: this is
+                        // about whether the other end is still reachable.
+                        last_heard = std::time::Instant::now();
                         let WsMsg::Text(text) = msg else { continue };
                         let Ok(event) = serde_json::from_str::<ServerEvent>(&text) else { continue };
                         match event {

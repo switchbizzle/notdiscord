@@ -91,6 +91,13 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, user))
 }
 
+/// How often the server pings an idle connection. Short enough to keep a NAT
+/// mapping alive, long enough to be free.
+const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+/// Nothing heard from a client for this long and it is treated as gone. Three
+/// missed heartbeats, so one slow moment isn't a disconnect.
+const CLIENT_SILENT_FOR: std::time::Duration = std::time::Duration::from_secs(70);
+
 async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
     tracing::info!("ws connected: {}", user.username);
     let (mut sink, mut stream) = socket.split();
@@ -137,8 +144,28 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
     // This connection's flood budget.
     let mut limits = crate::ratelimit::ConnectionLimits::default();
 
+    // A silent connection is indistinguishable from a dead one, so make it
+    // never be silent. The ping also keeps NAT mappings from being evicted
+    // mid-conversation, which is one of the ways the path dies in the first
+    // place.
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_heard = std::time::Instant::now();
+
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                // Nothing at all from this client for a while: it is gone,
+                // whatever the socket claims. Dropping it frees its presence
+                // so everyone else stops seeing it online.
+                if last_heard.elapsed() > CLIENT_SILENT_FOR {
+                    tracing::info!("ws idle too long, dropping {}", user.username);
+                    break;
+                }
+                if sink.send(WsMessage::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
             // Broadcast events fan out to every connected client.
             event = events.recv() => {
                 match event {
@@ -166,6 +193,9 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
             }
             incoming = stream.next() => {
                 let Some(Ok(msg)) = incoming else { break };
+                // Pongs and pings count as much as chat does: this is about
+                // whether anything is still on the other end.
+                last_heard = std::time::Instant::now();
                 if let WsMessage::Text(text) = msg {
                     match serde_json::from_str::<ClientEvent>(&text) {
                         // Player card buttons: deterministic, no LLM involved.
