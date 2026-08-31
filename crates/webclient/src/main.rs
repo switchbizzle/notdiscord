@@ -775,7 +775,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             let host = web_sys::window()
                 .map(|w| w.location().host().unwrap_or_default())
                 .unwrap_or_default();
-            let url = format!("{proto}://{host}/ws?token={}", sess().token);
+            // getTimezoneOffset is minutes BEHIND UTC, so negate it to get
+            // "minutes to add to UTC", which is what the server stores.
+            let tz = -js_sys::Date::new_0().get_timezone_offset() as i64;
+            let url = format!("{proto}://{host}/ws?token={}&tz={tz}", sess().token);
             let Ok(socket) = gloo_net::websocket::futures::WebSocket::open(&url) else {
                 gloo_timers::future::TimeoutFuture::new(3000).await;
                 continue;

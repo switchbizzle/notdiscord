@@ -74,18 +74,33 @@ fn utc_midnight(year: i64, month: i64, day: i64) -> Option<i64> {
     Some(days * 86_400_000)
 }
 
-/// The hour of day an undated reminder lands on, UTC.
+/// The hour of day a bare date lands on, in the asker's own time.
 ///
-/// A bare date has no time in it, and midnight is a bad guess: "remind me on
-/// the 9th" delivered at 00:00 is the middle of the night for everybody. 9am
-/// UTC is at least somebody's morning, and the bot says the exact time back
-/// so nobody has to guess which.
-const DATE_HOUR_UTC: i64 = 9;
+/// A date carries no time, and midnight is a bad guess — it is the middle of
+/// somebody's night. Nine in the morning is a reasonable reading of "on the
+/// 9th", and now that the server knows the offset it is nine in the morning
+/// where they actually are.
+const DATE_HOUR_LOCAL: i64 = 9;
+
+/// This person's minutes-to-add-to-UTC, as their client reported on connect.
+/// Zero for anyone who has never connected with a client that sends it, which
+/// is exactly the old behaviour rather than a wrong one.
+pub async fn offset_for(state: &SharedState, user_id: i64) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT tz_offset_minutes FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+}
 
 /// Parse the text following `/remindme`.
 ///
 /// `now` is passed in rather than read, so the tests aren't a coin flip.
-pub fn parse(rest: &str, now: i64) -> Result<Reminder, &'static str> {
+/// `offset_min` is the asker's minutes from UTC; it moves dates and leaves
+/// durations alone, because six hours is six hours anywhere.
+pub fn parse(rest: &str, now: i64, offset_min: i64) -> Result<Reminder, &'static str> {
     let rest = rest.trim();
     if rest.is_empty() {
         return Err("give me a time and a message: `/remindme 2 hours check the oven`");
@@ -103,11 +118,11 @@ pub fn parse(rest: &str, now: i64) -> Result<Reminder, &'static str> {
         };
         let (month, day, year) = match nums.as_slice() {
             [m, d] => {
-                // No year given: this year, or next if it's already gone.
-                let year = year_of(now);
-                let candidate = utc_midnight(year, *m, *d);
-                match candidate {
-                    Some(at) if at + DATE_HOUR_UTC * 3_600_000 > now => (*m, *d, year),
+                // No year given: this year, or next if it has already gone —
+                // judged by their calendar, not the server's.
+                let year = year_of(now + offset_min * 60_000);
+                match utc_midnight(year, *m, *d) {
+                    Some(at) if local_nine(at, offset_min) > now => (*m, *d, year),
                     _ => (*m, *d, year + 1),
                 }
             }
@@ -117,7 +132,7 @@ pub fn parse(rest: &str, now: i64) -> Result<Reminder, &'static str> {
         let Some(midnight) = utc_midnight(year, month, day) else {
             return Err("that date doesn't exist");
         };
-        let due_at = midnight + DATE_HOUR_UTC * 3_600_000;
+        let due_at = local_nine(midnight, offset_min);
         let text = words.collect::<Vec<_>>().join(" ");
         return finish(due_at, text, now);
     }
@@ -150,6 +165,15 @@ pub fn parse(rest: &str, now: i64) -> Result<Reminder, &'static str> {
     finish(now + delta, remainder.join(" "), now)
 }
 
+/// 09:00 local on the day `midnight` names, as a UTC instant.
+///
+/// Subtracting the offset is the part worth staring at: being AHEAD of UTC
+/// means your morning happens EARLIER in UTC, so a positive offset makes the
+/// instant smaller.
+fn local_nine(midnight: i64, offset_min: i64) -> i64 {
+    midnight + DATE_HOUR_LOCAL * 3_600_000 - offset_min * 60_000
+}
+
 fn finish(due_at: i64, text: String, now: i64) -> Result<Reminder, &'static str> {
     if due_at <= now {
         return Err("that's in the past");
@@ -178,6 +202,17 @@ fn year_of(ms: i64) -> i64 {
     }
 }
 
+/// Y-M-D H:M in the reader's own time, for saying back exactly when this
+/// will arrive. UTC is only what it degrades to when nobody told us better.
+pub fn describe_local(ms: i64, offset_min: i64) -> String {
+    let stamp = describe(ms + offset_min * 60_000);
+    if offset_min == 0 {
+        stamp
+    } else {
+        stamp.trim_end_matches(" UTC").to_owned()
+    }
+}
+
 /// Y-M-D H:M UTC, for saying back exactly when this will arrive.
 pub fn describe(ms: i64) -> String {
     let year = year_of(ms);
@@ -200,6 +235,7 @@ pub async fn schedule(
     state: &SharedState,
     user_id: i64,
     reminder: &Reminder,
+    offset_min: i64,
 ) -> anyhow::Result<String> {
     sqlx::query("INSERT INTO reminders (user_id, due_at, text, created_at) VALUES (?, ?, ?, ?)")
         .bind(user_id)
@@ -208,7 +244,10 @@ pub async fn schedule(
         .bind(now_ms())
         .execute(&state.db)
         .await?;
-    Ok(format!("👍 I'll DM you at {}", describe(reminder.due_at)))
+    Ok(format!(
+        "👍 I'll DM you at {}",
+        describe_local(reminder.due_at, offset_min)
+    ))
 }
 
 /// The DM channel between the bot and this person, created if it's their
@@ -295,6 +334,9 @@ mod tests {
     /// than a race with the clock.
     const NOW: i64 = 1_788_177_600_000;
 
+    /// US Eastern in summer: five hours behind UTC.
+    const EASTERN: i64 = -300;
+
     #[test]
     fn durations_in_the_shapes_people_type() {
         let cases = [
@@ -308,51 +350,106 @@ mod tests {
             ("45s soft boiled", 45_000, "soft boiled"),
         ];
         for (input, delta, text) in cases {
-            let r = parse(input, NOW).unwrap_or_else(|e| panic!("{input:?} -> {e}"));
+            let r = parse(input, NOW, 0).unwrap_or_else(|e| panic!("{input:?} -> {e}"));
             assert_eq!(r.due_at, NOW + delta, "{input:?}");
             assert_eq!(r.text, text, "{input:?}");
         }
     }
 
     #[test]
+    fn a_duration_means_the_same_thing_in_every_timezone() {
+        // Six hours is six hours. Only dates move.
+        for tz in [-720, -300, 0, 330, 780] {
+            let r = parse("6 hours check the oven", NOW, tz).unwrap();
+            assert_eq!(r.due_at, NOW + 6 * 3_600_000, "offset {tz}");
+        }
+    }
+
+    #[test]
     fn dates_land_on_the_right_day() {
-        let r = parse("9/7/2026 dentist", NOW).expect("date parses");
+        let r = parse("9/7/2026 dentist", NOW, 0).expect("date parses");
         assert_eq!(describe(r.due_at), "2026-09-07 09:00 UTC");
         assert_eq!(r.text, "dentist");
 
-        // Two-digit year, and a year-less date rolling forward when the day
-        // has already gone by.
-        assert_eq!(describe(parse("12/25/26 turkey", NOW).unwrap().due_at), "2026-12-25 09:00 UTC");
-        assert_eq!(describe(parse("1/1 new year", NOW).unwrap().due_at), "2027-01-01 09:00 UTC");
-        assert_eq!(describe(parse("12/25 soon", NOW).unwrap().due_at), "2026-12-25 09:00 UTC");
+        assert_eq!(describe(parse("12/25/26 turkey", NOW, 0).unwrap().due_at), "2026-12-25 09:00 UTC");
+        assert_eq!(describe(parse("1/1 new year", NOW, 0).unwrap().due_at), "2027-01-01 09:00 UTC");
+        assert_eq!(describe(parse("12/25 soon", NOW, 0).unwrap().due_at), "2026-12-25 09:00 UTC");
+    }
+
+    #[test]
+    fn a_date_means_nine_in_the_morning_where_the_asker_is() {
+        // Asked from US Eastern, "the 7th" is 09:00 Eastern. Being five hours
+        // BEHIND UTC means their morning happens five hours LATER in UTC, so
+        // 14:00 UTC — not 09:00 UTC, which would have been 4am for them.
+        let r = parse("9/7/2026 dentist", NOW, EASTERN).unwrap();
+        assert_eq!(describe(r.due_at), "2026-09-07 14:00 UTC");
+        assert_eq!(describe_local(r.due_at, EASTERN), "2026-09-07 09:00");
+
+        // Ahead of UTC, their morning happens earlier in UTC. India is +5:30,
+        // which also checks that a half-hour offset survives.
+        let india = parse("9/7/2026 dentist", NOW, 330).unwrap();
+        assert_eq!(describe(india.due_at), "2026-09-07 03:30 UTC");
+        assert_eq!(describe_local(india.due_at, 330), "2026-09-07 09:00");
+
+        // Whatever the offset, it is 9am on the 7th to the person who asked.
+        // (describe_local keeps the " UTC" label when the offset really is
+        // zero, so compare the date and time rather than the whole string.)
+        for tz in [-720, -480, -300, -60, 0, 60, 330, 540, 780] {
+            let r = parse("9/7/2026 x", NOW, tz).unwrap();
+            let local = describe_local(r.due_at, tz);
+            assert!(
+                local.starts_with("2026-09-07 09:00"),
+                "offset {tz} gave {local}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_yearless_date_rolls_forward_by_the_askers_calendar() {
+        // NOW is 2026-08-31 12:00 UTC. Typing "8/31" means different years to
+        // two people, and that is the whole point of holding the offset:
+        //
+        //   on UTC        it is already noon, so 9am today has gone -> 2027
+        //   on UTC-12     it is only just midnight, 9am is ahead     -> 2026
+        let on_utc = parse("8/31 late", NOW, 0).unwrap();
+        assert!(
+            describe_local(on_utc.due_at, 0).starts_with("2027-08-31 09:00"),
+            "{}", describe_local(on_utc.due_at, 0)
+        );
+
+        let way_west = parse("8/31 late", NOW, -720).unwrap();
+        assert!(
+            describe_local(way_west.due_at, -720).starts_with("2026-08-31 09:00"),
+            "{}", describe_local(way_west.due_at, -720)
+        );
+        // And it really is still in the future for them, not merely labelled so.
+        assert!(way_west.due_at > NOW);
     }
 
     #[test]
     fn nonsense_gets_a_useful_answer_rather_than_a_wrong_one() {
         for bad in [
-            "",                          // nothing at all
-            "hello there",               // no time
-            "5 bananas peel them",       // not a unit
-            "2 hours",                   // no message
-            "9/7/2026",                  // date, still no message
-            "2/31/2027 impossible",      // that day doesn't exist
-            "1/1/2020 last year",        // already gone
-            "900 years outlive me",      // absurdly far off
+            "",
+            "hello there",
+            "5 bananas peel them",
+            "2 hours",
+            "9/7/2026",
+            "2/31/2027 impossible",
+            "1/1/2020 last year",
+            "900 years outlive me",
         ] {
-            assert!(parse(bad, NOW).is_err(), "{bad:?} should not have parsed");
+            assert!(parse(bad, NOW, 0).is_err(), "{bad:?} should not have parsed");
         }
     }
 
     #[test]
     fn leap_years_are_counted_properly() {
-        // 2028 is a leap year, 2100 is not — the century rule is the one
-        // people's hand-rolled calendars get wrong.
         assert_eq!(days_in_month(2028, 2), 29);
         assert_eq!(days_in_month(2027, 2), 28);
         assert_eq!(days_in_month(2100, 2), 28);
         assert_eq!(days_in_month(2000, 2), 29);
-        assert_eq!(describe(parse("2/29/2028 leap day", NOW).unwrap().due_at), "2028-02-29 09:00 UTC");
-        assert!(parse("2/29/2027 not a leap year", NOW).is_err());
+        assert_eq!(describe(parse("2/29/2028 leap day", NOW, 0).unwrap().due_at), "2028-02-29 09:00 UTC");
+        assert!(parse("2/29/2027 not a leap year", NOW, 0).is_err());
     }
 
     #[test]

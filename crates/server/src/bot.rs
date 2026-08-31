@@ -446,7 +446,8 @@ async fn transcript_after(
     char_cap: usize,
 ) -> anyhow::Result<Vec<(i64, String)>> {
     let rows = sqlx::query(
-        "SELECT m.id, u.username, m.content FROM messages m JOIN users u ON u.id = m.author_id \
+        "SELECT m.id, u.username, m.content, m.author_id FROM messages m \
+         JOIN users u ON u.id = m.author_id \
          WHERE m.channel_id = ? AND m.id > ? ORDER BY m.id DESC",
     )
     .bind(channel_id)
@@ -454,11 +455,21 @@ async fn transcript_after(
     .fetch_all(&state.db)
     .await?;
 
+    let bot_id = state.bot_user().id;
+
     // Newest first from SQL; accumulate until the cap, then reverse.
     let mut picked: Vec<(i64, String)> = Vec::new();
     let mut total = 0usize;
     for row in rows {
         let (id, author, content): (i64, String, String) = (row.get(0), row.get(1), row.get(2));
+        // Its own lines are called out so the personality rule can point at
+        // them: without the marker the model just sees a voice it recognises
+        // as its own and keeps writing in it, whatever the admins have set.
+        let author = if row.get::<i64, _>(3) == bot_id {
+            format!("{author} (you)")
+        } else {
+            author
+        };
         // One giant paste shouldn't eat the whole budget.
         let content: String = content.chars().take(4000).collect();
         let line = format!("{author}: {content}\n");
@@ -529,6 +540,44 @@ async fn call_openrouter(
     response_text(&response)
 }
 
+/// Everything the bot is told about itself, minus the per-call ability notes.
+///
+/// The personality goes LAST, after the notes and the changelog, and that
+/// placement is the point rather than a formatting whim. Admins rewrite the
+/// personality and expect the bot to change; what actually competes with the
+/// setting is the transcript, which is full of the bot's own older replies in
+/// the old voice, and style imitation beats a rule buried in the middle of a
+/// wall of text. So the rule takes the most recent position, and says out
+/// loud that those old messages are not the standard.
+fn base_system(
+    bot_name: &str,
+    server_name: &str,
+    notes_block: &str,
+    changelog: &str,
+    persona: &str,
+) -> String {
+    format!(
+        "You are {bot_name}, the resident bot of \"{server_name}\", a small self-hosted \
+         chat server (NotDiscord — a from-scratch Discord clone in Rust) used by a group of \
+         friends. You were summoned with an @mention; reply to the person who mentioned you.\n\
+         Keep replies concise — a couple of sentences unless the question truly needs more. \
+         Basic markdown (bold, code, lists) is supported; no headings. Never invent facts \
+         about the server or its members beyond what the notes and transcript show.\n\n\
+         {notes_block}\
+         Recent release notes, in case anyone asks what's new:\n{changelog}\n\n\
+         == YOUR PERSONALITY ==\n\
+         This is set by the server admins and it is the only description of you that counts:\n\
+         {persona}\n\
+         The admins can rewrite this at any time, and they do. Transcript lines beginning \
+         \"{bot_name} (you):\" are your own past replies — many were written under a \
+         personality that has since been REPLACED by the one above. Take facts and context \
+         from them; take nothing else. Do not copy their voice, their catchphrases, their \
+         honorifics, or their emoticons unless the personality above actually asks for \
+         that. If your old messages and the personality above disagree, the personality \
+         above wins."
+    )
+}
+
 async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<String> {
     let Some(key) = api_key(state).await else {
         return Ok(
@@ -565,18 +614,12 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
     let bot_name = state.bot_user().username;
     // The base prompt is reused by the web-search follow-up; the ability
     // markers are only in the first call (otherwise the model re-emits them).
-    let base_system = format!(
-        "You are {bot_name}, the resident bot of \"{server_name}\", a small self-hosted \
-         chat server (NotDiscord — a from-scratch Discord clone in Rust) used by a group of \
-         friends. You were summoned with an @mention; reply to the person who mentioned you.\n\
-         Your personality (set by the server admins — stay in it):\n{}\n\
-         Keep replies concise — a couple of sentences unless the question truly needs more. \
-         Basic markdown (bold, code, lists) is supported; no headings. Never invent facts \
-         about the server or its members beyond what the notes and transcript show.\n\n\
-         {notes_block}\
-         Recent release notes, in case anyone asks what's new:\n{}",
-        persona(&state.db).await,
-        recent_changelog_text().await,
+    let base_system = base_system(
+        &bot_name,
+        &server_name,
+        &notes_block,
+        &recent_changelog_text().await,
+        &persona(&state.db).await,
     );
     let system = format!(
         "{base_system}\n\
@@ -700,7 +743,7 @@ async fn draw_image(state: &SharedState, key: &str, prompt: &str) -> anyhow::Res
     let Some(base) = public_url() else {
         return Ok("I can draw, but I don't know this server's public address, so I've \
                    nowhere to put the picture. Whoever runs it needs to set \
-                   NOTDISCORD_PUBLIC_URL (◞‸◟)"
+                   NOTDISCORD_PUBLIC_URL."
             .into());
     };
 
@@ -818,7 +861,11 @@ async fn compact(state: &SharedState, channel_id: i64) -> anyhow::Result<()> {
              existing notes and the new transcript into ONE updated set of notes, at most \
              ~{} characters. Keep: facts about the people, decisions, running jokes, \
              preferences, ongoing projects/plans, and anything someone would expect a \
-             regular to remember. Drop small talk. Write dense bullet points.",
+             regular to remember. Drop small talk. Write dense bullet points.\n\
+             Never record how {BOT_NAME} itself talks — its persona, tone, catchphrases, \
+             honorifics or emoticons. That is set separately by the admins and they change \
+             it; notes that describe it go stale and then fight the setting. Drop any such \
+             line already in the existing notes.",
             NOTES_CHAR_CAP
         ),
         format!("Existing notes:\n{}\n\nNew transcript to fold in:\n{}", memory.notes, old_part),
@@ -842,4 +889,36 @@ async fn compact(state: &SharedState, channel_id: i64) -> anyhow::Result<()> {
         notes.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this guards: the personality sat in the middle of the prompt,
+    /// admins changed it, and the bot carried on talking like its old self
+    /// because the transcript of its old replies was the louder signal.
+    #[test]
+    fn the_personality_is_the_last_thing_the_bot_reads() {
+        let prompt = base_system(
+            "NotBottest",
+            "The Crew",
+            "Your long-term notes on this channel:\n- jon likes sushi\n\n",
+            "v0.94.0 — reminders",
+            "You're a member of 'the crew'. One of the homies.",
+        );
+        let persona_at = prompt.find("One of the homies").expect("persona present");
+        let notes_at = prompt.find("jon likes sushi").expect("notes present");
+        let changelog_at = prompt.find("v0.94.0").expect("changelog present");
+        assert!(persona_at > notes_at, "persona must come after the notes");
+        assert!(persona_at > changelog_at, "persona must come after the changelog");
+    }
+
+    #[test]
+    fn the_bot_is_told_its_old_replies_may_be_a_retired_personality() {
+        let prompt = base_system("NotBottest", "The Crew", "", "", "be normal");
+        // Matches the marker transcript_after actually writes.
+        assert!(prompt.contains("NotBottest (you):"));
+        assert!(prompt.contains("REPLACED"));
+    }
 }

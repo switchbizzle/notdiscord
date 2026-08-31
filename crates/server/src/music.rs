@@ -287,7 +287,9 @@ async fn run_command(
 ) -> anyhow::Result<String> {
     let http = reqwest::Client::new();
     match cmd {
-        MusicCmd::PlayUsage => Ok("give me a link, senpai: `play <soundcloud or spotify url>` 🎧".into()),
+        // Fixed command output, so it stays neutral: the personality is the
+        // admins' to set, and a canned line can't be changed from Settings.
+        MusicCmd::PlayUsage => Ok("give me a link: `play <soundcloud or spotify url>` 🎧".into()),
         MusicCmd::Play(url) => {
             // The requester must be sitting in a (non-DM) voice channel.
             let voice_channel = state.voice.lock().unwrap().get(&user.id).map(|(ch, ..)| *ch);

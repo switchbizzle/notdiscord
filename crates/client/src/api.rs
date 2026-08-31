@@ -515,12 +515,70 @@ fn normalize_base(base: &str) -> String {
     }
 }
 
+/// This machine's offset from UTC in minutes, positive east.
+///
+/// Derived by comparing the local and UTC clocks rather than read from a
+/// timezone database: it needs no dependency, and it is automatically right
+/// across a daylight-saving change because it is measured, not looked up.
+fn local_utc_offset_minutes() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now();
+    let utc_secs = now.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let local = time_local_secs(utc_secs);
+    // Round to the nearest minute: some zones are on 30- or 45-minute offsets.
+    ((local - utc_secs) as f64 / 60.0).round() as i64
+}
+
+/// Local wall-clock time expressed as "seconds since epoch, if this were UTC".
+#[cfg(windows)]
+fn time_local_secs(utc_secs: i64) -> i64 {
+    // Windows hands back the bias directly, in minutes WEST of UTC.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetTimeZoneInformation(info: *mut TimeZoneInformation) -> u32;
+    }
+    #[repr(C)]
+    struct SystemTimeRaw {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        milliseconds: u16,
+    }
+    #[repr(C)]
+    struct TimeZoneInformation {
+        bias: i32,
+        standard_name: [u16; 32],
+        standard_date: SystemTimeRaw,
+        standard_bias: i32,
+        daylight_name: [u16; 32],
+        daylight_date: SystemTimeRaw,
+        daylight_bias: i32,
+    }
+    const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+    let mut info: TimeZoneInformation = unsafe { std::mem::zeroed() };
+    let kind = unsafe { GetTimeZoneInformation(&mut info) };
+    let extra = if kind == TIME_ZONE_ID_DAYLIGHT { info.daylight_bias } else { info.standard_bias };
+    utc_secs - (info.bias + extra) as i64 * 60
+}
+
+#[cfg(not(windows))]
+fn time_local_secs(utc_secs: i64) -> i64 {
+    utc_secs
+}
+
 pub fn ws_url(session: &Session) -> String {
     let base = session
         .base_url
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
-    format!("{base}/ws?token={}", session.token)
+    // Tell the server where we are, so "remind me on the 9th" means the 9th
+    // here. Minutes to add to UTC: US Eastern in summer is -240.
+    let tz = local_utc_offset_minutes();
+    format!("{base}/ws?token={}&tz={tz}", session.token)
 }
 
 async fn handle<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T, String> {

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.1",
+    "date": "2026-08-31",
+    "changes": [
+      "⏰ Reminders use your own clock. `/remindme 9/7/2026 dentist` used to land at 9am UTC, which is 5 in the morning here. Your client tells the server where it is when it connects, so a date now means 9am where you are, and the bot says the time back in your time too. Durations like `6 hours` never had the problem",
+      "🤖 Changing the bot's personality actually changes the bot. It was reading hundreds of its own old replies every time it answered, so it kept copying the voice it was told to stop using — you could tell it \"you are no longer an anime waifu\" and get senpai back. It can now tell which lines are its own, and the personality you set is the last word it reads",
+      "The bot's memory no longer writes down how the bot talks, and `play` with no link stopped calling you senpai regardless of what the personality says"
+    ]
+  },
+  {
     "version": "0.94.0",
     "date": "2026-08-31",
     "changes": [

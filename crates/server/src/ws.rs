@@ -83,11 +83,34 @@ fn send_scoped(state: &SharedState, recipients: &Option<Vec<i64>>, event: Server
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct WsQuery {
+    /// Minutes to add to UTC for this client's local time, as
+    /// `-new Date().getTimezoneOffset()` gives it. Absent from older clients,
+    /// which is why it's optional rather than defaulted at the edge.
+    #[serde(default)]
+    tz: Option<i64>,
+}
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<SharedState>,
+    axum::extract::Query(q): axum::extract::Query<WsQuery>,
     AuthUser(user): AuthUser,
 ) -> Response {
+    // Remembered per person, refreshed on every connect, so a laptop that
+    // crosses a timezone corrects itself the next time it reconnects.
+    if let Some(tz) = q.tz.filter(|t| (-16 * 60..=16 * 60).contains(t)) {
+        let db = state.db.clone();
+        let id = user.id;
+        tokio::spawn(async move {
+            let _ = sqlx::query("UPDATE users SET tz_offset_minutes = ? WHERE id = ?")
+                .bind(tz)
+                .bind(id)
+                .execute(&db)
+                .await;
+        });
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state, user))
 }
 
@@ -387,8 +410,9 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 let state = state.clone();
                 let user_id = user.id;
                 tokio::spawn(async move {
-                    let reply = match crate::reminders::parse(&rest, crate::now_ms()) {
-                        Ok(reminder) => match crate::reminders::schedule(&state, user_id, &reminder).await {
+                    let offset = crate::reminders::offset_for(&state, user_id).await;
+                    let reply = match crate::reminders::parse(&rest, crate::now_ms(), offset) {
+                        Ok(reminder) => match crate::reminders::schedule(&state, user_id, &reminder, offset).await {
                             Ok(ok) => ok,
                             Err(e) => {
                                 tracing::warn!("could not store reminder: {e}");

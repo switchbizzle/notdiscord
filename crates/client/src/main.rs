@@ -3577,7 +3577,7 @@ fn MainView(session: api::Session) -> Element {
                                                     oninput: move |e| persona_draft.set(e.value()),
                                                 }
                                                 div { class: "srv-hint",
-                                                    "The system prompt the bot answers with. It keeps its memory across changes."
+                                                    "How the bot talks. Takes effect on its next reply; what it remembers about the channel is kept."
                                                 }
                                             }
                                             div { class: "srv-field",
