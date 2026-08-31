@@ -877,11 +877,11 @@ button.sidebar-title:hover { background: #35373c; }
    the two sit together rather than at opposite ends (Jon). */
 .channel-header-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-input {
-    /* Grows into whatever the header isn't using, up to a point — the old
-       fixed 200px was the reason it looked cramped. */
-    flex: 1 1 220px;
-    max-width: 460px;
-    min-width: 140px;
+    /* Smaller than it was: it only appears when the magnifying glass is
+       pressed, so it no longer has to look like part of the furniture (Jon). */
+    flex: 0 1 260px;
+    max-width: 260px;
+    min-width: 120px;
     background: #1e1f22;
     font-size: 13px;
     font-weight: 400;

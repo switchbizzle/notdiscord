@@ -1214,6 +1214,17 @@ fn MainView(session: api::Session) -> Element {
     let mut emoji_dismissed = use_signal(|| None::<String>);
     let mut incoming_call = use_signal(|| None::<(i64, User)>);
     let mut search_query = use_signal(String::new);
+    // The field is hidden behind the magnifying glass until asked for (Jon).
+    let mut search_open = use_signal(|| false);
+    // Opening it and then having to click it is one click too many. Runs
+    // after render, which is the earliest the field exists to be focused.
+    use_effect(move || {
+        if search_open() {
+            dioxus::document::eval(
+                "const el = document.querySelector('.search-input'); if (el) el.focus();",
+            );
+        }
+    });
     let mut search_results = use_signal(|| None::<Vec<shared::SearchResult>>);
     let mut pins_open = use_signal(|| None::<Vec<Message>>);
     // Pings you'd otherwise miss: (id, channel_id, message_id, author, where, text).
@@ -4835,6 +4846,23 @@ fn MainView(session: api::Session) -> Element {
             div { class: "main",
                 div { class: "channel-header",
                     div { class: "channel-header-label", "{selected_label}" }
+                    button {
+                        class: if search_open() { "call-btn active" } else { "call-btn" },
+                        title: "Search messages",
+                        onclick: move |_| {
+                            let opening = !search_open();
+                            search_open.set(opening);
+                            if !opening {
+                                // Closing puts the header back as it was, and
+                                // leaving a stale result list behind it would
+                                // be its own small confusion.
+                                search_query.set(String::new());
+                                search_results.set(None);
+                            }
+                        },
+                        Icon { name: "search", size: 16 }
+                    }
+                    if search_open() {
                     input {
                         class: "search-input",
                         placeholder: "search messages…",
@@ -4858,8 +4886,13 @@ fn MainView(session: api::Session) -> Element {
                                         Err(e) => status.set(e),
                                     }
                                 });
+                            } else if e.key() == Key::Escape {
+                                search_open.set(false);
+                                search_query.set(String::new());
+                                search_results.set(None);
                             }
                         },
+                    }
                     }
                     if selected().is_some_and(|c| c.kind == "dm") {
                         button {

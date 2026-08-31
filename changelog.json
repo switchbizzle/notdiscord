@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.93.1",
+    "date": "2026-08-31",
+    "changes": [
+      "🔎 The search bar hides behind a magnifying glass now (Jon). Click it and the field slides out ready to type; click it again and it's gone, along with any results. Escape does the same"
+    ]
+  },
+  {
     "version": "0.93.0",
     "date": "2026-08-31",
     "changes": [
