@@ -50,6 +50,13 @@ pub struct VoiceStatus {
     /// Playback volume per identity (1.0 = 100%).
     pub volumes: HashMap<String, f32>,
     pub error: String,
+    /// The call dropped on its own and we mean to get back in. LiveKit only
+    /// reports Disconnected after its own retries have failed, so this means
+    /// the room is genuinely gone, not merely stuttering.
+    pub dropped: bool,
+    /// How many rejoin attempts have been made since the drop, so the caller
+    /// can back off and eventually stop.
+    pub rejoin_attempts: u32,
 }
 
 /// What to tell the encoder it is working on, given the screen's real size.
@@ -852,10 +859,17 @@ pub async fn voice_task(
                     stop_camera(&mut old, status).await;
                     old.room.close().await.ok();
                 }
+                // Carried across the attempt: a rejoin is a Join, and losing
+                // the counter here would restart the backoff every time.
+                let (was_dropped, attempts) = {
+                    let now = status.peek();
+                    (now.dropped, now.rejoin_attempts)
+                };
                 status.set(VoiceStatus {
                     channel_id: Some(channel_id),
                     channel_name: channel_name.clone(),
                     connecting: true,
+                    rejoin_attempts: attempts,
                     ..Default::default()
                 });
                 {
@@ -878,7 +892,14 @@ pub async fn voice_task(
                         play_voice_blip(true);
                     }
                     Err(e) => {
+                        // If this was an attempt to get back into a dropped
+                        // call, stay dropped so the backoff keeps going —
+                        // clearing it here would give up after one try.
                         status.set(VoiceStatus {
+                            channel_id: was_dropped.then_some(channel_id),
+                            channel_name: if was_dropped { channel_name.clone() } else { String::new() },
+                            dropped: was_dropped,
+                            rejoin_attempts: attempts,
                             error: format!("voice connect failed: {e}"),
                             ..Default::default()
                         });
@@ -1546,8 +1567,22 @@ async fn connect(
                     }
                 }
                 RoomEvent::Disconnected { .. } => {
+                    // Keep the channel: wiping it made a dropped call
+                    // indistinguishable from hanging up, and left the person
+                    // sitting in silence with nothing to rejoin (Jon).
                     let mut s = status;
-                    s.set(VoiceStatus { error: "disconnected from voice".into(), ..Default::default() });
+                    let was = s.peek().clone();
+                    s.set(VoiceStatus {
+                        channel_id: was.channel_id,
+                        channel_name: was.channel_name.clone(),
+                        muted: was.muted,
+                        deafened: was.deafened,
+                        volumes: was.volumes.clone(),
+                        dropped: true,
+                        rejoin_attempts: was.rejoin_attempts,
+                        error: "connection lost \u{2014} reconnecting\u{2026}".into(),
+                        ..Default::default()
+                    });
                     break;
                 }
                 _ => {}

@@ -882,6 +882,35 @@ fn LoginView(adding: Signal<bool>) -> Element {
     }
 }
 
+/// How many times to try getting back into a dropped call before giving up.
+/// With the backoff below that spans a bit over a minute.
+const REJOIN_ATTEMPTS: u32 = 6;
+
+/// What the rejoin loop should do about the current voice state.
+#[derive(Debug, PartialEq, Eq)]
+enum Rejoin {
+    /// Nothing to do: not in a call, or not dropped.
+    Idle,
+    /// Wait this many seconds, then try again.
+    Retry { after_secs: u64 },
+    /// Out of attempts; say so and stop.
+    GiveUp,
+}
+
+/// The rejoin policy, kept separate from the loop that runs it so the
+/// schedule can be tested without a voice server behind it.
+fn rejoin_decision(dropped: bool, in_a_channel: bool, attempts: u32) -> Rejoin {
+    if !dropped || !in_a_channel {
+        return Rejoin::Idle;
+    }
+    if attempts >= REJOIN_ATTEMPTS {
+        return Rejoin::GiveUp;
+    }
+    // 1, 2, 4, then 8s: a blip recovers almost at once, a real outage isn't
+    // hammered, and six attempts land a bit past a minute.
+    Rejoin::Retry { after_secs: 1u64 << attempts.min(3) }
+}
+
 /// How long a typing indicator stays visible after the last Typing event.
 const TYPING_TTL_MS: i64 = 4000;
 /// Minimum interval between Typing events we send while the user types.
@@ -1398,6 +1427,44 @@ fn MainView(session: api::Session) -> Element {
             }
         });
     };
+
+    // A dropped call gets itself back. Chat has always reconnected on its
+    // own; voice left you sitting in silence until you noticed (Jon's #9).
+    // Backs off so a server that is actually down isn't hammered, and stops
+    // after a minute rather than retrying into the void forever.
+    use_future(move || async move {
+        let mut voice_status = voice_status;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let snapshot = voice_status.peek().clone();
+            if !snapshot.dropped || snapshot.channel_id.is_none() {
+                continue;
+            }
+            let attempt = snapshot.rejoin_attempts;
+            let wait = match rejoin_decision(snapshot.dropped, true, attempt) {
+                Rejoin::Idle => continue,
+                Rejoin::GiveUp => {
+                    // Give up out loud, and stop pretending we're in a call.
+                    voice_status.set(voice::VoiceStatus {
+                        error: "voice disconnected — couldn't get back in".into(),
+                        ..Default::default()
+                    });
+                    continue;
+                }
+                Rejoin::Retry { after_secs } => after_secs,
+            };
+            voice_status.write().rejoin_attempts = attempt + 1;
+            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            // Someone may have hung up, or got back in, while we waited.
+            {
+                let now = voice_status.peek();
+                if !now.dropped || now.channel_id.is_none() {
+                    continue;
+                }
+            }
+            rejoin_voice();
+        }
+    });
 
     // First launch after an update: greet with what changed.
     use_future(move || async move {
@@ -7308,6 +7375,36 @@ mod logo_tests {
         // Not a blank square: the mark has to actually be in there.
         let opaque = rgba.chunks(4).filter(|p| p[3] > 200).count();
         assert!(opaque > (w * h / 2) as usize, "logo looks empty: {opaque} solid pixels");
+    }
+}
+
+#[cfg(test)]
+mod rejoin_tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_call_backs_off_then_gives_up() {
+        // Not in a call, or a call we hung up on: leave it alone.
+        assert_eq!(rejoin_decision(false, true, 0), Rejoin::Idle);
+        assert_eq!(rejoin_decision(true, false, 0), Rejoin::Idle);
+
+        // A blip recovers almost immediately, then eases off.
+        let waits: Vec<u64> = (0..REJOIN_ATTEMPTS)
+            .map(|n| match rejoin_decision(true, true, n) {
+                Rejoin::Retry { after_secs } => after_secs,
+                other => panic!("attempt {n} should retry, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(waits, vec![1, 2, 4, 8, 8, 8], "doubling, then capped");
+
+        // And it stops rather than retrying into the void forever.
+        assert_eq!(rejoin_decision(true, true, REJOIN_ATTEMPTS), Rejoin::GiveUp);
+        assert_eq!(rejoin_decision(true, true, 99), Rejoin::GiveUp);
+
+        // The whole run is around a minute: long enough for a lift or a
+        // router reboot, short enough not to look hung.
+        let total: u64 = waits.iter().sum();
+        assert!((30..=90).contains(&total), "spans about a minute, got {total}s");
     }
 }
 

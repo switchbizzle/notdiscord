@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.90.0",
+    "date": "2026-08-31",
+    "changes": [
+      "🎤 A dropped call gets itself back (Jon's #9). A wifi blip used to drop you out of voice and leave you sitting in silence until you noticed and rejoined by hand — the app now says \"connection lost, reconnecting\" and keeps trying, backing off, for about a minute before it admits defeat"
+    ]
+  },
+  {
     "version": "0.89.0",
     "date": "2026-08-31",
     "changes": [
