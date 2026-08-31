@@ -6536,6 +6536,19 @@ fn MusicQueue(music: Signal<shared::MusicState>, picked: Signal<HashSet<u64>>) -
                     "{remove_label}"
                 }
                 button {
+                    class: "qbtn",
+                    // One track can't be shuffled into a different order.
+                    disabled: state.queue.len() < 2,
+                    onclick: move |_| {
+                        edit_queue(shared::MusicQueueRequest {
+                            action: "shuffle".into(),
+                            ..Default::default()
+                        });
+                    },
+                    Icon { name: "shuffle", size: 13 }
+                    "Shuffle"
+                }
+                button {
                     class: "qbtn danger",
                     disabled: state.queue.is_empty(),
                     onclick: move |_| {

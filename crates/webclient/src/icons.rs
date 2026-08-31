@@ -8,6 +8,7 @@ pub fn icon_svg(name: &str) -> &'static str {
     match name {
         "menu" => include_str!("../../client/assets/icons/menu.svg"),
         "music" => include_str!("../../client/assets/icons/music.svg"),
+        "shuffle" => include_str!("../../client/assets/icons/shuffle.svg"),
         "user" => include_str!("../../client/assets/icons/user.svg"),
         "send" => include_str!("../../client/assets/icons/send.svg"),
         "plus" => include_str!("../../client/assets/icons/plus.svg"),

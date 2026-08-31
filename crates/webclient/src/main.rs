@@ -1294,7 +1294,29 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     }
                                 }
                             }
-                            div { class: "queue-head", "Up next" }
+                            div { class: "queue-head",
+                                span { class: "grow", "Up next" }
+                                if state.queue.len() > 1 {
+                                    button {
+                                        class: "queue-shuffle",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                let _ = api::music_queue(&sess(), shared::MusicQueueRequest {
+                                                    action: "shuffle".into(),
+                                                    id: None,
+                                                    offset: None,
+                                                    ids: Vec::new(),
+                                                }).await;
+                                                if let Ok(s) = api::music_state(&sess()).await {
+                                                    music.set(s);
+                                                }
+                                            });
+                                        },
+                                        Icon { name: "shuffle", size: 13 }
+                                        " Shuffle"
+                                    }
+                                }
+                            }
                             if state.queue.is_empty() {
                                 div { class: "np-empty", "queue's empty" }
                             }

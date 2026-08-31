@@ -462,3 +462,10 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
 .sticker-btn { background: none; border: none; color: #b5bac1; }
 /* A sticker on its own is a reaction, not a photo. */
 .msg-img.sticker-msg { max-width: 160px; max-height: 160px; cursor: default; }
+.queue-head { display: flex; align-items: center; gap: 8px; }
+.queue-shuffle {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: #2b2d31; border: none; color: #b5bac1;
+    border-radius: 6px; padding: 4px 9px; font-size: 12px;
+}
+.queue-shuffle:active { background: #3a3d44; }

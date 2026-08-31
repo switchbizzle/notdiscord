@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.87.0",
+    "date": "2026-08-31",
+    "changes": [
+      "🔀 Shuffle the music queue (switchb). There's a Shuffle button next to Clear in the queue rail, one in the phone's Up next list, and `shuffle` works as a command. It reorders what's waiting — whatever is playing keeps playing"
+    ]
+  },
+  {
     "version": "0.86.0",
     "date": "2026-08-30",
     "changes": [

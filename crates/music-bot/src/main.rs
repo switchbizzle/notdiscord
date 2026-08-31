@@ -204,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/queue/move", post(queue_move))
         .route("/queue/remove", post(queue_remove))
         .route("/queue/clear", post(queue_clear))
+        .route("/queue/shuffle", post(queue_shuffle))
         .with_state(state);
 
     let addr = std::env::var("MUSIC_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".into());
@@ -420,6 +421,29 @@ async fn queue_remove(State(state): State<Shared>, Json(req): Json<RemoveRequest
     let Some(session) = guard.as_mut() else { return StatusCode::NOT_FOUND };
     session.queue.retain(|t| !req.ids.contains(&t.id));
     StatusCode::NO_CONTENT
+}
+
+/// Shuffle what's waiting. The playing track is not in the queue, so it keeps
+/// playing — this reorders what comes after it, which is what anyone means by
+/// shuffling a queue mid-song.
+async fn queue_shuffle(State(state): State<Shared>) -> StatusCode {
+    let mut guard = state.session.lock().unwrap();
+    let Some(session) = guard.as_mut() else { return StatusCode::NOT_FOUND };
+    shuffle_queue(&mut session.queue);
+    StatusCode::NO_CONTENT
+}
+
+/// Reorder in place, keeping every track. Separate from the handler so it can
+/// be tested without a LiveKit session behind it.
+fn shuffle_queue(queue: &mut VecDeque<Track>) {
+    use rand::seq::SliceRandom;
+    if queue.len() < 2 {
+        return;
+    }
+    // A VecDeque can be split across the ring, so shuffle it as one slice.
+    let mut items: Vec<Track> = queue.drain(..).collect();
+    items.shuffle(&mut rand::thread_rng());
+    *queue = items.into();
 }
 
 async fn queue_clear(State(state): State<Shared>) -> StatusCode {
@@ -1015,6 +1039,48 @@ async fn stream_pcm(source: &NativeAudioSource, stream_url: &str, controls: &Con
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn track(id: u64) -> Track {
+        Track {
+            id,
+            url: format!("https://example.com/{id}"),
+            title: format!("track {id}"),
+            artist: String::new(),
+            art: None,
+            duration: None,
+            meta_locked: false,
+        }
+    }
+
+    #[test]
+    fn shuffling_keeps_every_track_and_actually_reorders() {
+        // Empty and single queues are left alone rather than panicking.
+        let mut empty: VecDeque<Track> = VecDeque::new();
+        shuffle_queue(&mut empty);
+        assert!(empty.is_empty());
+
+        let mut one: VecDeque<Track> = vec![track(1)].into();
+        shuffle_queue(&mut one);
+        assert_eq!(one.len(), 1);
+
+        // Nothing is lost or duplicated, however it lands.
+        let original: Vec<u64> = (1..=25).collect();
+        let mut queue: VecDeque<Track> = original.iter().map(|i| track(*i)).collect();
+        shuffle_queue(&mut queue);
+        let mut ids: Vec<u64> = queue.iter().map(|t| t.id).collect();
+        assert_eq!(ids.len(), original.len(), "no track dropped or duplicated");
+        ids.sort_unstable();
+        assert_eq!(ids, original, "same set of tracks, different order");
+
+        // And it does reorder. One shuffle of 25 can theoretically come back
+        // identical, so try a few before calling it stuck.
+        let stayed_put = (0..8).all(|_| {
+            let mut q: VecDeque<Track> = original.iter().map(|i| track(*i)).collect();
+            shuffle_queue(&mut q);
+            q.iter().map(|t| t.id).eq(original.iter().copied())
+        });
+        assert!(!stayed_put, "eight shuffles all returned the original order");
+    }
 
     /// One test for the whole cookie lifecycle: the slot is process-global and
     /// the file path is fixed, so splitting this up would just race with itself.

@@ -20,6 +20,7 @@ fn sidecar_url() -> String {
 pub enum MusicCmd {
     Play(String),
     Skip,
+    Shuffle,
     Stop,
     Pause,
     Resume,
@@ -64,6 +65,7 @@ pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
         "pause" => Some(MusicCmd::Pause),
         "resume" | "unpause" => Some(MusicCmd::Resume),
         "queue" | "q" | "np" | "nowplaying" => Some(MusicCmd::Queue),
+        "shuffle" | "shuf" => Some(MusicCmd::Shuffle),
         "ask" | "image" | "draw" => Some(MusicCmd::Ask),
         _ => None,
     }
@@ -154,6 +156,7 @@ pub async fn queue_endpoint(
             .post(format!("{}/queue/remove", sidecar_url()))
             .json(&serde_json::json!({ "ids": req.ids })),
         "clear" => http.post(format!("{}/queue/clear", sidecar_url())),
+        "shuffle" => http.post(format!("{}/queue/shuffle", sidecar_url())),
         _ => return StatusCode::BAD_REQUEST,
     };
     match call.timeout(std::time::Duration::from_secs(8)).send().await {
@@ -358,6 +361,15 @@ async fn run_command(
             Ok(truncated_note)
         }
         MusicCmd::Ask => Ok(String::new()), // handled by the LLM path
+        MusicCmd::Shuffle => {
+            let resp = http.post(format!("{}/queue/shuffle", sidecar_url())).send().await?;
+            // The queue in the rail repaints itself, so success says nothing.
+            Ok(if resp.status().is_success() {
+                String::new()
+            } else {
+                "nothing queued to shuffle".into()
+            })
+        }
         MusicCmd::Skip => {
             let resp = http.post(format!("{}/skip", sidecar_url())).send().await?;
             Ok(if resp.status().is_success() { String::new() } else { "nothing is playing".into() })
