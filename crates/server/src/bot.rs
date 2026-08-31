@@ -761,6 +761,17 @@ async fn draw_image(state: &SharedState, key: &str, prompt: &str) -> anyhow::Res
         .as_str()
         .unwrap_or_default();
     let Some((header, b64)) = data_url.split_once(",") else {
+        // No picture, but the model usually says why — it declines to draw a
+        // named person, or wants the prompt to be more specific. That answer
+        // is the useful thing, so pass it on instead of a shrug; the generic
+        // error is only for when there is genuinely nothing to relay.
+        if let Some(said) = response["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(said.to_owned());
+        }
         anyhow::bail!("image model returned no image: {response}");
     };
     let ext = if header.contains("jpeg") { "jpg" } else { "png" };

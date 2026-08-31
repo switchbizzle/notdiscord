@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.94.2",
+    "date": "2026-08-31",
+    "changes": [
+      "🖼️ The bot tells you why it didn't draw something. `/image make a photo of @junkfoodjon` got \"the image model didn't give me a picture back\", when what the model actually said was that it won't draw a named person and asked what to draw instead. It had an answer the whole time and we were throwing it away — now you get its words, and the generic error only shows up when there's genuinely nothing to pass on"
+    ]
+  },
+  {
     "version": "0.94.1",
     "date": "2026-08-31",
     "changes": [
