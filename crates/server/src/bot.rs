@@ -21,11 +21,21 @@ const COMPACT_THRESHOLD: usize = 600_000;
 const KEEP_RAW_CHARS: usize = 150_000;
 const NOTES_CHAR_CAP: usize = 60_000;
 
-/// Ceiling on one reply. Chat answers are short because the prompt asks for
-/// short; this only has to be big enough for the times someone asks for a
-/// script, where the old 700 (~2800 chars) truncated the code mid-function.
-/// Long replies are split into several messages on the way out anyway.
-const REPLY_MAX_TOKENS: u32 = 2_500;
+/// Ceiling on one reply. Generous on purpose: on a reasoning model this
+/// budget covers the thinking AND the answer, and a model that spends it all
+/// thinking returns `finish_reason: length` with no content at all — which
+/// looks exactly like a crash from the outside. Chat answers stay short
+/// because the prompt asks for short, and long ones are split into several
+/// messages on the way out.
+const REPLY_MAX_TOKENS: u32 = 8_000;
+
+/// Reasoning models are asked to think briefly. Chat wants an answer in a few
+/// seconds, not a plan; left alone, a thorough one will happily spend the
+/// whole budget deliberating and never speak. Models without reasoning ignore
+/// this.
+fn reasoning_effort() -> serde_json::Value {
+    serde_json::json!({ "effort": "low" })
+}
 
 /// The personality admins get out of the box (and can rewrite in Settings →
 /// Server). Chosen by the crew: the anime waifu bot.
@@ -519,6 +529,19 @@ fn response_text(response: &serde_json::Value) -> anyhow::Result<String> {
         .trim()
         .to_owned();
     if text.is_empty() {
+        // A reasoning model that spends its whole budget thinking returns no
+        // content at all, which is indistinguishable from a crash unless you
+        // go and read the server log. Name it, because the fix is a setting.
+        let choice = &response["choices"][0];
+        if choice["finish_reason"] == "length"
+            && choice["message"]["reasoning"].as_str().is_some_and(|r| !r.is_empty())
+        {
+            anyhow::bail!(
+                "the model used its entire token budget on reasoning and never wrote a \
+                 reply (finish_reason: length). Raise REPLY_MAX_TOKENS or lower the \
+                 reasoning effort."
+            );
+        }
         anyhow::bail!("openrouter returned an empty reply: {response}");
     }
     Ok(text)
@@ -692,6 +715,7 @@ async fn generate_reply(state: &SharedState, channel_id: i64) -> anyhow::Result<
         serde_json::json!({
             "model": chat_model,
             "max_tokens": REPLY_MAX_TOKENS,
+            "reasoning": reasoning_effort(),
             "tools": tools,
             "messages": [
                 { "role": "system", "content": system.clone() },
@@ -829,6 +853,7 @@ async fn web_answer(
         serde_json::json!({
             "model": model,
             "max_tokens": REPLY_MAX_TOKENS,
+            "reasoning": reasoning_effort(),
             "plugins": [{ "id": "web", "max_results": 5 }],
             "messages": [
                 { "role": "system", "content": system },

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.4",
+    "date": "2026-08-31",
+    "changes": [
+      "🤔 The bot stopped running out of room mid-thought. Newer models think before they answer, and that thinking spends the same token budget the reply comes out of — so GLM 5.3 read the question, decided to help, planned the whole script, and hit the ceiling before writing one character of it. All you saw was \"something went wrong while I was thinking\", which was true and useless. The budget is much bigger now, and it's asked to think briefly, which makes replies quicker too",
+      "When it does happen, the log says so in one line instead of making you read a page of JSON to work out that nothing actually broke"
+    ]
+  },
+  {
     "version": "0.94.3",
     "date": "2026-08-31",
     "changes": [
