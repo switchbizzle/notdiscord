@@ -144,6 +144,9 @@ fn now_ms() -> i64 {
     js_sys::Date::now() as i64
 }
 
+/// How long a message may sit unconfirmed before it is called failed.
+/// Generous: a slow phone connection is not the same as a lost message.
+const SEND_TIMEOUT_MS: i64 = 12_000;
 const TYPING_TTL_MS: i64 = 4000;
 const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 
@@ -560,6 +563,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // user id -> (channel, name, expiry)
     let mut typing = use_signal(std::collections::HashMap::<i64, (i64, String, i64)>::new);
     let mut last_typing_sent = use_signal(|| 0i64);
+    // Messages shown before the server has confirmed them. A pending message
+    // carries a negative id — real ids are a positive autoincrement, so the
+    // sign alone says "not yet real" without changing the wire type.
+    let mut pending_at = use_signal(std::collections::HashMap::<i64, i64>::new);
+    let mut failed_sends = use_signal(std::collections::HashSet::<i64>::new);
+    let mut next_temp_id = use_signal(|| -1i64);
     // The server's own name, so the drawer says where you are rather than
     // what the app is called.
     let mut server_name = use_signal(String::new);
@@ -731,11 +740,28 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             if typing.peek().values().any(|(_, _, expiry)| *expiry < now) {
                 typing.write().retain(|_, (_, _, expiry)| *expiry >= now);
             }
+            // A send that hasn't come back by now probably never will: the
+            // socket ignores write errors, so one dequeued as the connection
+            // died is gone without a word. Say so instead of leaving a ghost
+            // sitting there forever.
+            let overdue: Vec<i64> = pending_at
+                .peek()
+                .iter()
+                .filter(|(id, at)| now - **at > SEND_TIMEOUT_MS && !failed_sends.peek().contains(id))
+                .map(|(id, _)| *id)
+                .collect();
+            if !overdue.is_empty() {
+                failed_sends.write().extend(overdue);
+            }
         }
     });
 
     // WebSocket: outgoing ClientEvents in, ServerEvents applied to signals.
     let ws = use_coroutine(move |mut rx: UnboundedReceiver<ClientEvent>| async move {
+        // Anything the socket refused. Without this, an event pulled off the
+        // queue just as the connection died was dropped with `let _ =` and
+        // never mentioned again — a message you watched disappear.
+        let mut outbox: Vec<ClientEvent> = Vec::new();
         loop {
             let proto = if web_sys::window()
                 .map(|w| w.location().protocol().unwrap_or_default())
@@ -767,6 +793,20 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     let _ = sink.send(gloo_net::websocket::Message::Text(text)).await;
                 }
             }
+            // Whatever didn't make it last time goes first, in order.
+            let mut requeue = Vec::new();
+            for event in outbox.drain(..) {
+                match serde_json::to_string(&event) {
+                    Ok(text) => {
+                        if sink.send(gloo_net::websocket::Message::Text(text)).await.is_err() {
+                            requeue.push(event);
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            outbox = requeue;
+
             // select! needs fused streams; the coroutine receiver already is.
             let mut stream = stream.fuse();
             loop {
@@ -774,7 +814,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     out = rx.next() => {
                         let Some(event) = out else { return };
                         if let Ok(text) = serde_json::to_string(&event) {
-                            let _ = sink.send(gloo_net::websocket::Message::Text(text)).await;
+                            if sink.send(gloo_net::websocket::Message::Text(text)).await.is_err() {
+                                // Hold it and reconnect rather than losing it.
+                                outbox.push(event);
+                                break;
+                            }
                         }
                     }
                     incoming = stream.next() => {
@@ -787,6 +831,24 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         match event {
                             ServerEvent::MessageCreated { message } => {
                                 typing.write().remove(&message.author.id);
+                                // Our own message coming back: drop the ghost
+                                // it confirms. Matched on content rather than
+                                // an id the server doesn't know about — two
+                                // identical messages resolve against either
+                                // echo, which is indistinguishable anyway.
+                                if message.author.id == sess().user.id {
+                                    let mut list = messages.write();
+                                    if let Some(at) = list
+                                        .iter()
+                                        .position(|m| m.id < 0 && m.content == message.content)
+                                    {
+                                        let ghost = list[at].id;
+                                        list.remove(at);
+                                        drop(list);
+                                        pending_at.write().remove(&ghost);
+                                        failed_sends.write().remove(&ghost);
+                                    }
+                                }
                                 if selected.peek().as_ref().map(|c| c.id) == Some(message.channel_id) {
                                     let (id, chan) = (message.id, message.channel_id);
                                     messages.write().push(message);
@@ -1007,7 +1069,30 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             return;
         }
         let reply_to = replying.peek().as_ref().map(|m| m.id);
+        let reply_preview = replying.peek().as_ref().map(|m| shared::ReplyPreview {
+            author: m.author.username.clone(),
+            content: m.content.clone(),
+        });
         replying.set(None);
+
+        // Put it on screen now. On a bad connection the socket may take
+        // seconds to get this out, and staring at an empty channel wondering
+        // whether it sent is the thing being fixed.
+        let temp_id = next_temp_id();
+        next_temp_id.set(temp_id - 1);
+        messages.write().push(Message {
+            id: temp_id,
+            channel_id: channel.id,
+            author: sess().user.clone(),
+            content: content.clone(),
+            created_at: now_ms(),
+            edited_at: None,
+            reactions: Vec::new(),
+            reply_to,
+            reply_preview,
+            pinned: false,
+        });
+        pending_at.write().insert(temp_id, now_ms());
         ws.send(ClientEvent::SendMessage { channel_id: channel.id, content, reply_to });
     };
 
@@ -1353,7 +1438,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     // Grouped in reading order, then reversed: column-reverse
                     // pins the view to the newest message.
                     for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                        MessageRow { key: "{msg.id}", msg, compact, me_id, me_admin }
+                        MessageRow {
+                            key: "{msg.id}",
+                            failed: failed_sends().contains(&msg.id),
+                            msg,
+                            compact,
+                            me_id,
+                            me_admin,
+                        }
                     }
                     if has_more() {
                         button { class: "load-older", onclick: load_older, "Load older messages" }
@@ -1924,7 +2016,9 @@ fn LinkCard(url: String) -> Element {
 const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "🔥"];
 
 #[component]
-fn MessageRow(msg: Message, compact: bool, me_id: i64, me_admin: bool) -> Element {
+fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: bool) -> Element {
+    // Negative id: shown but not yet confirmed by the server.
+    let pending = msg.id < 0;
     let ws = use_coroutine_handle::<ClientEvent>();
     let mut replying = use_context::<Signal<Option<Message>>>();
     let mut lightbox = use_context::<Signal<Option<Lightbox>>>();
@@ -1974,7 +2068,14 @@ fn MessageRow(msg: Message, compact: bool, me_id: i64, me_admin: bool) -> Elemen
     }
 
     rsx! {
-        div { class: if compact { "msg compact" } else { "msg" },
+        div {
+            class: match (compact, pending, failed) {
+                (_, _, true) => "msg failed",
+                (true, true, _) => "msg compact pending",
+                (true, false, _) => "msg compact",
+                (false, true, _) => "msg pending",
+                (false, false, _) => "msg",
+            },
             // The gutter holds the avatar on the first message of a block and
             // stays empty (but present) on the rest, so every line in a block
             // shares one left edge.
@@ -2130,6 +2231,13 @@ fn MessageRow(msg: Message, compact: bool, me_id: i64, me_admin: bool) -> Elemen
                     Icon { name: "file", size: 14 }
                     " {name}"
                 }
+            }
+            // Deliberately not a retry button. An unsent message is still
+            // queued, and now survives a reconnect, so it goes out on its own
+            // — offering "try again" would send a second copy the moment the
+            // connection came back. Say what is actually true instead.
+            if failed {
+                div { class: "msg-failed-row", "still sending…" }
             }
             for link in preview_urls(&text) {
                 LinkCard { key: "{link}", url: link }

@@ -1842,7 +1842,10 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                             }
-                            ServerEvent::Error { .. } => {}
+                            // The flood guard's "slow down" warning, and
+                            // anything else the server refuses. It used to be
+                            // dropped on the floor at both ends.
+                            ServerEvent::Error { message } => status.set(message),
                         }
                     }
                 }
@@ -4811,6 +4814,14 @@ fn MainView(session: api::Session) -> Element {
                             "Video"
                         }
                     }
+                }
+                // The connection has always been tracked and never shown:
+                // `status` held "connecting…", "server unreachable, retrying…"
+                // and "disconnected, retrying…" and was rendered nowhere at
+                // all, so a dropped socket looked exactly like a quiet
+                // channel. Only speaks up when something is wrong.
+                if status() != "online" && !status().is_empty() {
+                    div { class: "conn-banner", "{status}" }
                 }
                 if view_tab() == "music" {
                     MusicPlayer { music, volume: music_volume }

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.89.0",
+    "date": "2026-08-31",
+    "changes": [
+      "📤 Messages appear the moment you send them on the phone (Jon's #5). On a bad connection a sent message used to just sit in the void until it landed; now it's there straight away, greyed until the server confirms it, and says \"still sending\" if it's taking a while",
+      "🔐 And they no longer go missing. If the connection dies mid-send the message is held and sent again on reconnect, instead of being dropped without a word",
+      "📡 The desktop finally tells you when it's offline. It had always known — \"disconnected, retrying…\" was being tracked and displayed absolutely nowhere — so a dead connection looked just like a quiet channel. Same for anything the server refuses"
+    ]
+  },
+  {
     "version": "0.88.1",
     "date": "2026-08-31",
     "changes": [

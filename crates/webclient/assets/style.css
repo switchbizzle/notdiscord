@@ -469,3 +469,9 @@ input { font: inherit; color: inherit; border: 0; outline: none; }
     border-radius: 6px; padding: 4px 9px; font-size: 12px;
 }
 .queue-shuffle:active { background: #3a3d44; }
+
+/* A message on its way: there, but not landed yet. */
+.msg.pending { opacity: 0.55; }
+.msg.failed { opacity: 0.9; }
+.msg.failed .msg-body { color: #dbdee1; }
+.msg-failed-row { font-size: 11px; color: #f0b232; margin-top: 2px; }

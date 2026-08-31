@@ -2749,3 +2749,11 @@ ul.md-list { list-style-type: disc; }
     margin-left: auto; color: #6b6f78; font-size: 11px;
     border: 1px solid #3f4147; border-radius: 4px; padding: 1px 5px;
 }
+
+/* Only visible when the connection isn't healthy. */
+.conn-banner {
+    background: #5a3a1a; color: #f0b232;
+    font-size: 12px; text-align: center;
+    padding: 5px 10px; border-bottom: 1px solid #6b4520;
+    flex: 0 0 auto;
+}
