@@ -21,6 +21,8 @@ pub enum MusicCmd {
     Play(String),
     Skip,
     Shuffle,
+    /// `/image <prompt>` — draw it, don't discuss it.
+    Draw(String),
     Stop,
     Pause,
     Resume,
@@ -66,7 +68,12 @@ pub fn parse_command(content: &str, bot_name: &str) -> Option<MusicCmd> {
         "resume" | "unpause" => Some(MusicCmd::Resume),
         "queue" | "q" | "np" | "nowplaying" => Some(MusicCmd::Queue),
         "shuffle" | "shuf" => Some(MusicCmd::Shuffle),
-        "ask" | "image" | "draw" => Some(MusicCmd::Ask),
+        "ask" => Some(MusicCmd::Ask),
+        // Carries its prompt: /image is an instruction, not a topic to chat
+        // about, so it goes straight to the image model.
+        "image" | "draw" => Some(MusicCmd::Draw(
+            words.map(str::to_owned).collect::<Vec<_>>().join(" "),
+        )),
         _ => None,
     }
 }
@@ -361,6 +368,8 @@ async fn run_command(
             Ok(truncated_note)
         }
         MusicCmd::Ask => Ok(String::new()), // handled by the LLM path
+        // Handled by bot::draw_now before it reaches here.
+        MusicCmd::Draw(_) => Ok(String::new()),
         MusicCmd::Shuffle => {
             let resp = http.post(format!("{}/queue/shuffle", sidecar_url())).send().await?;
             // The queue in the rail repaints itself, so success says nothing.

@@ -376,6 +376,31 @@ static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Fire-and-forget: generate and post a reply to the latest messages in
 /// `channel_id`. Call after the triggering user message was committed.
+/// Draw something and post it, no model discretion involved. This is what
+/// `/image` runs, so the command either produces a picture or says plainly
+/// why it couldn't.
+pub fn draw_now(state: SharedState, channel_id: i64, prompt: String) {
+    tokio::spawn(async move {
+        let reply = if prompt.trim().is_empty() {
+            "tell me what to draw — `/image a cat in a spacesuit`".to_owned()
+        } else {
+            match api_key(&state).await {
+                None => "no OpenRouter key set — an admin can add one in Server settings → Bot"
+                    .to_owned(),
+                Some(key) => match draw_image(&state, &key, prompt.trim()).await {
+                    Ok(reply) => reply,
+                    Err(e) => {
+                        tracing::warn!("draw failed: {e}");
+                        "the image model didn't give me a picture back 😵 — try again, or reword it"
+                            .to_owned()
+                    }
+                },
+            }
+        };
+        let _ = post_message(&state, channel_id, &reply).await;
+    });
+}
+
 pub fn maybe_answer(state: SharedState, channel_id: i64) {
     tokio::spawn(async move {
         let Ok(_permit) = IN_FLIGHT.try_acquire() else {
@@ -673,8 +698,9 @@ fn recent_image_urls(entries: &[(i64, String)], max: usize) -> Vec<String> {
 /// message embedding it.
 async fn draw_image(state: &SharedState, key: &str, prompt: &str) -> anyhow::Result<String> {
     let Some(base) = public_url() else {
-        return Ok("I'd love to draw that, but the server doesn't know its public URL yet \
-                   (set NOTDISCORD_PUBLIC_URL) so I can't post images (◞‸◟)"
+        return Ok("I can draw, but I don't know this server's public address, so I've \
+                   nowhere to put the picture. Whoever runs it needs to set \
+                   NOTDISCORD_PUBLIC_URL (◞‸◟)"
             .into());
     };
 

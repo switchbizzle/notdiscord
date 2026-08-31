@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.0",
+    "date": "2026-08-31",
+    "changes": [
+      "⏰ /remindme (switchb). `/remindme 6 hours check the oven`, `/remindme 7 days`, `/remindme 9/7/2026 dentist` — the bot DMs you when it's time. It says the exact time back so there's no guessing, and reminders survive a server restart",
+      "🖼️ /image actually draws now. It was going through the chat model, which would sometimes say \"Here you go!\" and attach nothing — Jon burned credits on that twice. The command goes straight to the image model, and if it can't produce something it says why instead of pretending",
+      "And the servers now know their own public address, without which the bot had nowhere to put a picture even when it did draw one"
+    ]
+  },
+  {
     "version": "0.93.2",
     "date": "2026-08-31",
     "changes": [

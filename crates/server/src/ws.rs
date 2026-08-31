@@ -358,6 +358,12 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             } else {
                 None
             };
+            // /remindme sits outside the music commands: it is the only one
+            // that answers later rather than now.
+            let remind_arg = (user.id != bot.id)
+                .then(|| content.trim_start())
+                .and_then(|t| t.strip_prefix("/remindme").or_else(|| t.strip_prefix("/remind")))
+                .map(|rest| rest.to_owned());
             let message = Message {
                 id: result.last_insert_rowid(),
                 channel_id,
@@ -377,8 +383,30 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
 
             // Summoned? Music commands are deterministic and free; questions
             // (and /ask, /image) go to the LLM. Both run in the background.
+            if let Some(rest) = remind_arg {
+                let state = state.clone();
+                let user_id = user.id;
+                tokio::spawn(async move {
+                    let reply = match crate::reminders::parse(&rest, crate::now_ms()) {
+                        Ok(reminder) => match crate::reminders::schedule(&state, user_id, &reminder).await {
+                            Ok(ok) => ok,
+                            Err(e) => {
+                                tracing::warn!("could not store reminder: {e}");
+                                "couldn't save that one, sorry".to_owned()
+                            }
+                        },
+                        Err(why) => why.to_owned(),
+                    };
+                    let _ = crate::bot::post_message(&state, channel_id, &reply).await;
+                });
+                return Ok(());
+            }
+
             match music_cmd {
                 Some(crate::music::MusicCmd::Ask) => crate::bot::maybe_answer(state.clone(), channel_id),
+                Some(crate::music::MusicCmd::Draw(prompt)) => {
+                    crate::bot::draw_now(state.clone(), channel_id, prompt)
+                }
                 Some(cmd) => crate::music::handle_command(state.clone(), user.clone(), channel_id, cmd),
                 None if mentioned_bot => crate::bot::maybe_answer(state.clone(), channel_id),
                 None => {}

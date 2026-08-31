@@ -6880,6 +6880,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/skip", "skip to the next track"),
     ("/queue", "see what's playing and what's next"),
     ("/stop", "stop the music and leave voice"),
+    ("/remindme", "get a DM later — /remindme 2 hours check the oven, or /remindme 9/7/2026 dentist"),
     ("/ask", "ask the bot a question — /ask <question>"),
     ("/image", "have the bot draw something — /image <prompt>"),
 ];

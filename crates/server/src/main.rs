@@ -7,6 +7,7 @@ mod music;
 mod preview;
 mod push;
 mod ratelimit;
+mod reminders;
 mod routes;
 mod spotify;
 mod thumbs;
@@ -232,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
 
     // LiveKit is the authority on who's actually in a voice room.
     tokio::spawn(voice_sync::sync_loop(state.clone()));
+    tokio::spawn(reminders::sweep_forever(state.clone()));
 
     // Hourly sweep of expired uploads (avatars and stickers are protected).
     {
