@@ -128,6 +128,26 @@ pub fn copy_selection_or(fallback: String) {
 
 /// Download `url` to wherever the user picks. The name from the URL is the
 /// suggested filename, which is what the browser would offer too.
+/// `photo.png` in a folder that already has one becomes `photo (1).png`.
+/// Counts up rather than clobbering, and gives up politely if a folder is
+/// somehow full of them.
+fn unique_name(dir: &std::path::Path, name: &str) -> String {
+    if !dir.join(name).exists() {
+        return name.to_owned();
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    for n in 1..1000 {
+        let candidate = format!("{stem} ({n}){ext}");
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    name.to_owned()
+}
+
 pub fn save_url_as(url: String) {
     spawn(async move {
         let suggested = url
@@ -138,9 +158,16 @@ pub fn save_url_as(url: String) {
             .next()
             .unwrap_or("download")
             .to_owned();
-        let Some(handle) =
-            rfd::AsyncFileDialog::new().set_file_name(&suggested).save_file().await
-        else {
+        // Server files are named alike often enough that saving two in a row
+        // meant an overwrite prompt every time (Jon). Offer a name that
+        // doesn't collide instead of one that does.
+        let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+        let suggested = unique_name(&dir, &suggested);
+        let mut dialog = rfd::AsyncFileDialog::new().set_file_name(&suggested);
+        if dir.is_dir() {
+            dialog = dialog.set_directory(&dir);
+        }
+        let Some(handle) = dialog.save_file().await else {
             return;
         };
         let Ok(response) = reqwest::get(&url).await else { return };
@@ -213,4 +240,39 @@ fn field_select_all() {
     dioxus::document::eval(
         "const el = document.activeElement; if (el && el.select) { el.focus(); el.select(); }",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saving_the_same_name_twice_counts_up_instead_of_clobbering() {
+        let dir = std::env::temp_dir().join("nd-unique-name-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        // Nothing there yet: the name is used as-is.
+        assert_eq!(unique_name(&dir, "photo.png"), "photo.png");
+
+        std::fs::write(dir.join("photo.png"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "photo.png"), "photo (1).png");
+
+        std::fs::write(dir.join("photo (1).png"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "photo.png"), "photo (2).png");
+
+        // The extension survives, and a name without one still works.
+        std::fs::write(dir.join("notes"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "notes"), "notes (1)");
+
+        // A dotfile has no stem to speak of; don't turn ".env" into " (1).env".
+        std::fs::write(dir.join(".env"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, ".env"), ".env (1)");
+
+        // Several dots keep everything but the last as the stem.
+        std::fs::write(dir.join("clip.tar.gz"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "clip.tar.gz"), "clip.tar (1).gz");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

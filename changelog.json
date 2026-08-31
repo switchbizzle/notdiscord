@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.93.0",
+    "date": "2026-08-31",
+    "changes": [
+      "⬆️ Press up with an empty message box to reply to whoever spoke last. Press it again to walk back through whoever spoke before that; it skips you, and escape cancels (Jon)",
+      "🔍 Top bar rearranged: the search box sits next to the channel name and is much wider, with pin and files after it (Jon)",
+      "💾 Saving a picture from the viewer no longer opens a browser to do it — same save dialog as the right-click menu. And it won't hand you the same filename twice: a second photo.png becomes photo (1).png",
+      "🔴 The tray's unread dot moved to the top right of the icon, where Jon asked for it and where every other app puts it",
+      "🖱️ Right-click menus near the bottom of the window no longer run off the edge (Jon)"
+    ]
+  },
+  {
     "version": "0.92.1",
     "date": "2026-08-31",
     "changes": [

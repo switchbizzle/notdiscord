@@ -1119,6 +1119,18 @@ fn MainView(session: api::Session) -> Element {
     use_context_provider(|| JumpTo(jump_to));
     // The one open right-click menu, wherever it was opened from.
     let ctx_menu: menu::MenuSignal = use_context_provider(|| Signal::new(None::<menu::Menu>));
+    // A context menu is placed at the pointer, which near an edge puts half of
+    // it off-screen — worst at the bottom, where the useful items are (Jon).
+    // Nudged back in after it renders, because that is the first moment its
+    // real size is known: the item count varies and estimating it would be
+    // wrong for exactly the menus that matter.
+    use_effect(move || {
+        if ctx_menu().is_some() {
+            dioxus::document::eval(
+                "const m = document.querySelector('.ctx-menu');                 if (m) {                   const r = m.getBoundingClientRect();                   const pad = 6;                   let x = r.left, y = r.top;                   if (r.right > innerWidth - pad) x = Math.max(pad, innerWidth - r.width - pad);                   if (r.bottom > innerHeight - pad) y = Math.max(pad, innerHeight - r.height - pad);                   m.style.left = x + 'px';                   m.style.top = y + 'px';                 }",
+            );
+        }
+    });
     // A person is a person wherever they turn up, so the member list and the
     // voice roster offer the same menu.
     let member_items = move |user: User, banned: bool, is_admin: bool| -> Vec<menu::Item> {
@@ -1197,6 +1209,8 @@ fn MainView(session: api::Session) -> Element {
     let mut player_volume = use_signal(|| 100i64);
     let mut mention_sel = use_signal(|| 0usize);
     let mut emoji_sel = use_signal(|| 0usize);
+    // How far back through recent speakers the up-arrow has walked.
+    let mut reply_cycle = use_signal(|| 0usize);
     let mut emoji_dismissed = use_signal(|| None::<String>);
     let mut incoming_call = use_signal(|| None::<(i64, User)>);
     let mut search_query = use_signal(String::new);
@@ -4220,12 +4234,11 @@ fn MainView(session: api::Session) -> Element {
                                 let url = url.clone();
                                 move |e: MouseEvent| {
                                     e.stop_propagation();
-                                    let save_url = if url.contains("/files/") {
-                                        format!("{url}?dl=1")
-                                    } else {
-                                        url.clone()
-                                    };
-                                    let _ = open::that(&save_url);
+                                    // Straight to a save dialog. This used to
+                                    // hand the URL to the browser, which
+                                    // opened a window just to download a file
+                                    // the app already had (Jon).
+                                    menu::save_url_as(url.clone());
                                 }
                             },
                             "Save"
@@ -4822,6 +4835,32 @@ fn MainView(session: api::Session) -> Element {
             div { class: "main",
                 div { class: "channel-header",
                     div { class: "channel-header-label", "{selected_label}" }
+                    input {
+                        class: "search-input",
+                        placeholder: "search messages…",
+                        value: "{search_query}",
+                        // Search terms aren't prose; red squiggles under names
+                        // and slang would be noise.
+                        spellcheck: "false",
+                        oncontextmenu: move |e: Event<MouseData>| {
+                            menu::open(ctx_menu, &e, menu::text_field_items())
+                        },
+                        oninput: move |e| search_query.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                let q = search_query();
+                                if q.trim().is_empty() {
+                                    return;
+                                }
+                                spawn(async move {
+                                    match api::search(&session(), &q).await {
+                                        Ok(results) => search_results.set(Some(results)),
+                                        Err(e) => status.set(e),
+                                    }
+                                });
+                            }
+                        },
+                    }
                     if selected().is_some_and(|c| c.kind == "dm") {
                         button {
                             class: "call-btn",
@@ -4875,32 +4914,6 @@ fn MainView(session: api::Session) -> Element {
                             });
                         },
                         Icon { name: "file", size: 16 }
-                    }
-                    input {
-                        class: "search-input",
-                        placeholder: "search messages…",
-                        value: "{search_query}",
-                        // Search terms aren't prose; red squiggles under names
-                        // and slang would be noise.
-                        spellcheck: "false",
-                        oncontextmenu: move |e: Event<MouseData>| {
-                            menu::open(ctx_menu, &e, menu::text_field_items())
-                        },
-                        oninput: move |e| search_query.set(e.value()),
-                        onkeydown: move |e| {
-                            if e.key() == Key::Enter {
-                                let q = search_query();
-                                if q.trim().is_empty() {
-                                    return;
-                                }
-                                spawn(async move {
-                                    match api::search(&session(), &q).await {
-                                        Ok(results) => search_results.set(Some(results)),
-                                        Err(e) => status.set(e),
-                                    }
-                                });
-                            }
-                        },
                     }
                     // Jon's ask: the tab lives at the top right of the middle
                     // panel and swaps the body between chat and the player.
@@ -5555,6 +5568,9 @@ fn MainView(session: api::Session) -> Element {
                                     emoji_dismissed.set(None);
                                 }
                             }
+                            // Once you've started writing, the next up-arrow
+                            // begins the walk again rather than resuming.
+                            reply_cycle.set(0);
                             slash_sel.set(0);
                             notify_typing();
                         },
@@ -5658,11 +5674,37 @@ fn MainView(session: api::Session) -> Element {
                                     _ => {}
                                 }
                             }
-                            if e.key() == Key::Enter {
+                            if e.key() == Key::ArrowUp {
+                                // Jon's QoL: up-arrow starts a reply to the
+                                // last person who spoke, and pressing it again
+                                // walks back through whoever spoke before
+                                // that. Only with an empty box — otherwise it
+                                // would fight the caret.
+                                if draft().is_empty() {
+                                    e.prevent_default();
+                                    let me = session().user.id;
+                                    // Each person once, most recent first.
+                                    let mut seen: Vec<i64> = Vec::new();
+                                    let mut targets: Vec<Message> = Vec::new();
+                                    for msg in messages().iter().rev() {
+                                        if msg.author.id == me || seen.contains(&msg.author.id) {
+                                            continue;
+                                        }
+                                        seen.push(msg.author.id);
+                                        targets.push(msg.clone());
+                                    }
+                                    if !targets.is_empty() {
+                                        let step = reply_cycle() % targets.len();
+                                        replying_to.set(Some(targets[step].clone()));
+                                        reply_cycle.set(step + 1);
+                                    }
+                                }
+                            } else if e.key() == Key::Enter {
                                 send();
                             } else if e.key() == Key::Escape {
                                 pending_files.set(Vec::new());
                                 replying_to.set(None);
+                                reply_cycle.set(0);
                             } else if e.key() == Key::Character("v".into())
                                 && e.modifiers().contains(Modifiers::CONTROL)
                             {

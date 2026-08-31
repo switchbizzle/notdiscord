@@ -873,15 +873,20 @@ button.sidebar-title:hover { background: #35373c; }
     border-bottom: 1px solid #26272b;
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
 }
-.channel-header-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* No longer grows: the search box next to it takes the slack instead, so
+   the two sit together rather than at opposite ends (Jon). */
+.channel-header-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-input {
-    width: 200px;
+    /* Grows into whatever the header isn't using, up to a point — the old
+       fixed 200px was the reason it looked cramped. */
+    flex: 1 1 220px;
+    max-width: 460px;
+    min-width: 140px;
     background: #1e1f22;
     font-size: 13px;
     font-weight: 400;
     padding: 6px 10px;
 }
-.search-input:focus { width: 260px; }
 
 .search-hit {
     background: #232428;
@@ -1594,7 +1599,9 @@ ul.md-list { list-style-type: disc; }
 .view-tabs {
     display: flex;
     gap: 3px;
-    margin-left: 10px;
+    /* Auto rather than a fixed gap: everything else clusters on the left and
+       the tabs stay pinned to the right edge. */
+    margin-left: auto;
     padding: 3px;
     background: #1e1f22;
     border-radius: 8px;

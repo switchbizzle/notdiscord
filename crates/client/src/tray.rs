@@ -76,8 +76,9 @@ fn make_icon(unread: bool) -> Icon {
     };
 
     if unread {
-        // Bottom-right, clear of the mark itself.
-        let (bx, by, br) = (23.0f32, 23.0f32, 8.0f32);
+        // Top-right, where Jon asked for it and where every other app puts
+        // it. Clear of the mark either way.
+        let (bx, by, br) = (23.0f32, 9.0f32, 8.0f32);
         for y in 0..S {
             for x in 0..S {
                 let d = ((x as f32 - bx).powi(2) + (y as f32 - by).powi(2)).sqrt();
