@@ -154,6 +154,67 @@ pub struct UserStatus {
     pub status: Option<String>,
 }
 
+/// How many reactors a pill names before it starts counting the rest.
+const REACTOR_NAME_CAP: usize = 8;
+
+/// Who is behind one reaction pill, in the order they reacted, resolved
+/// against the roster the client already holds — never a fetch per pill.
+/// Your own reaction reads "you". A reaction outlives the person who left it,
+/// so an id the roster doesn't know falls back to `user 12` rather than to
+/// nothing at all. The order matches the entries themselves, so a caller
+/// rendering avatars can pair the two up.
+pub fn reactor_names(
+    reactions: &[ReactionEntry],
+    emoji: &str,
+    roster: &[UserStatus],
+    me_id: i64,
+) -> Vec<String> {
+    reactions
+        .iter()
+        .filter(|r| r.emoji == emoji)
+        .map(|entry| {
+            if entry.user_id == me_id {
+                return "you".to_string();
+            }
+            match roster.iter().find(|m| m.user.id == entry.user_id) {
+                Some(member) => member.user.username.clone(),
+                None => format!("user {}", entry.user_id),
+            }
+        })
+        .collect()
+}
+
+/// "you", "you and Jon", "you, Jon and Ada", and past the cap
+/// "you, Jon, Ada … and 4 more" — a tooltip, not a census.
+pub fn join_names(names: &[String]) -> String {
+    match names.len() {
+        0 => String::new(),
+        1 => names[0].clone(),
+        n if n > REACTOR_NAME_CAP => format!(
+            "{} and {} more",
+            names[..REACTOR_NAME_CAP].join(", "),
+            n - REACTOR_NAME_CAP
+        ),
+        n => format!("{} and {}", names[..n - 1].join(", "), names[n - 1]),
+    }
+}
+
+/// The whole line a reaction pill shows on hover or in the reactor sheet:
+/// "jon and you reacted with 👍". Empty when nobody did, which shouldn't
+/// happen — a pill with no entries isn't rendered.
+pub fn reaction_tooltip(
+    reactions: &[ReactionEntry],
+    emoji: &str,
+    roster: &[UserStatus],
+    me_id: i64,
+) -> String {
+    let names = reactor_names(reactions, emoji, roster, me_id);
+    if names.is_empty() {
+        return String::new();
+    }
+    format!("{} reacted with {}", join_names(&names), emoji)
+}
+
 /// A custom cosmetic role: a named, colored badge admins assign to users.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
@@ -410,6 +471,10 @@ pub struct BotSettings {
     /// The LLM the bot answers with (not a secret, so it round-trips).
     #[serde(default)]
     pub model: String,
+    /// The model `/image` draws with. A separate setting because the two are
+    /// separate models: changing the chat one leaves drawing untouched.
+    #[serde(default)]
+    pub image_model: String,
     /// Secrets never travel back to the client — only whether they're set,
     /// and where they came from, so an admin can tell "the server was
     /// started with one" from "I typed one in here".
@@ -443,6 +508,8 @@ pub struct BotSettingsUpdate {
     pub announce_channel: Option<i64>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub image_model: Option<String>,
     /// Credential updates by key; an empty string clears one, and clearing
     /// falls back to whatever the environment provides.
     #[serde(default)]
@@ -452,6 +519,10 @@ pub struct BotSettingsUpdate {
 /// The model the bot uses when an admin hasn't picked one. Cheap, fast, and
 /// good enough for chat; anything on OpenRouter can replace it in settings.
 pub const DEFAULT_BOT_MODEL: &str = "google/gemini-2.5-flash-lite";
+
+/// What `/image` draws with when an admin hasn't picked one. Its refusals are
+/// its own — a different model is one box away in Settings → Bot.
+pub const DEFAULT_BOT_IMAGE_MODEL: &str = "google/gemini-2.5-flash-image";
 
 /// Upload storage usage and cap (GET /api/server/storage).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -766,4 +837,68 @@ pub enum ServerEvent {
     /// Full voice occupancy, sent to a client right after it connects.
     VoiceSnapshot { entries: Vec<VoiceStateEntry> },
     Error { message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(id: i64, name: &str) -> UserStatus {
+        UserStatus {
+            user: User {
+                id,
+                username: name.into(),
+                avatar: None,
+                role: "member".into(),
+            },
+            online: true,
+            banned: false,
+            tag_ids: Vec::new(),
+            status: None,
+        }
+    }
+
+    fn entry(emoji: &str, user_id: i64) -> ReactionEntry {
+        ReactionEntry { emoji: emoji.into(), user_id }
+    }
+
+    #[test]
+    fn names_only_for_the_pill_asked_about() {
+        let roster = vec![member(1, "jon"), member(2, "ada")];
+        let reactions = vec![entry("👍", 1), entry("🔥", 2), entry("👍", 2)];
+        assert_eq!(
+            reactor_names(&reactions, "👍", &roster, 99),
+            vec!["jon".to_string(), "ada".to_string()]
+        );
+    }
+
+    #[test]
+    fn your_own_reaction_reads_as_you() {
+        let roster = vec![member(1, "jon"), member(2, "ada")];
+        let reactions = vec![entry("👍", 1), entry("👍", 2)];
+        assert_eq!(
+            reaction_tooltip(&reactions, "👍", &roster, 2),
+            "jon and you reacted with 👍"
+        );
+    }
+
+    #[test]
+    fn a_reactor_the_roster_has_never_heard_of_still_gets_a_name() {
+        let reactions = vec![entry("👍", 7)];
+        assert_eq!(
+            reaction_tooltip(&reactions, "👍", &[], 1),
+            "user 7 reacted with 👍"
+        );
+    }
+
+    #[test]
+    fn joining_reads_like_a_sentence_until_the_cap() {
+        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(join_names(&names[..1]), "a");
+        assert_eq!(join_names(&names[..2]), "a and b");
+        assert_eq!(join_names(&names), "a, b and c");
+        let many: Vec<String> = (0..12).map(|i| format!("u{i}")).collect();
+        assert!(join_names(&many).ends_with("and 4 more"));
+        assert_eq!(join_names(&[]), "");
+    }
 }

@@ -1,5 +1,43 @@
 [
   {
+    "version": "0.94.12",
+    "date": "2026-09-04",
+    "changes": [
+      "📱 The phone app has four tabs instead of a drawer. Chats, Voice, Music and You sit along the bottom, and the burger menu is gone — the channel list is a screen in its own right now, not a panel that slides out over whatever you were reading. Opening a channel fills the screen, and backing out puts you exactly where you were",
+      "A call you're in rides above the tabs wherever you go, so you can finally read a channel while you're in voice. Tap it for the full call screen — everyone as a tile, who's speaking, and the per-person volume sliders",
+      "✋ Tap a message for reactions, reply, copy, edit and delete. The four little icons that used to sit on the right of every line are gone, and with them the 104 pixels of every message they were holding open: a long line now wraps where the screen ends instead of where the icons started",
+      "🔎 Search, on the phone. The server has been able to do this all along; the phone app simply never asked. It's the magnifying glass on Chats, and tapping a result drops you into that channel",
+      "👤 Edit your profile from the phone — avatar, status, and the line about you. The colour your name is drawn in still comes from the tags an admin gives you, so it's shown to you rather than offered as a choice you don't actually have",
+      "Attaching is a sheet now: Photo, Camera, File, or a sticker. Camera opens the camera rather than the photo library, which on a phone is a different thing entirely",
+      "🎨 New colours throughout the phone app. The greys borrowed from a certain other chat app have gone in favour of a deeper indigo, with a blurple accent that reads as an accent instead of as one more shade of grey",
+      "Fixed: chevrons never drew in the phone app at all — the arrow on a collapsible category was an empty space where an icon should have been, and had been since categories shipped"
+    ]
+  },
+  {
+    "version": "0.94.11",
+    "date": "2026-09-04",
+    "changes": [
+      "🎨 The model /image draws with is a box in Settings → Bot now, next to the one the bot thinks with. They were always two different models, which is why swapping the chat model changed nothing about the pictures — and why a refusal to draw somebody by name was, until now, only fixable by editing a service file and restarting the server",
+      "Same rules as the chat model above it: any OpenRouter id that can return pictures, an empty box means the built-in default, and NOTDISCORD_BOT_IMAGE_MODEL still works for anyone who set it — what an admin types here just wins over it"
+    ]
+  },
+  {
+    "version": "0.94.10",
+    "date": "2026-09-04",
+    "changes": [
+      "👍 Reactions say who left them. Hover a reaction on the desktop and it tells you — \"you, jon and ada reacted with 👍\" — instead of leaving you to guess which three people that 3 stands for. The names were already on the wire with every reaction; nothing was ever showing them",
+      "On the phone there is nothing to hover, so hold a reaction down for a moment and a sheet lists everyone behind it, faces and all. A normal tap still adds or removes yours. Someone who has left the server keeps their reaction and gets named by id rather than by a blank space"
+    ]
+  },
+  {
+    "version": "0.94.9",
+    "date": "2026-09-04",
+    "changes": [
+      "✏️ Your half-typed message stays in the channel you typed it in. Until now the composer was one box shared by every channel: start a reply in #general, click somewhere else while you think, and the text came with you — sitting under a placeholder reading \"Message #somewhere-else\", one Enter away from the wrong audience. Every channel keeps its own draft now, put back when you come back",
+      "The reply you were answering and any files you'd staged travel with the text, because fixing only the words would have left you replying to a message in a channel you'd left. Sending clears that channel's draft and nobody else's. Both the desktop and the phone"
+    ]
+  },
+  {
     "version": "0.94.8",
     "date": "2026-08-31",
     "changes": [

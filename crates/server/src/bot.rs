@@ -82,11 +82,18 @@ pub async fn meta_value_opt(state: &SharedState, key: &str) -> Option<String> {
         .flatten()
 }
 
-fn image_model() -> String {
-    std::env::var("NOTDISCORD_BOT_IMAGE_MODEL")
-        .ok()
+pub use shared::DEFAULT_BOT_IMAGE_MODEL as DEFAULT_IMAGE_MODEL;
+
+/// Same precedence as the chat model: what an admin typed wins, then the
+/// environment, then the built-in.
+async fn image_model(state: &SharedState) -> String {
+    meta_value_opt(state, "bot_image_model")
+        .await
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "google/gemini-2.5-flash-image".into())
+        .or_else(|| {
+            std::env::var("NOTDISCORD_BOT_IMAGE_MODEL").ok().filter(|m| !m.trim().is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_IMAGE_MODEL.into())
 }
 
 /// The instance's public base URL (e.g. https://chat.example.com), needed to
@@ -793,7 +800,7 @@ async fn draw_image(state: &SharedState, key: &str, prompt: &str) -> anyhow::Res
     let response = call_raw(
         key,
         serde_json::json!({
-            "model": image_model(),
+            "model": image_model(state).await,
             "modalities": ["image", "text"],
             "messages": [{ "role": "user", "content": prompt }],
         }),

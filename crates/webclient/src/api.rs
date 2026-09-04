@@ -134,6 +134,39 @@ pub async fn mark_read(session: &Session, channel_id: i64, message_id: i64) {
     }
 }
 
+/// Full-text message search. The server already scopes DM hits to rooms you
+/// are in, so anything it returns is safe to show.
+pub async fn search(session: &Session, query: &str) -> Result<Vec<shared::SearchResult>, String> {
+    let q = js_sys::encode_uri_component(query).as_string().unwrap_or_default();
+    get(session, &format!("search?q={q}")).await
+}
+
+/// Your own profile — the "You" tab reads the tags off this to show the
+/// colour your name is drawn in.
+pub async fn my_profile(session: &Session, user_id: i64) -> Result<shared::Profile, String> {
+    get(session, &format!("users/{user_id}/profile")).await
+}
+
+/// The one-line status everyone sees next to your name. An empty string
+/// clears it, which is what the server does with None.
+pub async fn set_status(session: &Session, text: &str) -> Result<(), String> {
+    let text = text.trim();
+    let body = shared::SetStatusRequest {
+        text: if text.is_empty() { None } else { Some(text.to_owned()) },
+    };
+    post_ok(session, "status", &body, "could not save your status").await
+}
+
+/// Avatar and bio. Fields left None keep their current value.
+pub async fn update_profile(
+    session: &Session,
+    avatar: Option<String>,
+    bio: Option<String>,
+) -> Result<(), String> {
+    post_ok(session, "profile", &shared::UpdateProfileRequest { avatar, bio }, "could not save that")
+        .await
+}
+
 pub async fn music_state(session: &Session) -> Result<shared::MusicState, String> {
     get(session, "music/state").await
 }

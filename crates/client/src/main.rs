@@ -277,6 +277,25 @@ struct PendingFile {
     preview: Option<String>,
 }
 
+/// Everything the composer holds for one channel. Parked when you leave a
+/// channel and put back when you return, so a half-typed message can't follow
+/// you into somebody else's room and get sent there by one stray Enter.
+/// The reply target and the staged files travel with the text: fixing only the
+/// text would leave a reply pointed at a message in a channel you left.
+#[derive(Clone, PartialEq, Default)]
+struct ComposerDraft {
+    text: String,
+    replying_to: Option<Message>,
+    files: Vec<PendingFile>,
+}
+
+impl ComposerDraft {
+    /// Nothing worth remembering — don't keep an entry for it.
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.replying_to.is_none() && self.files.is_empty()
+    }
+}
+
 fn make_pending(name: String, bytes: Vec<u8>) -> PendingFile {
     use base64::Engine;
     let ext = name.rsplit('.').next().unwrap_or_default().to_lowercase();
@@ -1040,6 +1059,41 @@ fn MainView(session: api::Session) -> Element {
     let mut gif_results = use_signal(Vec::<GifResult>::new);
     let mut gif_status = use_signal(String::new);
     let mut status = use_signal(|| "connecting…".to_string());
+    // The message being replied to, shared with the message rows via context.
+    // Declared up here because it is composer state, and the composer is
+    // parked per channel below.
+    let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
+    // Composer state for every channel that isn't the open one. The open
+    // channel's draft lives in the signals above; on a switch the two swap.
+    let mut drafts = use_signal(HashMap::<i64, ComposerDraft>::new);
+
+    // Park what's in the composer under the channel we're leaving, and put
+    // back whatever that channel was holding last time. Every channel switch
+    // goes through here, including the ones that don't call `open_channel`.
+    let mut swap_composer = move |next_channel: i64| {
+        if let Some(leaving) = selected.peek().as_ref().map(|c: &Channel| c.id) {
+            if leaving == next_channel {
+                return;
+            }
+            let parked = ComposerDraft {
+                text: draft.peek().clone(),
+                replying_to: replying_to.peek().clone(),
+                files: pending_files.peek().clone(),
+            };
+            let mut drafts = drafts.write();
+            if parked.is_empty() {
+                drafts.remove(&leaving);
+            } else {
+                drafts.insert(leaving, parked);
+            }
+        }
+        // Taken out of the map, not copied: the live signals are the open
+        // channel's draft, and two copies would drift.
+        let restored = drafts.write().remove(&next_channel).unwrap_or_default();
+        draft.set(restored.text);
+        replying_to.set(restored.replying_to);
+        pending_files.set(restored.files);
+    };
 
     // Open a channel: remember where the reader left off (for the NEW line),
     // clear its badge, load history, and report the new read position.
@@ -1048,6 +1102,7 @@ fn MainView(session: api::Session) -> Element {
     // channel switch can close it.
     let mut files_open = use_signal(|| None::<Vec<shared::FileEntry>>);
     let mut open_channel = move |channel: Channel| {
+        swap_composer(channel.id);
         let previous = unread.write().remove(&channel.id);
         divider_at.set(
             previous
@@ -1103,7 +1158,6 @@ fn MainView(session: api::Session) -> Element {
     let mut profile_card = use_signal(|| None::<Profile>);
     let mut new_tag_name = use_signal(String::new);
     let mut new_tag_color = use_signal(|| "#5865f2".to_string());
-    let mut replying_to = use_context_provider(|| Signal::new(None::<Message>));
     // The right rail shows the room, or your conversations. Jon's spec: a
     // text button beside MEMBERS in the same row, and clicking one swaps the
     // rail without moving anything else on screen.
@@ -1315,6 +1369,7 @@ fn MainView(session: api::Session) -> Element {
     // 0 = don't announce; otherwise the channel releases are announced in.
     let mut announce_draft = use_signal(|| 0i64);
     let mut bot_model_draft = use_signal(String::new);
+    let mut bot_image_model_draft = use_signal(String::new);
     // Credential key -> what the admin typed. Values are never loaded back
     // from the server, so an empty box means "leave it alone".
     let mut cred_drafts = use_signal(HashMap::<String, String>::new);
@@ -1385,6 +1440,7 @@ fn MainView(session: api::Session) -> Element {
                 persona_draft.set(settings.persona);
                 bot_name_draft.set(settings.name);
                 bot_model_draft.set(settings.model);
+                bot_image_model_draft.set(settings.image_model);
                 cred_status.set(settings.credentials);
                 cred_drafts.write().clear();
                 // Unset means the server's default: the first text channel.
@@ -1955,11 +2011,26 @@ fn MainView(session: api::Session) -> Element {
                             ServerEvent::ChannelDeleted { channel_id } => {
                                 channels.write().retain(|c| c.id != channel_id);
                                 unread.write().remove(&channel_id);
+                                // A draft for a channel that no longer exists
+                                // has nowhere to be sent.
+                                drafts.write().remove(&channel_id);
                                 if voice_status().channel_id == Some(channel_id) {
                                     voice.send(voice::VoiceCmd::Leave);
                                 }
                                 if selected().map(|c| c.id) == Some(channel_id) {
                                     let next = channels().into_iter().find(|c| c.kind == "text");
+                                    // The composer belonged to the deleted
+                                    // channel: drop it, restore the next one's.
+                                    draft.set(String::new());
+                                    replying_to.set(None);
+                                    pending_files.set(Vec::new());
+                                    if let Some(id) = next.as_ref().map(|c| c.id) {
+                                        let restored =
+                                            drafts.write().remove(&id).unwrap_or_default();
+                                        draft.set(restored.text);
+                                        replying_to.set(restored.replying_to);
+                                        pending_files.set(restored.files);
+                                    }
                                     selected.set(next.clone());
                                     messages.set(Vec::new());
                                     has_more.set(false);
@@ -2290,6 +2361,9 @@ fn MainView(session: api::Session) -> Element {
                                             };
                                             unread.write().remove(&channel.id);
                                             divider_at.set(None);
+                                            // Jumping to a hit is a channel
+                                            // switch like any other.
+                                            swap_composer(channel.id);
                                             selected.set(Some(channel));
                                             messages.set(Vec::new());
                                             has_more.set(false);
@@ -3665,6 +3739,18 @@ fn MainView(session: api::Session) -> Element {
                                                 }
                                             }
                                             div { class: "srv-field",
+                                                div { class: "srv-label", "Image model" }
+                                                input {
+                                                    class: "srv-input",
+                                                    value: "{bot_image_model_draft}",
+                                                    placeholder: "{shared::DEFAULT_BOT_IMAGE_MODEL}",
+                                                    oninput: move |e| bot_image_model_draft.set(e.value()),
+                                                }
+                                                div { class: "srv-hint",
+                                                    "What /image draws with — a separate model, so changing the one above doesn't touch it. Needs to be one that can return pictures."
+                                                }
+                                            }
+                                            div { class: "srv-field",
                                                 div { class: "srv-label", "Keys" }
                                                 div { class: "srv-hint",
                                                     "Stored on this server, never shown again once saved. Leave a box empty to keep what's already there."
@@ -3767,6 +3853,7 @@ fn MainView(session: api::Session) -> Element {
                                                             // the server only stores real choices.
                                                             announce_channel: Some(announce_draft()).filter(|v| *v >= 0),
                                                             model: Some(bot_model_draft().trim().to_string()),
+                                                            image_model: Some(bot_image_model_draft().trim().to_string()),
                                                             // Untouched boxes aren't sent, so saving the
                                                             // persona can't wipe a key by omission.
                                                             credentials: cred_drafts()
@@ -3781,6 +3868,7 @@ fn MainView(session: api::Session) -> Element {
                                                                     persona_draft.set(settings.persona);
                                                                     bot_name_draft.set(settings.name);
                                                                     bot_model_draft.set(settings.model);
+                                                                    bot_image_model_draft.set(settings.image_model);
                                                                     cred_status.set(settings.credentials);
                                                                     cred_drafts.write().clear();
                                                                     announce_draft.set(settings.announce_channel.unwrap_or(-1));
@@ -7052,6 +7140,16 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
             None => reaction_groups.push((entry.emoji.clone(), 1, entry.user_id == me_id)),
         }
     }
+    // Who is behind each pill, resolved against the roster already in context
+    // — the ids ride along with every reaction, so this costs no fetch.
+    let roster = members_ctx();
+    let reaction_groups: Vec<(String, usize, bool, String)> = reaction_groups
+        .into_iter()
+        .map(|(emoji, count, mine)| {
+            let who = shared::reaction_tooltip(&msg.reactions, &emoji, &roster, me_id);
+            (emoji, count, mine, who)
+        })
+        .collect();
 
     // Right-click offers what you can actually do to a message — and nothing
     // else. Edit and Delete only appear when they'd work.
@@ -7358,10 +7456,11 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                 }
                 if !reaction_groups.is_empty() {
                     div { class: "reactions",
-                        for (emoji, count, mine) in reaction_groups {
+                        for (emoji, count, mine, who) in reaction_groups {
                             button {
                                 key: "{emoji}",
                                 class: if mine { "react-chip mine" } else { "react-chip" },
+                                title: "{who}",
                                 onclick: {
                                     let emoji = emoji.clone();
                                     move |_| ws.send(ClientEvent::ToggleReaction {

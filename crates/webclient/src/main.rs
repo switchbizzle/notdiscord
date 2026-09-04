@@ -171,6 +171,21 @@ fn save_session(session: &Option<api::Session>) {
     }
 }
 
+/// The host this client is talking to — the "Server" row says where your
+/// messages actually go, which on a self-hosted server is not obvious.
+/// Copy to the clipboard. Best-effort: a browser that refuses — or an
+/// insecure origin, where the API simply isn't there — leaves the message
+/// where it was, which is no worse than never offering to copy it.
+fn copy_text(text: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().clipboard().write_text(text);
+    }
+}
+
+fn host_name() -> String {
+    web_sys::window().map(|w| w.location().host().unwrap_or_default()).unwrap_or_default()
+}
+
 fn format_time(ms: i64) -> String {
     let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
     let opts = js_sys::Object::new();
@@ -399,51 +414,60 @@ fn Setup(session: Signal<Option<api::Session>>) -> Element {
     rsx! {
         div { class: "login-wrap",
             div { class: "login-card",
+                div { class: "login-mark", Icon { name: "shield", size: 22 } }
                 h1 { "Set up your server" }
                 p { class: "login-sub",
                     "Nobody has an account here yet. The first one is yours, and it's the admin."
                 }
-                label { "Server name" }
-                input {
-                    value: "{server_name}",
-                    oninput: move |e| server_name.set(e.value()),
-                }
-                label { "Your username" }
-                input {
-                    value: "{username}",
-                    autocapitalize: "none",
-                    oninput: move |e| username.set(e.value()),
-                }
-                label { "Password" }
-                input {
-                    r#type: "password",
-                    value: "{password}",
-                    oninput: move |e| password.set(e.value()),
-                    onkeydown: move |e| {
-                        if e.key() == Key::Enter {
-                            claim();
+                div { class: "login-fields",
+                    div { class: "field",
+                        label { "Server name" }
+                        input {
+                            value: "{server_name}",
+                            oninput: move |e| server_name.set(e.value()),
                         }
-                    },
-                }
-                label { "Invite code for everyone else (optional)" }
-                input {
-                    value: "{invite}",
-                    autocapitalize: "none",
-                    oninput: move |e| invite.set(e.value()),
-                }
-                p { class: "login-sub",
-                    "Leave it empty and anyone who finds this server can register. You can change it later in Server settings."
+                    }
+                    div { class: "field",
+                        label { "Your username" }
+                        input {
+                            value: "{username}",
+                            autocapitalize: "none",
+                            oninput: move |e| username.set(e.value()),
+                        }
+                    }
+                    div { class: "field",
+                        label { "Password" }
+                        input {
+                            r#type: "password",
+                            value: "{password}",
+                            oninput: move |e| password.set(e.value()),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter {
+                                    claim();
+                                }
+                            },
+                        }
+                    }
+                    div { class: "field",
+                        label { "Invite code for everyone else (optional)" }
+                        input {
+                            value: "{invite}",
+                            autocapitalize: "none",
+                            oninput: move |e| invite.set(e.value()),
+                        }
+                        span { class: "field-hint",
+                            "Leave it empty and anyone who finds this server can register. You can change it later in Server settings."
+                        }
+                    }
                 }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
                 }
-                div { class: "login-buttons",
-                    button {
-                        class: "primary",
-                        disabled: busy(),
-                        onclick: move |_| claim(),
-                        if busy() { "Setting up…" } else { "Create my server" }
-                    }
+                button {
+                    class: "btn btn-primary login-cta",
+                    disabled: busy(),
+                    onclick: move |_| claim(),
+                    if busy() { "Setting up…" } else { "Create my server" }
                 }
             }
         }
@@ -488,48 +512,55 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
     rsx! {
         div { class: "login-wrap",
             div { class: "login-card",
+                div { class: "login-mark", Icon { name: "message", size: 22 } }
                 h1 { "NotDiscord" }
                 if registering() {
                     p { class: "login-sub", "make yourself an account" }
                 } else {
                     p { class: "login-sub", "the phone-sized version" }
                 }
-                label { "Username" }
-                input {
-                    value: "{username}",
-                    autocapitalize: "none",
-                    oninput: move |e| username.set(e.value()),
-                }
-                label { "Password" }
-                input {
-                    r#type: "password",
-                    value: "{password}",
-                    oninput: move |e| password.set(e.value()),
-                    onkeydown: move |e| {
-                        if e.key() == Key::Enter {
-                            submit(registering());
+                div { class: "login-fields",
+                    div { class: "field",
+                        label { "Username" }
+                        input {
+                            value: "{username}",
+                            autocapitalize: "none",
+                            oninput: move |e| username.set(e.value()),
                         }
-                    },
-                }
-                if registering() {
-                    label { "Invite code" }
-                    input {
-                        value: "{invite}",
-                        autocapitalize: "none",
-                        oninput: move |e| invite.set(e.value()),
                     }
-                    p { class: "login-sub", "whoever runs this server has it" }
+                    div { class: "field",
+                        label { "Password" }
+                        input {
+                            r#type: "password",
+                            value: "{password}",
+                            oninput: move |e| password.set(e.value()),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter {
+                                    submit(registering());
+                                }
+                            },
+                        }
+                    }
+                    if registering() {
+                        div { class: "field",
+                            label { "Invite code" }
+                            input {
+                                value: "{invite}",
+                                autocapitalize: "none",
+                                placeholder: "ask whoever runs the server",
+                                oninput: move |e| invite.set(e.value()),
+                            }
+                        }
+                    }
                 }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
                 }
-                div { class: "login-buttons",
-                    button {
-                        class: "primary",
-                        disabled: busy(),
-                        onclick: move |_| submit(registering()),
-                        if registering() { "Create account" } else { "Log in" }
-                    }
+                button {
+                    class: "btn btn-primary login-cta",
+                    disabled: busy(),
+                    onclick: move |_| submit(registering()),
+                    if registering() { "Create account" } else { "Log in" }
                 }
                 button {
                     class: "login-switch",
@@ -569,13 +600,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut pending_at = use_signal(std::collections::HashMap::<i64, i64>::new);
     let mut failed_sends = use_signal(std::collections::HashSet::<i64>::new);
     let mut next_temp_id = use_signal(|| -1i64);
-    // The server's own name, so the drawer says where you are rather than
+    // The server's own name, so the Chats tab says where you are rather than
     // what the app is called.
     let mut server_name = use_signal(String::new);
     // Tags colour names; provided because the message row is a component away.
     let tags = use_context_provider(|| Signal::new(Vec::<shared::Tag>::new()));
     let mut stickers = use_context_provider(|| Signal::new(Vec::<shared::Sticker>::new()));
-    let mut sticker_open = use_signal(|| false);
     // Which groups this person keeps shut, remembered on this device only —
     // it's a per-phone preference, not something the server should carry.
     let mut collapsed = use_signal(|| {
@@ -589,14 +619,39 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     });
     use_context_provider(|| Gallery(gallery));
     let mut has_more = use_signal(|| false);
-    let mut drawer = use_signal(|| true);
     let mut draft = use_signal(String::new);
     let mut status = use_signal(String::new);
     let mut uploading = use_signal(|| false);
-    // The right-side members panel, collapsed by default on a phone.
-    let mut members_open = use_signal(|| false);
-    // "chat" | "music" — the phone works as a remote for the music bot.
-    let mut tab = use_signal(|| "chat");
+    // Which of the four tabs is showing.
+    let mut tab = use_signal(|| "chats");
+    // A full-screen layer over the tabs: "channel", "search", "settings" or
+    // "profile". None means you are looking at a tab. The tab bar hides
+    // whenever one of these is up, which is what makes a channel feel like a
+    // screen rather than a pane.
+    let mut overlay = use_signal(|| None::<&'static str>);
+    // The bottom sheet, if one is up: "attach", "stickers" or "members".
+    let mut sheet = use_signal(|| None::<&'static str>);
+    // The call, expanded to fill the screen. The mini bar above the tabs
+    // shows whenever this is false and you're connected.
+    let mut call_open = use_signal(|| false);
+    // Seconds since this device joined, ticked by the voice poll below so
+    // the clock only runs while there is a call to time.
+    let mut call_secs = use_signal(|| 0i64);
+    let mut call_since = use_signal(|| 0i64);
+    // What the volume sliders draw. LiveKit holds the real gain; without
+    // this the slider would snap back to 100 on every re-render.
+    let mut volumes = use_signal(HashMap::<String, i64>::new);
+    // Search.
+    let mut query = use_signal(String::new);
+    let mut results = use_signal(Vec::<shared::SearchResult>::new);
+    let mut searching = use_signal(|| false);
+    // Edit profile.
+    let mut status_draft = use_signal(String::new);
+    let mut bio_draft = use_signal(String::new);
+    let mut profile_saved = use_signal(|| false);
+    let mut my_tags = use_signal(Vec::<shared::Tag>::new);
+    // The music tab queues through its own field rather than the composer.
+    let mut music_link = use_signal(String::new);
     let mut music = use_signal(MusicState::default);
     // user_id -> voice channel_id, for the 🔊 pills in the members panel.
     let mut voice_users = use_signal(HashMap::<i64, i64>::new);
@@ -604,8 +659,6 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // glue's live view of the room.
     let mut voice_conn = use_signal(|| None::<(i64, String)>);
     let mut voice_glue = use_signal(VoiceGlue::default);
-    // Settings sheet (notifications live here).
-    let mut settings_open = use_signal(|| false);
     let mut notify = use_signal(|| None::<shared::NotifyPrefs>);
     let mut push_glue = use_signal(PushGlue::default);
     let mut install_glue = use_signal(InstallGlue::default);
@@ -641,7 +694,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
         });
     };
-    // channel_id -> unread count, for drawer badges.
+    // channel_id -> unread count, for the channel-list and tab badges.
     let mut unread = use_signal(HashMap::<i64, i64>::new);
     // The message being replied to, shared with MessageRow via context.
     let replying = use_context_provider(|| Signal::new(None::<Message>));
@@ -670,12 +723,39 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         }
     });
 
+    // Composer state for every channel that isn't the open one. The open
+    // channel's draft lives in `draft`/`replying`; a switch swaps the two, so
+    // a half-typed message can't follow you into somebody else's room and get
+    // sent there by one stray tap. The reply target travels with the text or
+    // you'd be left replying to a message in a channel you left.
+    let mut drafts = use_signal(HashMap::<i64, (String, Option<Message>)>::new);
+
     let mut open_channel = move |channel: Channel| {
         let id = channel.id;
         unread.write().remove(&id);
-        replying.set(None);
+        // Park what's in the composer under the channel we're leaving, then
+        // put back whatever this one was holding. Taken out of the map rather
+        // than copied: the live signals are the open channel's draft.
+        // Re-opening the channel you're already in is not a switch: leave the
+        // composer alone rather than parking it and restoring nothing.
+        let leaving = selected.peek().as_ref().map(|c: &Channel| c.id);
+        if leaving != Some(id) {
+            if let Some(leaving) = leaving {
+                let text = draft.peek().clone();
+                let reply = replying.peek().clone();
+                if text.trim().is_empty() && reply.is_none() {
+                    drafts.write().remove(&leaving);
+                } else {
+                    drafts.write().insert(leaving, (text, reply));
+                }
+            }
+            let (text, reply) = drafts.write().remove(&id).unwrap_or_default();
+            draft.set(text);
+            replying.set(reply);
+        }
         selected.set(Some(channel));
-        drawer.set(false);
+        overlay.set(Some("channel"));
+        sheet.set(None);
         messages.set(Vec::new());
         spawn(async move {
             match api::messages(&sess(), id, None).await {
@@ -702,13 +782,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 return;
             }
             match api::channels(&sess()).await {
-                Ok(list) => {
-                    let first = list.iter().find(|c| c.kind == "text").cloned();
-                    channels.set(list);
-                    if let Some(first) = first {
-                        open_channel(first);
-                    }
-                }
+                Ok(list) => channels.set(list),
                 Err(e) => status.set(e),
             }
             if let Ok(list) = api::users(&sess()).await {
@@ -894,6 +968,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                             ServerEvent::ChannelDeleted { channel_id } => {
                                 channels.write().retain(|c| c.id != channel_id);
+                                // A draft for a channel that no longer exists
+                                // has nowhere to be sent.
+                                drafts.write().remove(&channel_id);
                             }
                             ServerEvent::ChannelRenamed { channel_id, name } => {
                                 if let Some(c) = channels.write().iter_mut().find(|c| c.id == channel_id) {
@@ -1005,8 +1082,17 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             if *voice_glue.peek() != state {
                 voice_glue.set(state);
             }
+            // One re-render a second, and only while there is a call.
+            let since = *call_since.peek();
+            if since > 0 {
+                let elapsed = ((now_ms() - since) / 1000).max(0);
+                if elapsed != *call_secs.peek() {
+                    call_secs.set(elapsed);
+                }
+            }
             if dropped {
                 voice_conn.set(None);
+                call_open.set(false);
                 status.set("voice disconnected".into());
                 ws.send(ClientEvent::VoiceState { channel_id: None, sharing: false, camera: false });
             }
@@ -1023,7 +1109,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         serde_json::from_str(&voice_get_state_js()).unwrap_or_default();
                     if state.connected {
                         voice_conn.set(Some((channel.id, channel.name.clone())));
-                        drawer.set(false);
+                        // Straight into the call screen, and start the clock.
+                        call_since.set(now_ms());
+                        call_secs.set(0);
+                        call_open.set(true);
+                        overlay.set(None);
+                        volumes.set(HashMap::new());
                         ws.send(ClientEvent::VoiceState {
                             channel_id: Some(channel.id),
                             sharing: false,
@@ -1045,6 +1136,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             let _ = wasm_bindgen_futures::JsFuture::from(voice_leave_js()).await;
             voice_conn.set(None);
             voice_glue.set(VoiceGlue::default());
+            call_open.set(false);
+            call_secs.set(0);
             ws.send(ClientEvent::VoiceState { channel_id: None, sharing: false, camera: false });
         });
     };
@@ -1056,21 +1149,6 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             return;
         }
         draft.set(String::new());
-        // On the music tab a bare link queues instead of chatting, exactly
-        // like the desktop music tab (no spam in the channel).
-        let is_link = (content.starts_with("http://") || content.starts_with("https://"))
-            && !content.contains(' ');
-        if *tab.peek() == "music" && is_link {
-            spawn(async move {
-                if let Err(e) = api::music_play(&sess(), channel.id, content).await {
-                    status.set(e);
-                }
-                if let Ok(s) = api::music_state(&sess()).await {
-                    music.set(s);
-                }
-            });
-            return;
-        }
         let reply_to = replying.peek().as_ref().map(|m| m.id);
         let reply_preview = replying.peek().as_ref().map(|m| shared::ReplyPreview {
             author: m.author.username.clone(),
@@ -1113,717 +1191,1554 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         });
     };
 
+    let mut run_search = move |_| {
+        let q = query().trim().to_owned();
+        if q.is_empty() {
+            results.set(Vec::new());
+            return;
+        }
+        searching.set(true);
+        spawn(async move {
+            match api::search(&sess(), &q).await {
+                Ok(hits) => results.set(hits),
+                Err(e) => status.set(e),
+            }
+            searching.set(false);
+        });
+    };
+
+    // The bio and the tags that colour your name both live on the profile
+    // endpoint, so the edit screen reads it once on the way in.
+    let load_profile = move || {
+        spawn(async move {
+            if let Ok(profile) = api::my_profile(&sess(), me_id).await {
+                bio_draft.set(profile.bio);
+                my_tags.set(profile.tags);
+            }
+        });
+    };
+
+    let save_profile = move |_| {
+        let status_text = status_draft();
+        let bio = bio_draft();
+        spawn(async move {
+            if let Err(e) = api::set_status(&sess(), &status_text).await {
+                status.set(e);
+                return;
+            }
+            if let Err(e) = api::update_profile(&sess(), None, Some(bio)).await {
+                status.set(e);
+                return;
+            }
+            profile_saved.set(true);
+            // The roster is what draws your status everywhere else.
+            if let Ok(list) = api::users(&sess()).await {
+                members.set(list);
+            }
+        });
+    };
+
+    let mut queue_link = move |_| {
+        let url = music_link().trim().to_owned();
+        if url.is_empty() {
+            return;
+        }
+        // The bot announces what it queued in a text channel, so it needs
+        // one: the room you last had open, else the first on the server.
+        let Some(channel_id) = selected()
+            .filter(|c| c.kind == "text")
+            .map(|c| c.id)
+            .or_else(|| channels().iter().find(|c| c.kind == "text").map(|c| c.id))
+        else {
+            status.set("no text channel for the bot to post in".into());
+            return;
+        };
+        music_link.set(String::new());
+        spawn(async move {
+            if let Err(e) = api::music_play(&sess(), channel_id, url).await {
+                status.set(e);
+            }
+            if let Ok(s) = api::music_state(&sess()).await {
+                music.set(s);
+            }
+        });
+    };
+
+    // Both attach options upload and post the same way; only the accept
+    // filter differs, which is a matter for the input element.
+    let mut upload_files = move |evt: Event<FormData>| {
+        sheet.set(None);
+        spawn(async move {
+            let Some(file) = evt.files().into_iter().next() else { return };
+            let name = file.name();
+            uploading.set(true);
+            if let Ok(bytes) = file.read_bytes().await {
+                match api::upload(&sess(), &name, bytes.to_vec()).await {
+                    Ok(url) => {
+                        if let Some(channel) = selected.peek().clone() {
+                            ws.send(ClientEvent::SendMessage {
+                                channel_id: channel.id,
+                                content: url,
+                                reply_to: None,
+                            });
+                        }
+                    }
+                    Err(e) => status.set(e),
+                }
+            }
+            uploading.set(false);
+        });
+    };
+
     let mic_icon: &'static str = if voice_glue().muted { "mic-off" } else { "mic" };
     let deafen_icon: &'static str = if voice_glue().deafened { "headphones-off" } else { "headphones" };
-    let selected_label = match selected() {
-        Some(c) if c.kind == "dm" => format!("@{}", dm_peer(&c, me_id)),
-        Some(c) => format!("# {}", c.name),
-        None => "NotDiscord".into(),
+
+    // Values the shell reads more than once. Computed here rather than inside
+    // the macro so the four tabs stay readable.
+    let over = overlay();
+    let in_call = voice_conn().is_some();
+    let total_unread: i64 = unread().values().sum();
+    let online_now = members().iter().filter(|m| m.online).count();
+    // DMs newest-first: the conversation you're actually having belongs at
+    // the top, which is what `last_at` is for.
+    let dm_list = {
+        let mut list: Vec<Channel> = channels().into_iter().filter(|c| c.kind == "dm").collect();
+        list.sort_by(|a, b| b.last_at.unwrap_or(0).cmp(&a.last_at.unwrap_or(0)));
+        list
     };
+    let voice_list: Vec<Channel> = channels().into_iter().filter(|c| c.kind == "voice").collect();
+    let call_name = voice_conn().map(|(_, name)| name).unwrap_or_default();
+    // Everyone in the room but you — the line under the call's name.
+    let call_others: Vec<String> =
+        voice_glue().participants.iter().filter(|p| !p.local).map(|p| p.name.clone()).collect();
+    let call_peers_line = if call_others.is_empty() {
+        "just you".to_string()
+    } else {
+        format!("{} + you", call_others.join(", "))
+    };
+    let call_clock = format!("{}:{:02}", call_secs() / 60, call_secs() % 60);
+    let selected_id = selected().map(|c| c.id);
+    let chan_is_dm = selected().is_some_and(|c| c.kind == "dm");
+    let chan_title = match selected() {
+        Some(c) if c.kind == "dm" => dm_peer(&c, me_id),
+        Some(c) => format!("# {}", c.name),
+        None => String::new(),
+    };
+    // A channel has no topic field, so the second line says the thing this
+    // app actually knows: for a DM, what that person is up to.
+    let chan_topic = match selected() {
+        Some(c) if c.kind == "dm" => {
+            let peer = dm_peer(&c, me_id);
+            members()
+                .iter()
+                .find(|m| m.user.username == peer)
+                .and_then(|m| m.status.clone())
+                .unwrap_or_else(|| "direct message".into())
+        }
+        Some(_) => String::new(),
+        None => String::new(),
+    };
+    let notify_prefs = notify();
+    let notify_on =
+        notify_prefs.as_ref().is_some_and(|p| p.subscribed) && push_glue().permission == "granted";
+    let notify_label = if !notify_on {
+        "off".to_string()
+    } else {
+        match notify_prefs.as_ref().map(|p| p.level.clone()).unwrap_or_default().as_str() {
+            "all" => "everything".to_string(),
+            "none" => "muted".to_string(),
+            _ => "mentions & DMs".to_string(),
+        }
+    };
+    let armed = !draft().trim().is_empty();
 
     rsx! {
         div { class: "app",
-            header { class: "topbar",
-                button { class: "burger", onclick: move |_| drawer.set(!drawer()),
-                    Icon { name: "menu", size: 20 }
-                    if !unread().is_empty() {
-                        span { class: "live-dot unread-dot" }
-                    }
-                }
-                div { class: "topbar-title", "{selected_label}" }
-                button {
-                    class: if tab() == "music" { "topbtn active" } else { "topbtn" },
-                    onclick: move |_| {
-                        if tab() == "music" {
-                            tab.set("chat");
-                        } else {
-                            tab.set("music");
-                            refresh_music();
-                        }
-                    },
-                    Icon { name: "music", size: 18 }
-                    if music().active && !music().paused {
-                        span { class: "live-dot" }
-                    }
-                }
-                button {
-                    class: if members_open() { "topbtn active" } else { "topbtn" },
-                    onclick: move |_| members_open.set(!members_open()),
-                    Icon { name: "user", size: 18 }
-                }
+            // Floats over everything: an error that claimed a row would be
+            // hidden by the first overlay that opened on top of it.
+            if !status().is_empty() {
+                div { class: "statusbar", onclick: move |_| status.set(String::new()), "{status}" }
             }
 
-            if drawer() {
-                div { class: "drawer-overlay", onclick: move |_| drawer.set(false) }
-                nav { class: "drawer",
-                    div { class: "drawer-head",
-                        if server_name().is_empty() { "NotDiscord" } else { "{server_name}" }
-                    }
-                    // Ungrouped channels first, then each category — the
-                    // same order the desktop shows, so the two don't disagree
-                    // about where a channel lives.
-                    for group in std::iter::once(None).chain(categories().into_iter().map(Some)) {
-                        {
-                            let group_id = group.as_ref().map(|c: &shared::ChannelCategory| c.id);
-                            let in_group: Vec<Channel> = channels()
-                                .into_iter()
-                                .filter(|c| c.kind == "text" && c.category_id == group_id)
-                                .collect();
-                            let shut = group_id.is_some_and(|id| collapsed().contains(&id));
-                            rsx! {
-                                if let Some(category) = group.clone() {
-                                    {
-                                        let id = category.id;
-                                        // Bound with an explicit type: inline
-                                        // in the macro it infers String and
-                                        // Icon wants &'static str.
-                                        let chevron: &'static str =
-                                            if shut { "chevron-down" } else { "chevron-up" };
-                                        rsx! {
-                                            button {
-                                                class: "drawer-section drawer-group",
-                                                onclick: move |_| {
-                                                    let mut list = collapsed();
-                                                    match list.iter().position(|c| *c == id) {
-                                                        Some(at) => { list.remove(at); }
-                                                        None => list.push(id),
+            div { class: "app-body",
+
+                // ---------------- Chats ----------------
+                if tab() == "chats" && over.is_none() {
+                    div { class: "screen",
+                        div { class: "screen-head tight",
+                            div { class: "grow",
+                                div { class: "screen-title",
+                                    if server_name().is_empty() { "NotDiscord" } else { "{server_name}" }
+                                }
+                                div { class: "screen-sub", "{online_now} online · self-hosted" }
+                            }
+                            button {
+                                class: "hbtn",
+                                aria_label: "Search",
+                                onclick: move |_| {
+                                    query.set(String::new());
+                                    results.set(Vec::new());
+                                    overlay.set(Some("search"));
+                                },
+                                Icon { name: "search", size: 19 }
+                            }
+                            button {
+                                class: "hbtn",
+                                aria_label: "Members",
+                                onclick: move |_| sheet.set(Some("members")),
+                                Icon { name: "user", size: 19 }
+                            }
+                        }
+                        div { class: "scroll grow", style: "padding: 4px 10px 14px",
+                            // Ungrouped channels first, then each category —
+                            // the same order the desktop shows, so the two
+                            // don't disagree about where a channel lives.
+                            for group in std::iter::once(None).chain(categories().into_iter().map(Some)) {
+                                {
+                                    let group_id = group.as_ref().map(|c: &shared::ChannelCategory| c.id);
+                                    let in_group: Vec<Channel> = channels()
+                                        .into_iter()
+                                        .filter(|c| c.kind == "text" && c.category_id == group_id)
+                                        .collect();
+                                    let shut = group_id.is_some_and(|id| collapsed().contains(&id));
+                                    rsx! {
+                                        if let Some(category) = group.clone() {
+                                            {
+                                                let id = category.id;
+                                                let chevron: &'static str =
+                                                    if shut { "chevron-down" } else { "chevron-up" };
+                                                rsx! {
+                                                    button {
+                                                        class: "section-label group-btn",
+                                                        onclick: move |_| {
+                                                            let mut list = collapsed();
+                                                            match list.iter().position(|c| *c == id) {
+                                                                Some(at) => { list.remove(at); }
+                                                                None => list.push(id),
+                                                            }
+                                                            let _ = gloo_storage::LocalStorage::set(COLLAPSED_KEY, &list);
+                                                            collapsed.set(list);
+                                                        },
+                                                        span { class: "grow", "{category.name}" }
+                                                        Icon { name: chevron, size: 12 }
                                                     }
-                                                    let _ = gloo_storage::LocalStorage::set(COLLAPSED_KEY, &list);
-                                                    collapsed.set(list);
-                                                },
-                                                span { class: "grow", "{category.name}" }
-                                                Icon { name: chevron, size: 12 }
-                                            }
-                                        }
-                                    }
-                                } else if !in_group.is_empty() {
-                                    div { class: "drawer-section", "Channels" }
-                                }
-                                // Shut hides the quiet ones. Anything unread,
-                                // or the channel you're in, stays put.
-                                for channel in in_group.into_iter().filter(|c| {
-                                    !shut || unread().contains_key(&c.id) || selected().map(|s| s.id) == Some(c.id)
-                                }) {
-                                    button {
-                                        key: "{channel.id}",
-                                        class: if selected().map(|c| c.id) == Some(channel.id) { "drawer-chan active" } else { "drawer-chan" },
-                                        onclick: {
-                                            let channel = channel.clone();
-                                            move |_| open_channel(channel.clone())
-                                        },
-                                        span { class: "grow", "# {channel.name}" }
-                                        if let Some(n) = unread().get(&channel.id).copied() {
-                                            span { class: "unread-badge", "{n}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    div { class: "drawer-section", "Voice" }
-                    for channel in channels().into_iter().filter(|c| c.kind == "voice") {
-                        {
-                            let here: Vec<String> = voice_users()
-                                .iter()
-                                .filter(|(_, chan)| **chan == channel.id)
-                                .filter_map(|(uid, _)| {
-                                    members().iter().find(|m| m.user.id == *uid).map(|m| m.user.username.clone())
-                                })
-                                .collect();
-                            let in_this = voice_conn().map(|(id, _)| id) == Some(channel.id);
-                            let channel_for_join = channel.clone();
-                            rsx! {
-                                button {
-                                    key: "v{channel.id}",
-                                    class: if in_this { "drawer-chan active" } else { "drawer-chan" },
-                                    onclick: move |_| {
-                                        if voice_conn.peek().as_ref().map(|(id, _)| *id) != Some(channel_for_join.id) {
-                                            join_voice(channel_for_join.clone());
-                                        }
-                                    },
-                                    Icon { name: "volume", size: 15 }
-                                    span { class: "person-name", "{channel.name}" }
-                                    if !here.is_empty() {
-                                        span { class: "person-status", {here.join(", ")} }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    div { class: "drawer-section", "People" }
-                    for member in members().into_iter().filter(|m| m.user.id != me_id) {
-                        button {
-                            key: "u{member.user.id}",
-                            class: "drawer-chan person",
-                            onclick: {
-                                let user_id = member.user.id;
-                                move |_| {
-                                    spawn(async move {
-                                        match api::create_dm(&sess(), user_id).await {
-                                            Ok(channel) => {
-                                                if !channels.peek().iter().any(|c| c.id == channel.id) {
-                                                    channels.write().push(channel.clone());
                                                 }
-                                                open_channel(channel);
                                             }
-                                            Err(e) => status.set(e),
+                                        } else if !in_group.is_empty() {
+                                            div { class: "section-label", "Text" }
                                         }
-                                    });
+                                        // Shut hides the quiet ones. Anything
+                                        // unread, or the channel you're in,
+                                        // stays put.
+                                        for channel in in_group.into_iter().filter(|c| {
+                                            !shut || unread().contains_key(&c.id) || selected_id == Some(c.id)
+                                        }) {
+                                            button {
+                                                key: "{channel.id}",
+                                                class: if unread().contains_key(&channel.id) { "chan-row unread" } else { "chan-row" },
+                                                onclick: {
+                                                    let channel = channel.clone();
+                                                    move |_| open_channel(channel.clone())
+                                                },
+                                                span { class: "chan-hash", "#" }
+                                                span { class: "chan-name ellipsis", "{channel.name}" }
+                                                if let Some(n) = unread().get(&channel.id).copied() {
+                                                    span { class: "badge", "{n}" }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                            },
-                            span { class: if member.online { "dot online" } else { "dot" } }
-                            span { class: "person-name", "{member.user.username}" }
-                            if let Some(text) = member.status.clone() {
-                                span { class: "person-status", "{text}" }
                             }
-                            // Unread on the DM with this person, if one exists.
-                            if let Some(n) = channels()
-                                .iter()
-                                .find(|c| c.kind == "dm" && c.dm_members.iter().any(|u| u.id == member.user.id))
-                                .and_then(|c| unread().get(&c.id).copied())
-                            {
-                                span { class: "unread-badge", "{n}" }
+
+                            div { class: "section-label", "Direct messages" }
+                            if dm_list.is_empty() {
+                                div { class: "empty-note",
+                                    "No DMs yet. Open Members from the header and message someone."
+                                }
+                            }
+                            for channel in dm_list {
+                                {
+                                    let peer_name = dm_peer(&channel, me_id);
+                                    let peer = channel.dm_members.iter().find(|u| u.id != me_id).cloned();
+                                    // The app has no last-message preview, so
+                                    // the second line says what it does know:
+                                    // whatever that person set as their status.
+                                    let sub = members()
+                                        .iter()
+                                        .find(|m| m.user.username == peer_name)
+                                        .and_then(|m| m.status.clone())
+                                        .unwrap_or_default();
+                                    let unread_here = unread().get(&channel.id).copied();
+                                    let for_open = channel.clone();
+                                    rsx! {
+                                        button {
+                                            key: "d{channel.id}",
+                                            class: "dm-row",
+                                            onclick: move |_| open_channel(for_open.clone()),
+                                            if let Some(user) = peer {
+                                                Avatar { user }
+                                            }
+                                            span { class: "dm-col",
+                                                span { class: "dm-name", "{peer_name}" }
+                                                if !sub.is_empty() {
+                                                    span { class: "dm-sub ellipsis", "{sub}" }
+                                                }
+                                            }
+                                            if let Some(n) = unread_here {
+                                                span { class: "badge", "{n}" }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }
-                    button {
-                        class: "drawer-logout",
-                        onclick: move |_| {
-                            drawer.set(false);
-                            settings_open.set(true);
-                            notify_msg.set(String::new());
-                            load_notify();
-                        },
-                        Icon { name: "settings", size: 15 }
-                        " Settings"
-                    }
-                    button {
-                        class: "drawer-logout",
-                        onclick: move |_| {
-                            save_session(&None);
-                            session.set(None);
-                        },
-                        "Log out ({sess().user.username})"
                     }
                 }
-            }
 
-            if tab() == "music" {
-                main { class: "music-view",
-                    {
-                        let state = music();
-                        let play_icon: &'static str = if state.paused { "play" } else { "pause" };
-                        rsx! {
-                            div { class: "np-card",
-                                if let Some(track) = state.now_playing.clone() {
-                                    if let Some(art) = track.art.clone() {
-                                        img { class: "np-art", src: "{art}" }
-                                    }
-                                    div { class: "np-text",
-                                        div { class: "np-title", "{track.title}" }
-                                        if !track.artist.is_empty() {
-                                            div { class: "np-artist", "{track.artist}" }
-                                        }
-                                        if let Some(total) = track.duration {
-                                            div { class: "np-progress",
-                                                div {
-                                                    class: "np-progress-fill",
-                                                    style: "width: {(state.position / total * 100.0).clamp(0.0, 100.0)}%",
+                // ---------------- Voice ----------------
+                if tab() == "voice" && over.is_none() {
+                    div { class: "screen",
+                        div { class: "screen-head tight",
+                            div { class: "grow",
+                                div { class: "screen-title", "Voice" }
+                                div { class: "screen-sub",
+                                    if in_call { "you're in {call_name}" } else { "nobody's waiting for you" }
+                                }
+                            }
+                        }
+                        div { class: "scroll grow",
+                            style: "padding: 4px 12px 14px; display: flex; flex-direction: column; gap: 10px",
+                            if voice_list.is_empty() {
+                                div { class: "empty-note", "No voice channels on this server yet." }
+                            }
+                            for channel in voice_list {
+                                {
+                                    let here = voice_conn().map(|(id, _)| id) == Some(channel.id);
+                                    let people: Vec<UserStatus> = voice_users()
+                                        .iter()
+                                        .filter(|(_, chan)| **chan == channel.id)
+                                        .filter_map(|(uid, _)| {
+                                            members().iter().find(|m| m.user.id == *uid).cloned()
+                                        })
+                                        .collect();
+                                    let count = if people.is_empty() {
+                                        "empty".to_string()
+                                    } else {
+                                        format!("{} here", people.len())
+                                    };
+                                    let for_join = channel.clone();
+                                    // Only this device knows its own mic state.
+                                    let muted_here = voice_glue().muted;
+                                    rsx! {
+                                        div {
+                                            key: "v{channel.id}",
+                                            class: if here { "voice-card here" } else { "voice-card" },
+                                            button {
+                                                class: "voice-card-head",
+                                                onclick: move |_| {
+                                                    if voice_conn.peek().as_ref().map(|(id, _)| *id) == Some(for_join.id) {
+                                                        // Already in it: show the call rather
+                                                        // than reconnecting on top of yourself.
+                                                        call_open.set(true);
+                                                    } else {
+                                                        join_voice(for_join.clone());
+                                                    }
+                                                },
+                                                span { class: "voice-card-icon", Icon { name: "volume", size: 18 } }
+                                                span { class: "voice-card-name ellipsis", "{channel.name}" }
+                                                span { class: "voice-card-count", "{count}" }
+                                            }
+                                            if !people.is_empty() {
+                                                div { class: "voice-people",
+                                                    for person in people {
+                                                        div { key: "p{person.user.id}", class: "voice-person",
+                                                            {
+                                                                let colour = name_color(person.user.id, &members(), &tags());
+                                                                rsx! {
+                                                                    Avatar { user: person.user.clone() }
+                                                                    span {
+                                                                        class: "voice-person-name ellipsis",
+                                                                        style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                                        "{person.user.username}"
+                                                                    }
+                                                                }
+                                                            }
+                                                            {
+                                                                // Everyone else reads as open: the
+                                                                // server doesn't publish mic state.
+                                                                let off = person.user.id == me_id && muted_here;
+                                                                let icon: &'static str = if off { "mic-off" } else { "mic" };
+                                                                rsx! {
+                                                                    span {
+                                                                        class: if off { "mic off" } else { "mic" },
+                                                                        Icon { name: icon, size: 15 }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
                                     }
+                                }
+                            }
+                            div { class: "empty-note",
+                                "Screen share and webcam are desktop-only for now. On the phone you get voice, and you can watch someone else's share."
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Music ----------------
+                if tab() == "music" && over.is_none() {
+                    div { class: "screen",
+                        div { class: "screen-head tight",
+                            div { class: "grow",
+                                div { class: "screen-title", "Music" }
+                                div { class: "screen-sub", "you're the remote" }
+                            }
+                        }
+                        div { class: "scroll grow", style: "padding: 4px 12px 14px",
+                            {
+                                let state = music();
+                                let play_icon: &'static str = if state.paused { "play" } else { "pause" };
+                                let track = state.now_playing.clone();
+                                let duration = track.as_ref().and_then(|t| t.duration).unwrap_or(0.0);
+                                let pct = if duration > 0.0 {
+                                    (state.position / duration * 100.0).clamp(0.0, 100.0)
                                 } else {
-                                    div { class: "np-empty",
-                                        "Nothing playing — paste a link below. The music plays in the voice channel, so this works as a remote."
-                                    }
-                                }
-                            }
-                            if state.active {
-                                div { class: "music-controls",
-                                    button {
-                                        class: "mbtn",
-                                        onclick: move |_| {
-                                            let action = if music.peek().paused { "resume" } else { "pause" };
-                                            spawn(async move {
-                                                if let Err(e) = api::music_control(&sess(), action).await {
-                                                    status.set(e);
+                                    0.0
+                                };
+                                let elapsed = format!(
+                                    "{}:{:02}",
+                                    state.position as i64 / 60,
+                                    state.position as i64 % 60,
+                                );
+                                let total = if duration > 0.0 {
+                                    format!("{}:{:02}", duration as i64 / 60, duration as i64 % 60)
+                                } else {
+                                    "--:--".to_string()
+                                };
+                                rsx! {
+                                    div { class: "np-card",
+                                        div { class: "np-top",
+                                            if let Some(art) = track.as_ref().and_then(|t| t.art.clone()) {
+                                                img { class: "np-art", src: "{art}" }
+                                            } else {
+                                                div { class: "np-art", Icon { name: "music", size: 26 } }
+                                            }
+                                            div { class: "np-text",
+                                                if let Some(track) = track.clone() {
+                                                    div { class: "np-title", "{track.title}" }
+                                                    if !track.artist.is_empty() {
+                                                        div { class: "np-artist", "{track.artist}" }
+                                                    }
+                                                } else {
+                                                    div { class: "np-empty",
+                                                        "Nothing playing. Paste a link below and the bot picks it up."
+                                                    }
                                                 }
-                                                if let Ok(s) = api::music_state(&sess()).await {
-                                                    music.set(s);
+                                            }
+                                        }
+                                        if track.is_some() {
+                                            div {
+                                                div { class: "np-progress",
+                                                    div { class: "np-progress-fill", style: "width: {pct}%" }
                                                 }
-                                            });
-                                        },
-                                        Icon { name: play_icon, size: 18 }
-                                    }
-                                    button {
-                                        class: "mbtn",
-                                        onclick: move |_| {
-                                            spawn(async move {
-                                                let _ = api::music_control(&sess(), "skip").await;
-                                                if let Ok(s) = api::music_state(&sess()).await {
-                                                    music.set(s);
+                                                div { class: "np-times",
+                                                    span { "{elapsed}" }
+                                                    span { "{total}" }
                                                 }
-                                            });
-                                        },
-                                        Icon { name: "skip", size: 18 }
+                                            }
+                                        }
+                                        div { class: "music-controls",
+                                            button {
+                                                class: "mbtn primary",
+                                                aria_label: "Play or pause",
+                                                onclick: move |_| {
+                                                    let action = if music.peek().paused { "resume" } else { "pause" };
+                                                    spawn(async move {
+                                                        let _ = api::music_control(&sess(), action).await;
+                                                        if let Ok(s) = api::music_state(&sess()).await {
+                                                            music.set(s);
+                                                        }
+                                                    });
+                                                },
+                                                Icon { name: play_icon, size: 18 }
+                                            }
+                                            button {
+                                                class: "mbtn",
+                                                aria_label: "Skip",
+                                                onclick: move |_| {
+                                                    spawn(async move {
+                                                        let _ = api::music_control(&sess(), "skip").await;
+                                                        if let Ok(s) = api::music_state(&sess()).await {
+                                                            music.set(s);
+                                                        }
+                                                    });
+                                                },
+                                                Icon { name: "skip", size: 18 }
+                                            }
+                                            button {
+                                                class: "mbtn stop",
+                                                aria_label: "Stop",
+                                                onclick: move |_| {
+                                                    spawn(async move {
+                                                        let _ = api::music_control(&sess(), "stop").await;
+                                                        if let Ok(s) = api::music_state(&sess()).await {
+                                                            music.set(s);
+                                                        }
+                                                    });
+                                                },
+                                                Icon { name: "stop", size: 16 }
+                                            }
+                                        }
                                     }
-                                    button {
-                                        class: "mbtn stop",
-                                        onclick: move |_| {
-                                            spawn(async move {
-                                                let _ = api::music_control(&sess(), "stop").await;
-                                                if let Ok(s) = api::music_state(&sess()).await {
-                                                    music.set(s);
-                                                }
-                                            });
-                                        },
-                                        Icon { name: "stop", size: 18 }
-                                    }
-                                }
-                            }
-                            div { class: "queue-head",
-                                span { class: "grow", "Up next" }
-                                if state.queue.len() > 1 {
-                                    button {
-                                        class: "queue-shuffle",
-                                        onclick: move |_| {
-                                            spawn(async move {
-                                                let _ = api::music_queue(&sess(), shared::MusicQueueRequest {
-                                                    action: "shuffle".into(),
-                                                    id: None,
-                                                    offset: None,
-                                                    ids: Vec::new(),
-                                                }).await;
-                                                if let Ok(s) = api::music_state(&sess()).await {
-                                                    music.set(s);
-                                                }
-                                            });
-                                        },
-                                        Icon { name: "shuffle", size: 13 }
-                                        " Shuffle"
-                                    }
-                                }
-                            }
-                            if state.queue.is_empty() {
-                                div { class: "np-empty", "queue's empty" }
-                            }
-                            for track in state.queue.clone() {
-                                div { key: "{track.id}", class: "queue-row",
-                                    div { class: "queue-title", "{track.title}" }
-                                    button {
-                                        class: "queue-x",
-                                        onclick: {
-                                            let id = track.id;
-                                            move |_| {
+
+                                    div { class: "queue-head",
+                                        span { class: "section-label grow", style: "padding: 0", "Up next" }
+                                        button {
+                                            class: "queue-shuffle",
+                                            onclick: move |_| {
                                                 spawn(async move {
                                                     let _ = api::music_queue(&sess(), shared::MusicQueueRequest {
-                                                        action: "remove".into(),
+                                                        action: "shuffle".into(),
                                                         id: None,
                                                         offset: None,
-                                                        ids: vec![id],
+                                                        ids: Vec::new(),
                                                     }).await;
                                                     if let Ok(s) = api::music_state(&sess()).await {
                                                         music.set(s);
                                                     }
                                                 });
-                                            }
-                                        },
-                                        Icon { name: "x", size: 14 }
+                                            },
+                                            Icon { name: "shuffle", size: 12 }
+                                            "Shuffle"
+                                        }
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                main { class: "messages",
-                    // Grouped in reading order, then reversed: column-reverse
-                    // pins the view to the newest message.
-                    for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                        MessageRow {
-                            key: "{msg.id}",
-                            failed: failed_sends().contains(&msg.id),
-                            msg,
-                            compact,
-                            me_id,
-                            me_admin,
-                        }
-                    }
-                    if has_more() {
-                        button { class: "load-older", onclick: load_older, "Load older messages" }
-                    }
-                }
-            }
-
-            if settings_open() {
-                div { class: "drawer-overlay", onclick: move |_| settings_open.set(false) }
-                div { class: "sheet",
-                    div { class: "sheet-head",
-                        div { class: "sheet-title", "Settings" }
-                        button { class: "sheet-x", onclick: move |_| settings_open.set(false),
-                            Icon { name: "x", size: 14 }
-                        }
-                    }
-                    // Installing comes first: on iPhone it's what makes
-                    // notifications possible at all, and on Android the
-                    // browser's own banner only ever appears once.
-                    {
-                        let inst = install_glue();
-                        rsx! {
-                            if !inst.installed {
-                                div { class: "sheet-section", "Install" }
-                                if inst.available {
-                                    button {
-                                        class: "sheet-toggle",
-                                        onclick: move |_| {
-                                            spawn(async move {
-                                                let _ = wasm_bindgen_futures::JsFuture::from(install_prompt_js()).await;
-                                                if let Ok(state) = serde_json::from_str::<InstallGlue>(&install_state_js()) {
-                                                    install_glue.set(state);
-                                                }
-                                            });
-                                        },
-                                        Icon { name: "download", size: 15 }
-                                        " Install NotDiscord on this device"
-                                    }
-                                } else if inst.ios {
-                                    div { class: "sheet-hint",
-                                        "To install: tap the Share button, then \"Add to Home Screen\". Notifications only work once it's installed."
-                                    }
-                                } else {
-                                    div { class: "sheet-hint",
-                                        "To install: open your browser's menu and pick \"Install app\" or \"Add to Home screen\". Your browser only offers to do this on its own once, so the menu is the reliable way back."
-                                    }
-                                }
-                                if inst.outcome == "dismissed" {
-                                    div { class: "sheet-note", "maybe next time" }
-                                }
-                            }
-                        }
-                    }
-                    div { class: "sheet-section", "Notifications" }
-                    {
-                        let glue = push_glue();
-                        let prefs = notify();
-                        let on = prefs.as_ref().is_some_and(|p| p.subscribed) && glue.permission == "granted";
-                        let level = prefs.as_ref().map(|p| p.level.clone()).unwrap_or_else(|| "mentions".into());
-                        let vapid = prefs.as_ref().map(|p| p.vapid_key.clone()).unwrap_or_default();
-                        rsx! {
-                            if !glue.supported {
-                                div { class: "sheet-hint",
-                                    "This browser can't do notifications. On iPhone, add NotDiscord to your Home Screen first."
-                                }
-                            } else {
-                                button {
-                                    class: if on { "sheet-toggle on" } else { "sheet-toggle" },
-                                    onclick: move |_| {
-                                        let vapid = vapid.clone();
-                                        spawn(async move {
-                                            notify_msg.set(String::new());
-                                            if on {
-                                                let json = wasm_bindgen_futures::JsFuture::from(push_disable_js())
-                                                    .await.ok().and_then(|v| v.as_string()).unwrap_or_default();
-                                                if let Ok(sub) = serde_json::from_str::<PushSub>(&json) {
-                                                    let _ = api::push_unsubscribe(&sess(), sub.into()).await;
-                                                }
-                                                notify_msg.set("notifications off on this device".into());
-                                            } else {
-                                                let json = wasm_bindgen_futures::JsFuture::from(push_enable_js(&vapid))
-                                                    .await.ok().and_then(|v| v.as_string()).unwrap_or_default();
-                                                match serde_json::from_str::<PushSub>(&json) {
-                                                    Ok(sub) => match api::push_subscribe(&sess(), sub.into()).await {
-                                                        Ok(()) => notify_msg.set("notifications on for this device".into()),
-                                                        Err(e) => notify_msg.set(e),
+                                    div { style: "display: flex; flex-direction: column; gap: 6px",
+                                        if state.queue.is_empty() {
+                                            div { class: "np-empty", "queue's empty" }
+                                        }
+                                        for (n, track) in state.queue.clone().into_iter().enumerate() {
+                                            div { key: "{track.id}", class: "queue-row",
+                                                span { class: "queue-n", "{n + 1}" }
+                                                span { class: "queue-title ellipsis", "{track.title}" }
+                                                button {
+                                                    class: "queue-x",
+                                                    aria_label: "Remove",
+                                                    onclick: {
+                                                        let id = track.id;
+                                                        move |_| {
+                                                            spawn(async move {
+                                                                let _ = api::music_queue(&sess(), shared::MusicQueueRequest {
+                                                                    action: "remove".into(),
+                                                                    id: None,
+                                                                    offset: None,
+                                                                    ids: vec![id],
+                                                                }).await;
+                                                                if let Ok(s) = api::music_state(&sess()).await {
+                                                                    music.set(s);
+                                                                }
+                                                            });
+                                                        }
                                                     },
-                                                    Err(_) => {
-                                                        let state: PushGlue = serde_json::from_str(&push_state_js()).unwrap_or_default();
-                                                        notify_msg.set(if state.error.is_empty() {
-                                                            "notifications weren't allowed".into()
-                                                        } else {
-                                                            state.error
-                                                        });
+                                                    Icon { name: "x", size: 14 }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Queueing has its own field now. It used to ride
+                            // on the composer, which meant the music tab and
+                            // the channel you were reading shared one box.
+                            div { class: "queue-add",
+                                input {
+                                    class: "text-input",
+                                    placeholder: "paste a link to queue",
+                                    value: "{music_link}",
+                                    oninput: move |e| music_link.set(e.value()),
+                                    onkeydown: move |e| {
+                                        if e.key() == Key::Enter {
+                                            queue_link(());
+                                        }
+                                    },
+                                }
+                                button {
+                                    class: "btn btn-primary",
+                                    onclick: move |_| queue_link(()),
+                                    "Queue"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- You ----------------
+                if tab() == "you" && over.is_none() {
+                    div { class: "screen",
+                        div { class: "scroll grow", style: "padding: 18px 16px 14px; padding-top: calc(18px + var(--safe-top))",
+                            div { class: "you-head",
+                                {
+                                    let me = sess().user.clone();
+                                    let colour = name_color(me_id, &members(), &tags());
+                                    let my_status = members()
+                                        .iter()
+                                        .find(|m| m.user.id == me_id)
+                                        .and_then(|m| m.status.clone())
+                                        .unwrap_or_default();
+                                    rsx! {
+                                        Avatar { user: me.clone(), variant: "big" }
+                                        div { class: "grow",
+                                            div { style: "display: flex; align-items: center; gap: 7px",
+                                                span {
+                                                    class: "you-name",
+                                                    style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                    "{me.username}"
+                                                }
+                                                if me.role == "admin" {
+                                                    span { class: "tag-badge", "ADMIN" }
+                                                }
+                                            }
+                                            if my_status.is_empty() {
+                                                div { class: "you-status", "no status set" }
+                                            } else {
+                                                div { class: "you-status ellipsis", "{my_status}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "you-actions",
+                                button {
+                                    class: "btn btn-primary",
+                                    onclick: move |_| {
+                                        // Seed the fields from what the server
+                                        // currently holds, not from whatever
+                                        // was typed and abandoned last time.
+                                        status_draft.set(
+                                            members()
+                                                .iter()
+                                                .find(|m| m.user.id == me_id)
+                                                .and_then(|m| m.status.clone())
+                                                .unwrap_or_default(),
+                                        );
+                                        profile_saved.set(false);
+                                        overlay.set(Some("profile"));
+                                        load_profile();
+                                    },
+                                    "Edit profile"
+                                }
+                                button {
+                                    class: "btn btn-quiet",
+                                    onclick: move |_| {
+                                        notify_msg.set(String::new());
+                                        overlay.set(Some("settings"));
+                                        load_notify();
+                                    },
+                                    "Settings"
+                                }
+                            }
+
+                            div { class: "section-label", style: "padding: 22px 2px 8px", "This device" }
+                            div { class: "row-stack",
+                                button {
+                                    class: "row-card",
+                                    onclick: move |_| {
+                                        notify_msg.set(String::new());
+                                        overlay.set(Some("settings"));
+                                        load_notify();
+                                    },
+                                    span { class: "row-label", "Notifications" }
+                                    span { class: "row-value on", "{notify_label}" }
+                                }
+                                div { class: "row-card",
+                                    span { class: "row-label", "Voice" }
+                                    span { class: "row-value",
+                                        if in_call { "connected to {call_name}" } else { "not connected" }
+                                    }
+                                }
+                                div { class: "row-card",
+                                    span { class: "row-label", "Server" }
+                                    span { class: "row-value ellipsis", "{host_name()}" }
+                                }
+                            }
+
+                            div { class: "section-label", style: "padding: 22px 2px 8px", "Members" }
+                            for member in members() {
+                                {
+                                    let colour = name_color(member.user.id, &members(), &tags());
+                                    let sub = member
+                                        .status
+                                        .clone()
+                                        .unwrap_or_else(|| if member.online { "online".into() } else { "offline".into() });
+                                    rsx! {
+                                        div { key: "m{member.user.id}", class: "member-row",
+                                            Avatar { user: member.user.clone() }
+                                            div { class: "member-col",
+                                                div { class: "member-line",
+                                                    span {
+                                                        class: "member-name ellipsis",
+                                                        style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                        "{member.user.username}"
+                                                    }
+                                                    if member.user.role == "admin" {
+                                                        span { class: "tag-badge", "ADMIN" }
+                                                    }
+                                                    if voice_users().contains_key(&member.user.id) {
+                                                        span { class: "member-voice", Icon { name: "volume", size: 12 } }
+                                                    }
+                                                }
+                                                div { class: "member-status ellipsis", "{sub}" }
+                                            }
+                                            span { class: if member.online { "member-dot online" } else { "member-dot" } }
+                                        }
+                                    }
+                                }
+                            }
+
+                            button {
+                                class: "logout-btn",
+                                onclick: move |_| {
+                                    save_session(&None);
+                                    session.set(None);
+                                },
+                                "Log out ({sess().user.username})"
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Channel ----------------
+                if over == Some("channel") {
+                    div { class: "overlay",
+                        div { class: "overlay-head",
+                            button {
+                                class: "hbtn",
+                                aria_label: "Back",
+                                onclick: move |_| overlay.set(None),
+                                // Backing out only closes the screen: the
+                                // channel stays selected, so its half-typed
+                                // message stays in the composer where it
+                                // belongs. Parking it here as well would let
+                                // the next `open_channel` re-park the emptied
+                                // composer over the copy this just saved.
+                                Icon { name: "chevron-left", size: 20 }
+                            }
+                            div { class: "chan-head-main",
+                                div { class: "chan-head-name ellipsis", "{chan_title}" }
+                                if !chan_topic.is_empty() {
+                                    div { class: "chan-head-topic ellipsis", "{chan_topic}" }
+                                }
+                            }
+                            button {
+                                class: "hbtn",
+                                aria_label: "Members",
+                                onclick: move |_| sheet.set(Some("members")),
+                                Icon { name: "user", size: 18 }
+                            }
+                        }
+
+                        main { class: "messages",
+                            // Grouped in reading order, then reversed:
+                            // column-reverse pins the view to the newest.
+                            for (msg, compact) in group_messages(&messages()).into_iter().rev() {
+                                MessageRow {
+                                    key: "{msg.id}",
+                                    failed: failed_sends().contains(&msg.id),
+                                    msg,
+                                    compact,
+                                    me_id,
+                                    me_admin,
+                                }
+                            }
+                            if has_more() {
+                                button { class: "load-older", onclick: load_older, "Load older messages" }
+                            }
+                        }
+
+                        {
+                            let names: Vec<String> = typing()
+                                .values()
+                                .filter(|(channel_id, _, _)| Some(*channel_id) == selected_id)
+                                .map(|(_, name, _)| name.clone())
+                                .collect();
+                            let line = match names.as_slice() {
+                                [] => String::new(),
+                                [a] => format!("{a} is typing\u{2026}"),
+                                [a, b] => format!("{a} and {b} are typing\u{2026}"),
+                                _ => "several people are typing\u{2026}".into(),
+                            };
+                            rsx! {
+                                if !line.is_empty() {
+                                    div { class: "typing-line", "{line}" }
+                                }
+                            }
+                        }
+
+                        if let Some(target) = replying() {
+                            div { class: "reply-bar",
+                                Icon { name: "reply", size: 12 }
+                                span { class: "grow ellipsis",
+                                    "Replying to {target.author.username}: {target.content.chars().take(50).collect::<String>()}"
+                                }
+                                button {
+                                    class: "hbtn",
+                                    style: "width: 28px; height: 28px",
+                                    aria_label: "Cancel reply",
+                                    onclick: move |_| replying.set(None),
+                                    Icon { name: "x", size: 13 }
+                                }
+                            }
+                        }
+
+                        footer { class: if in_call { "composer" } else { "composer floor" },
+                            button {
+                                class: "cbtn",
+                                aria_label: "Attach",
+                                onclick: move |_| sheet.set(Some("attach")),
+                                if uploading() { "…" } else { Icon { name: "plus", size: 18 } }
+                            }
+                            input {
+                                class: "draft",
+                                placeholder: if chan_is_dm { "message {chan_title}" } else { "message {chan_title}" },
+                                value: "{draft}",
+                                oninput: move |e| {
+                                    draft.set(e.value());
+                                    // Throttled: one event every few seconds
+                                    // holds the indicator up, and a phone
+                                    // keyboard fires a lot of these.
+                                    if let Some(channel) = selected() {
+                                        let now = now_ms();
+                                        if now - last_typing_sent() >= TYPING_SEND_INTERVAL_MS {
+                                            last_typing_sent.set(now);
+                                            ws.send(ClientEvent::Typing { channel_id: channel.id });
+                                        }
+                                    }
+                                },
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        send(());
+                                    }
+                                },
+                            }
+                            button {
+                                class: "cbtn plain",
+                                aria_label: "Stickers",
+                                onclick: move |_| sheet.set(Some("stickers")),
+                                Icon { name: "smile", size: 19 }
+                            }
+                            button {
+                                class: if armed { "send-btn armed" } else { "send-btn" },
+                                aria_label: "Send",
+                                onclick: move |_| send(()),
+                                Icon { name: "send", size: 17 }
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Search ----------------
+                if over == Some("search") {
+                    div { class: "overlay",
+                        div { class: "overlay-head",
+                            button {
+                                class: "hbtn",
+                                aria_label: "Back",
+                                onclick: move |_| overlay.set(None),
+                                Icon { name: "chevron-left", size: 20 }
+                            }
+                            input {
+                                class: "search-input",
+                                placeholder: "search every channel",
+                                value: "{query}",
+                                autocapitalize: "none",
+                                oninput: move |e| query.set(e.value()),
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        run_search(());
+                                    }
+                                },
+                            }
+                            button {
+                                class: "hbtn accent",
+                                aria_label: "Search",
+                                onclick: move |_| run_search(()),
+                                Icon { name: "search", size: 18 }
+                            }
+                        }
+                        div { class: "scroll grow", style: "padding: 10px 12px 14px",
+                            div { class: "search-count",
+                                if searching() {
+                                    "searching…"
+                                } else if query().trim().is_empty() {
+                                    "type something and hit search"
+                                } else if results().is_empty() {
+                                    "nothing matched"
+                                } else if results().len() == 1 {
+                                    "1 message"
+                                } else {
+                                    "{results().len()} messages"
+                                }
+                            }
+                            div { style: "display: flex; flex-direction: column; gap: 8px",
+                                for hit in results() {
+                                    {
+                                        let where_label = if hit.channel_kind == "dm" {
+                                            format!("@{}", hit.channel_name)
+                                        } else {
+                                            format!("#{}", hit.channel_name)
+                                        };
+                                        let when = format_time(hit.message.created_at);
+                                        let colour = name_color(hit.message.author.id, &members(), &tags());
+                                        let target = hit.message.channel_id;
+                                        let text = hit.message.content.clone();
+                                        rsx! {
+                                            button {
+                                                key: "s{hit.message.id}",
+                                                class: "search-hit",
+                                                onclick: move |_| {
+                                                    // Jump to the room it was
+                                                    // said in. Landing on the
+                                                    // exact message needs
+                                                    // history paging the API
+                                                    // doesn't offer yet.
+                                                    if let Some(channel) =
+                                                        channels.peek().iter().find(|c| c.id == target).cloned()
+                                                    {
+                                                        overlay.set(None);
+                                                        open_channel(channel);
+                                                    }
+                                                },
+                                                span { class: "search-where",
+                                                    span { class: "place", "{where_label}" }
+                                                    "· {when}"
+                                                }
+                                                span {
+                                                    class: "search-author",
+                                                    style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                    "{hit.message.author.username}"
+                                                }
+                                                span { class: "search-text", "{text}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Settings ----------------
+                if over == Some("settings") {
+                    div { class: "overlay",
+                        div { class: "overlay-head",
+                            button {
+                                class: "hbtn",
+                                aria_label: "Back",
+                                onclick: move |_| overlay.set(None),
+                                Icon { name: "chevron-left", size: 20 }
+                            }
+                            div { class: "overlay-title", "Settings" }
+                        }
+                        div { class: "scroll overlay-body",
+                            // Installing comes first: on iPhone it's what
+                            // makes notifications possible at all, and on
+                            // Android the browser's own banner only ever
+                            // appears once.
+                            {
+                                let inst = install_glue();
+                                rsx! {
+                                    if !inst.installed {
+                                        div { class: "section-label", style: "padding: 14px 2px 8px", "Install" }
+                                        if inst.available {
+                                            button {
+                                                class: "row-card",
+                                                onclick: move |_| {
+                                                    spawn(async move {
+                                                        let _ = wasm_bindgen_futures::JsFuture::from(install_prompt_js()).await;
+                                                        if let Ok(state) = serde_json::from_str::<InstallGlue>(&install_state_js()) {
+                                                            install_glue.set(state);
+                                                        }
+                                                    });
+                                                },
+                                                Icon { name: "download", size: 16 }
+                                                span { class: "row-label", "Install NotDiscord on this device" }
+                                            }
+                                        } else if inst.ios {
+                                            div { class: "note",
+                                                "To install: tap the Share button, then \"Add to Home Screen\". Notifications only work once it's installed."
+                                            }
+                                        } else {
+                                            div { class: "note",
+                                                "To install: open your browser's menu and pick \"Install app\" or \"Add to Home screen\". Your browser only offers to do this on its own once, so the menu is the reliable way back."
+                                            }
+                                        }
+                                        if inst.outcome == "dismissed" {
+                                            div { class: "note good", "maybe next time" }
+                                        }
+                                    }
+                                }
+                            }
+
+                            div { class: "section-label", style: "padding: 18px 2px 8px", "Notifications" }
+                            {
+                                let glue = push_glue();
+                                let prefs = notify();
+                                let on = prefs.as_ref().is_some_and(|p| p.subscribed) && glue.permission == "granted";
+                                let level = prefs.as_ref().map(|p| p.level.clone()).unwrap_or_else(|| "mentions".into());
+                                let vapid = prefs.as_ref().map(|p| p.vapid_key.clone()).unwrap_or_default();
+                                let push_icon: &'static str = if on { "check" } else { "user" };
+                                rsx! {
+                                    if !glue.supported {
+                                        div { class: "note",
+                                            "This browser can't do notifications. On iPhone, add NotDiscord to your Home Screen first."
+                                        }
+                                    } else {
+                                        button {
+                                            class: if on { "row-card picked" } else { "row-card" },
+                                            onclick: move |_| {
+                                                let vapid = vapid.clone();
+                                                spawn(async move {
+                                                    notify_msg.set(String::new());
+                                                    if on {
+                                                        let json = wasm_bindgen_futures::JsFuture::from(push_disable_js())
+                                                            .await.ok().and_then(|v| v.as_string()).unwrap_or_default();
+                                                        if let Ok(sub) = serde_json::from_str::<PushSub>(&json) {
+                                                            let _ = api::push_unsubscribe(&sess(), sub.into()).await;
+                                                        }
+                                                        notify_msg.set("notifications off on this device".into());
+                                                    } else {
+                                                        let json = wasm_bindgen_futures::JsFuture::from(push_enable_js(&vapid))
+                                                            .await.ok().and_then(|v| v.as_string()).unwrap_or_default();
+                                                        match serde_json::from_str::<PushSub>(&json) {
+                                                            Ok(sub) => match api::push_subscribe(&sess(), sub.into()).await {
+                                                                Ok(()) => notify_msg.set("notifications on for this device".into()),
+                                                                Err(e) => notify_msg.set(e),
+                                                            },
+                                                            Err(_) => {
+                                                                let state: PushGlue = serde_json::from_str(&push_state_js()).unwrap_or_default();
+                                                                notify_msg.set(if state.error.is_empty() {
+                                                                    "notifications weren't allowed".into()
+                                                                } else {
+                                                                    state.error
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                    load_notify();
+                                                });
+                                            },
+                                            Icon { name: push_icon, size: 16 }
+                                            span { class: "row-label",
+                                                if on {
+                                                    "Notifications are on for this device"
+                                                } else {
+                                                    "Turn on notifications for this device"
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    div { class: "section-label", style: "padding: 18px 2px 8px", "Notify me about" }
+                                    div { class: "row-stack",
+                                        for (value, label, hint) in [
+                                            ("all", "Everything", "every message in every channel"),
+                                            ("mentions", "Mentions & DMs", "when someone @s you or messages you directly"),
+                                            ("none", "Nothing", "no notifications at all"),
+                                        ] {
+                                            button {
+                                                key: "{value}",
+                                                class: if level == value { "row-card picked" } else { "row-card" },
+                                                onclick: move |_| {
+                                                    spawn(async move {
+                                                        match api::set_notify_level(&sess(), value).await {
+                                                            Ok(()) => {
+                                                                notify_msg.set(String::new());
+                                                                load_notify();
+                                                            }
+                                                            Err(e) => notify_msg.set(e),
+                                                        }
+                                                    });
+                                                },
+                                                span { class: "row-col",
+                                                    span { style: "font-size: 14px", "{label}" }
+                                                    span { class: "row-hint", "{hint}" }
+                                                }
+                                                if level == value {
+                                                    span { style: "color: var(--accent); display: flex",
+                                                        Icon { name: "check", size: 15 }
                                                     }
                                                 }
                                             }
-                                            load_notify();
-                                        });
-                                    },
-                                    if on {
-                                        Icon { name: "check", size: 15 }
-                                        " Notifications are on for this device"
-                                    } else {
-                                        Icon { name: "user", size: 15 }
-                                        " Turn on notifications for this device"
+                                        }
+                                    }
+                                    div { class: "note",
+                                        "Notifications only arrive while the app is closed — if you're already looking, you'd just see the message."
+                                    }
+                                    if !notify_msg().is_empty() {
+                                        div { class: "note good", "{notify_msg}" }
                                     }
                                 }
                             }
-                            div { class: "sheet-section", "Notify me about" }
-                            for (value, label, hint) in [
-                                ("all", "Everything", "every message in every channel"),
-                                ("mentions", "Mentions & DMs", "when someone @s you or messages you directly"),
-                                ("none", "Nothing", "no notifications at all"),
-                            ] {
-                                button {
-                                    key: "{value}",
-                                    class: if level == value { "sheet-option picked" } else { "sheet-option" },
-                                    onclick: move |_| {
-                                        spawn(async move {
-                                            match api::set_notify_level(&sess(), value).await {
-                                                Ok(()) => {
-                                                    notify_msg.set(String::new());
-                                                    load_notify();
+                        }
+                    }
+                }
+
+                // ---------------- Edit profile ----------------
+                if over == Some("profile") {
+                    div { class: "overlay",
+                        div { class: "overlay-head",
+                            button {
+                                class: "hbtn",
+                                aria_label: "Back",
+                                onclick: move |_| overlay.set(None),
+                                Icon { name: "chevron-left", size: 20 }
+                            }
+                            div { class: "overlay-title", "Edit profile" }
+                            button {
+                                class: "btn btn-primary",
+                                style: "min-height: 34px; padding: 6px 13px",
+                                onclick: move |_| save_profile(()),
+                                if profile_saved() { "Saved" } else { "Save" }
+                            }
+                        }
+                        div { class: "scroll overlay-body", style: "padding: 18px 16px",
+                            div { style: "display: flex; align-items: center; gap: 14px",
+                                Avatar { user: sess().user.clone(), variant: "big" }
+                                label { class: "btn btn-quiet",
+                                    input {
+                                        r#type: "file",
+                                        accept: "image/*",
+                                        style: "display: none",
+                                        onchange: move |evt| {
+                                            spawn(async move {
+                                                let Some(file) = evt.files().into_iter().next() else { return };
+                                                let name = file.name();
+                                                uploading.set(true);
+                                                if let Ok(bytes) = file.read_bytes().await {
+                                                    match api::upload(&sess(), &name, bytes.to_vec()).await {
+                                                        Ok(url) => {
+                                                            match api::update_profile(&sess(), Some(url), None).await {
+                                                                // The roster carries the avatar
+                                                                // everywhere else in the app, so
+                                                                // refresh it rather than guessing.
+                                                                Ok(()) => {
+                                                                    if let Ok(list) = api::users(&sess()).await {
+                                                                        members.set(list);
+                                                                    }
+                                                                    if let Ok(user) = api::me(&sess()).await {
+                                                                        // Cloned out first: the read
+                                                                        // guard would still be alive
+                                                                        // at the set() below.
+                                                                        let current = session.peek().clone();
+                                                                        if let Some(current) = current {
+                                                                            let updated = api::Session { user, ..current };
+                                                                            save_session(&Some(updated.clone()));
+                                                                            session.set(Some(updated));
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => status.set(e),
+                                                            }
+                                                        }
+                                                        Err(e) => status.set(e),
+                                                    }
                                                 }
-                                                Err(e) => notify_msg.set(e),
-                                            }
-                                        });
+                                                uploading.set(false);
+                                            });
+                                        },
+                                    }
+                                    if uploading() { "Uploading…" } else { "Change avatar" }
+                                }
+                            }
+
+                            div { class: "field", style: "margin-top: 22px",
+                                label { "Display name" }
+                                input { value: "{sess().user.username}", disabled: true }
+                                span { class: "field-hint",
+                                    "Your username is how everyone here is addressed, so it isn't editable from the phone."
+                                }
+                            }
+                            div { class: "field", style: "margin-top: 16px",
+                                label { "Status" }
+                                input {
+                                    value: "{status_draft}",
+                                    placeholder: "what you're up to",
+                                    oninput: move |e| {
+                                        status_draft.set(e.value());
+                                        profile_saved.set(false);
                                     },
-                                    div { class: "sheet-option-main",
-                                        div { class: "sheet-option-label", "{label}" }
-                                        div { class: "sheet-option-hint", "{hint}" }
-                                    }
-                                    if level == value {
-                                        Icon { name: "check", size: 15 }
-                                    }
+                                }
+                                span { class: "field-hint", "Everyone on the server sees this next to your name." }
+                            }
+                            div { class: "field", style: "margin-top: 16px",
+                                label { "About you" }
+                                textarea {
+                                    rows: "3",
+                                    value: "{bio_draft}",
+                                    oninput: move |e| {
+                                        bio_draft.set(e.value());
+                                        profile_saved.set(false);
+                                    },
                                 }
                             }
-                            div { class: "sheet-hint",
-                                "Notifications only arrive while the app is closed — if you're already looking, you'd just see the message."
-                            }
-                            if !notify_msg().is_empty() {
-                                div { class: "sheet-note", "{notify_msg}" }
+                            div { class: "field", style: "margin-top: 16px",
+                                label { "Name colour" }
+                                div { class: "swatch-row",
+                                    {
+                                        let colour = name_color(me_id, &members(), &tags());
+                                        let shown = if colour.is_empty() { "var(--text)".to_string() } else { colour };
+                                        rsx! {
+                                            span { class: "swatch", style: "background: {shown}" }
+                                            for tag in my_tags() {
+                                                span {
+                                                    key: "t{tag.id}",
+                                                    class: "tag-badge",
+                                                    style: "background: {tag.color}; color: var(--bg)",
+                                                    "{tag.name}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                span { class: "field-hint", "Colours come from tags an admin gives you." }
                             }
                         }
                     }
                 }
             }
 
-            if members_open() {
-                div { class: "drawer-overlay", onclick: move |_| members_open.set(false) }
-                aside { class: "members-panel",
-                    div { class: "drawer-section", "Members" }
-                    for member in members() {
-                        div { key: "m{member.user.id}", class: "member-row",
-                            Avatar { user: member.user.clone() }
-                            div { class: "member-col",
-                                div { class: "member-line",
-                                    span { class: "member-name", "{member.user.username}" }
-                                    if member.user.role == "admin" {
-                                        span { class: "role-badge", "ADMIN" }
-                                    }
-                                    if voice_users().contains_key(&member.user.id) {
-                                        span { class: "voice-pill", Icon { name: "volume", size: 13 } }
-                                    }
-                                }
-                                if let Some(text) = member.status.clone() {
-                                    div { class: "member-status", "{text}" }
-                                }
-                            }
-                            span { class: if member.online { "dot online" } else { "dot" } }
+            // ---------------- the call, minimised ----------------
+            if in_call && !call_open() {
+                div { class: if over.is_some() { "callbar floor" } else { "callbar" },
+                    button {
+                        class: "callbar-open",
+                        onclick: move |_| call_open.set(true),
+                        span { class: "wave", span {} span {} span {} }
+                        span { class: "callbar-col",
+                            span { class: "callbar-name ellipsis", "{call_name}" }
+                            span { class: "callbar-sub ellipsis", "{call_peers_line}" }
                         }
+                    }
+                    button {
+                        class: if voice_glue().muted { "minibtn off" } else { "minibtn" },
+                        aria_label: "Mute",
+                        onclick: move |_| {
+                            let now_muted = !voice_glue.peek().muted;
+                            spawn(async move {
+                                let _ = wasm_bindgen_futures::JsFuture::from(voice_set_muted_js(now_muted)).await;
+                            });
+                        },
+                        Icon { name: mic_icon, size: 16 }
+                    }
+                    button {
+                        class: "minibtn",
+                        aria_label: "Leave",
+                        onclick: leave_voice,
+                        Icon { name: "phone-off", size: 16 }
                     }
                 }
             }
 
-            if let Some((_, chan_name)) = voice_conn() {
-                div { class: "voice-bar",
-                    div { class: "voice-bar-top",
-                        Icon { name: "volume", size: 16 }
-                        div { class: "voice-bar-chan", "{chan_name}" }
-                        span { class: "grow" }
+            // ---------------- tabs ----------------
+            if over.is_none() && !call_open() {
+                nav { class: "tabbar",
+                    button {
+                        class: if tab() == "chats" { "tabbtn on" } else { "tabbtn" },
+                        onclick: move |_| tab.set("chats"),
+                        span { class: "tabpill",
+                            Icon { name: "message", size: 20 }
+                            if total_unread > 0 {
+                                span { class: "tabbadge", "{total_unread}" }
+                            }
+                        }
+                        span { class: "tablabel", "Chats" }
+                    }
+                    button {
+                        class: if tab() == "voice" { "tabbtn on" } else { "tabbtn" },
+                        onclick: move |_| tab.set("voice"),
+                        span { class: "tabpill", Icon { name: "volume", size: 20 } }
+                        span { class: "tablabel", "Voice" }
+                    }
+                    button {
+                        class: if tab() == "music" { "tabbtn on" } else { "tabbtn" },
+                        onclick: move |_| {
+                            tab.set("music");
+                            refresh_music();
+                        },
+                        span { class: "tabpill", Icon { name: "music", size: 20 } }
+                        span { class: "tablabel", "Music" }
+                    }
+                    button {
+                        class: if tab() == "you" { "tabbtn on" } else { "tabbtn" },
+                        onclick: move |_| tab.set("you"),
+                        span { class: "tabpill", Icon { name: "user", size: 20 } }
+                        span { class: "tablabel", "You" }
+                    }
+                }
+            }
+
+            // ---------------- the call, full screen ----------------
+            if in_call && call_open() {
+                div { class: "call-screen",
+                    div { class: "call-head",
                         button {
-                            class: if voice_glue().muted { "vbtn muted" } else { "vbtn" },
+                            class: "hbtn",
+                            aria_label: "Minimise",
+                            onclick: move |_| call_open.set(false),
+                            Icon { name: "chevron-down", size: 20 }
+                        }
+                        div { class: "grow",
+                            div { class: "call-name ellipsis", "{call_name}" }
+                            div { class: "call-sub ellipsis", "{call_clock} · {call_peers_line}" }
+                        }
+                    }
+                    div { class: "scroll grow", style: "padding: 8px 14px",
+                        div { class: "call-grid",
+                            for peer in voice_glue().participants {
+                                {
+                                    let state_label = if peer.local {
+                                        if voice_glue().muted { "you · muted" } else { "you · open mic" }
+                                    } else if peer.speaking {
+                                        "speaking"
+                                    } else {
+                                        "quiet"
+                                    };
+                                    // The roster has the avatar and the tag
+                                    // colour; the voice glue only has a name.
+                                    let member = members()
+                                        .into_iter()
+                                        .find(|m| m.user.username == peer.name);
+                                    let colour = member
+                                        .as_ref()
+                                        .map(|m| name_color(m.user.id, &members(), &tags()))
+                                        .unwrap_or_default();
+                                    rsx! {
+                                        div {
+                                            key: "{peer.identity}",
+                                            class: if peer.speaking { "call-tile speaking" } else { "call-tile" },
+                                            if let Some(member) = member.clone() {
+                                                Avatar { user: member.user.clone(), variant: "tile" }
+                                            }
+                                            span {
+                                                class: "call-tile-name ellipsis",
+                                                style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                "{peer.name}"
+                                            }
+                                            span { class: "call-tile-state", "{state_label}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if voice_glue().participants.iter().any(|p| !p.local) {
+                            div { class: "call-volumes",
+                                div { class: "section-label", style: "padding: 0 0 10px", "Per-person volume" }
+                                for peer in voice_glue().participants.into_iter().filter(|p| !p.local) {
+                                    {
+                                        let identity = peer.identity.clone();
+                                        let level = volumes().get(&identity).copied().unwrap_or(100);
+                                        let for_input = identity.clone();
+                                        rsx! {
+                                            div { key: "vol{identity}", class: "volume-row",
+                                                span { class: "volume-name ellipsis", "{peer.name}" }
+                                                input {
+                                                    r#type: "range",
+                                                    class: "volume-slider",
+                                                    min: "0",
+                                                    max: "200",
+                                                    value: "{level}",
+                                                    oninput: move |e: Event<FormData>| {
+                                                        if let Ok(v) = e.value().parse::<i64>() {
+                                                            voice_set_volume_js(&for_input, v as f64 / 100.0);
+                                                            volumes.write().insert(for_input.clone(), v);
+                                                        }
+                                                    },
+                                                }
+                                                span { class: "volume-value", "{level}%" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "call-actions",
+                        button {
+                            class: if voice_glue().muted { "callbtn" } else { "callbtn on" },
+                            aria_label: "Mute",
                             onclick: move |_| {
                                 let now_muted = !voice_glue.peek().muted;
                                 spawn(async move {
                                     let _ = wasm_bindgen_futures::JsFuture::from(voice_set_muted_js(now_muted)).await;
                                 });
                             },
-                            Icon { name: mic_icon, size: 16 }
+                            Icon { name: mic_icon, size: 21 }
                         }
                         button {
-                            class: if voice_glue().deafened { "vbtn muted" } else { "vbtn" },
+                            class: if voice_glue().deafened { "callbtn active" } else { "callbtn" },
+                            aria_label: "Deafen",
                             onclick: move |_| {
                                 let now = !voice_glue.peek().deafened;
                                 spawn(async move {
                                     let _ = wasm_bindgen_futures::JsFuture::from(voice_set_deafened_js(now)).await;
                                 });
                             },
-                            Icon { name: deafen_icon, size: 16 }
+                            Icon { name: deafen_icon, size: 21 }
                         }
-                        button { class: "vbtn leave", onclick: leave_voice,
-                            Icon { name: "phone-off", size: 16 }
+                        button {
+                            class: "callbtn leave",
+                            aria_label: "Leave call",
+                            onclick: leave_voice,
+                            Icon { name: "phone-off", size: 22 }
                         }
                     }
-                    div { class: "voice-bar-peers",
-                        for p in voice_glue().participants {
-                            div {
-                                key: "{p.identity}",
-                                class: if p.speaking { "peer-row speaking" } else { "peer-row" },
-                                span { class: "peer-name", "{p.name}" }
-                                if !p.local {
-                                    input {
-                                        r#type: "range",
-                                        class: "peer-volume",
-                                        min: "0",
-                                        max: "200",
-                                        value: "100",
-                                        oninput: {
-                                            let identity = p.identity.clone();
-                                            move |e: Event<FormData>| {
-                                                if let Ok(v) = e.value().parse::<f64>() {
-                                                    voice_set_volume_js(&identity, v / 100.0);
-                                                }
-                                            }
-                                        },
-                                    }
+                }
+            }
+
+            // ---------------- sheets ----------------
+            if let Some(which) = sheet() {
+                div { class: "scrim", onclick: move |_| sheet.set(None) }
+                div { class: "sheet",
+                    div { class: "sheet-grip" }
+
+                    if which == "attach" {
+                        div { class: "sheet-head", span { class: "sheet-title", "Send something" } }
+                        div { class: "attach-grid",
+                            label { class: "attach-opt",
+                                input {
+                                    r#type: "file",
+                                    accept: "image/*",
+                                    onchange: move |evt| upload_files(evt),
                                 }
+                                Icon { name: "camera", size: 20 }
+                                span { "Photo" }
+                            }
+                            label { class: "attach-opt",
+                                input {
+                                    r#type: "file",
+                                    accept: "image/*",
+                                    capture: "environment",
+                                    onchange: move |evt| upload_files(evt),
+                                }
+                                Icon { name: "camera", size: 20 }
+                                span { "Camera" }
+                            }
+                            label { class: "attach-opt",
+                                input { r#type: "file", onchange: move |evt| upload_files(evt) }
+                                Icon { name: "file", size: 20 }
+                                span { "File" }
+                            }
+                            button {
+                                class: "attach-opt",
+                                onclick: move |_| sheet.set(Some("stickers")),
+                                Icon { name: "smile", size: 20 }
+                                span { "Sticker" }
                             }
                         }
+                        div { class: "note",
+                            "Uploads keep for as long as this server's retention allows, then the file goes and the message stays."
+                        }
                     }
-                }
-            }
 
-            if !status().is_empty() {
-                div { class: "statusbar", "{status}" }
-            }
-
-            if let Some(target) = replying() {
-                div { class: "reply-bar",
-                    Icon { name: "reply", size: 13 }
-                    span { class: "reply-bar-text",
-                        "Replying to {target.author.username}: {target.content.chars().take(50).collect::<String>()}"
-                    }
-                    button { class: "reply-bar-x", onclick: move |_| replying.set(None),
-                        Icon { name: "x", size: 13 }
-                    }
-                }
-            }
-            {
-                let names: Vec<String> = typing()
-                    .values()
-                    .filter(|(channel_id, _, _)| Some(*channel_id) == selected().map(|c| c.id))
-                    .map(|(_, name, _)| name.clone())
-                    .collect();
-                let line = match names.as_slice() {
-                    [] => String::new(),
-                    [a] => format!("{a} is typing\u{2026}"),
-                    [a, b] => format!("{a} and {b} are typing\u{2026}"),
-                    _ => "several people are typing\u{2026}".into(),
-                };
-                rsx! {
-                    if !line.is_empty() {
-                        div { class: "typing-line", "{line}" }
-                    }
-                }
-            }
-            // The sticker sheet. A sticker is just its URL in a message, so
-            // picking one is a send, not an upload.
-            if sticker_open() {
-                div { class: "drawer-overlay", onclick: move |_| sticker_open.set(false) }
-                div { class: "sheet sticker-sheet",
-                    div { class: "sheet-head",
-                        div { class: "sheet-title", "Stickers" }
-                        button { class: "sheet-x", onclick: move |_| sticker_open.set(false),
-                            Icon { name: "x", size: 14 }
+                    if which == "stickers" {
+                        div { class: "sheet-head",
+                            span { class: "sheet-title", "Stickers" }
+                            span { class: "sheet-note", "added from the desktop app" }
                         }
-                    }
-                    if stickers().is_empty() {
-                        div { class: "sheet-hint",
-                            "No stickers yet. Anyone on the desktop app can add them."
+                        if stickers().is_empty() {
+                            div { class: "note", "Nobody has added a sticker to this server yet." }
                         }
-                    }
-                    div { class: "sticker-grid",
-                        for sticker in stickers() {
-                            img {
-                                key: "{sticker.id}",
-                                class: "sticker-cell",
-                                src: "{sticker.url}",
-                                alt: "{sticker.name}",
-                                title: "{sticker.name}",
-                                loading: "lazy",
-                                onclick: {
-                                    let url = sticker.url.clone();
-                                    move |_| {
-                                        if let Some(channel) = selected() {
-                                            ws.send(ClientEvent::SendMessage {
-                                                channel_id: channel.id,
-                                                content: url.clone(),
-                                                reply_to: None,
-                                            });
-                                        }
-                                        sticker_open.set(false);
-                                    }
-                                },
-                            }
-                        }
-                    }
-                }
-            }
-            footer { class: "composer",
-                button {
-                    class: "attach sticker-btn",
-                    title: "Send a sticker",
-                    onclick: move |_| sticker_open.set(!sticker_open()),
-                    Icon { name: "smile", size: 18 }
-                }
-                label { class: "attach",
-                    input {
-                        r#type: "file",
-                        onchange: move |evt| {
-                            spawn(async move {
-                                let Some(file) = evt.files().into_iter().next() else { return };
-                                let name = file.name();
-                                uploading.set(true);
-                                if let Ok(bytes) = file.read_bytes().await {
-                                    match api::upload(&sess(), &name, bytes.to_vec()).await {
-                                        Ok(url) => {
+                        div { class: "sticker-grid",
+                            for sticker in stickers() {
+                                img {
+                                    key: "st{sticker.id}",
+                                    class: "sticker-cell",
+                                    src: "{sticker.url}",
+                                    alt: "{sticker.name}",
+                                    onclick: {
+                                        let url = sticker.url.clone();
+                                        move |_| {
                                             if let Some(channel) = selected.peek().clone() {
                                                 ws.send(ClientEvent::SendMessage {
                                                     channel_id: channel.id,
-                                                    content: url,
+                                                    content: url.clone(),
                                                     reply_to: None,
                                                 });
                                             }
+                                            sheet.set(None);
                                         }
-                                        Err(e) => status.set(e),
-                                    }
+                                    },
                                 }
-                                uploading.set(false);
-                            });
-                        },
-                    }
-                    if uploading() {
-                        "…"
-                    } else {
-                        Icon { name: "plus", size: 18 }
-                    }
-                }
-                input {
-                    class: "draft",
-                    placeholder: if tab() == "music" { "Paste a link to queue it" } else { "Message" },
-                    value: "{draft}",
-                    oninput: move |e| {
-                        draft.set(e.value());
-                        // Throttled: one event every few seconds is enough to
-                        // hold the indicator up, and a phone keyboard fires a
-                        // lot of these.
-                        if let Some(channel) = selected() {
-                            let now = now_ms();
-                            if now - last_typing_sent() >= TYPING_SEND_INTERVAL_MS {
-                                last_typing_sent.set(now);
-                                ws.send(ClientEvent::Typing { channel_id: channel.id });
                             }
                         }
-                    },
-                    onkeydown: move |e| {
-                        if e.key() == Key::Enter {
-                            send(());
+                    }
+
+                    if which == "members" {
+                        div { class: "sheet-head",
+                            span { class: "sheet-title", "Members" }
+                            span { class: "sheet-note", "{members().len()} · {online_now} online" }
                         }
-                    },
+                        for member in members() {
+                            {
+                                let colour = name_color(member.user.id, &members(), &tags());
+                                let sub = member
+                                    .status
+                                    .clone()
+                                    .unwrap_or_else(|| if member.online { "online".into() } else { "offline".into() });
+                                let user_id = member.user.id;
+                                let is_me = user_id == me_id;
+                                rsx! {
+                                    div { key: "sm{member.user.id}", class: "member-row",
+                                        Avatar { user: member.user.clone() }
+                                        div { class: "member-col",
+                                            div { class: "member-line",
+                                                span {
+                                                    class: "member-name ellipsis",
+                                                    style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                    "{member.user.username}"
+                                                }
+                                                if member.user.role == "admin" {
+                                                    span { class: "tag-badge", "ADMIN" }
+                                                }
+                                                if voice_users().contains_key(&member.user.id) {
+                                                    span { class: "member-voice", Icon { name: "volume", size: 12 } }
+                                                }
+                                            }
+                                            div { class: "member-status ellipsis", "{sub}" }
+                                        }
+                                        if !is_me {
+                                            button {
+                                                class: "member-dm",
+                                                onclick: move |_| {
+                                                    spawn(async move {
+                                                        match api::create_dm(&sess(), user_id).await {
+                                                            Ok(channel) => {
+                                                                if !channels.peek().iter().any(|c| c.id == channel.id) {
+                                                                    channels.write().push(channel.clone());
+                                                                }
+                                                                sheet.set(None);
+                                                                open_channel(channel);
+                                                            }
+                                                            Err(e) => status.set(e),
+                                                        }
+                                                    });
+                                                },
+                                                "Message"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                button { class: "send", onclick: move |_| send(()), Icon { name: "send", size: 16 } }
             }
+
             if let Some(view) = lightbox() {
                 {
                     let url = view.url();
@@ -1908,13 +2823,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
 }
 
 #[component]
-fn Avatar(user: User) -> Element {
+fn Avatar(user: User, #[props(default = "")] variant: &'static str) -> Element {
     let hue = (user.id * 137) % 360;
+    let class = if variant.is_empty() {
+        "avatar".to_string()
+    } else {
+        format!("avatar {variant}")
+    };
     match user.avatar.clone() {
-        Some(url) => rsx! { img { class: "avatar", src: "{url}" } },
+        Some(url) => rsx! { img { class: "{class} sized", src: "{url}" } },
         None => rsx! {
             div {
-                class: "avatar initial",
+                class: "{class} initial",
                 style: "background: hsl({hue}, 55%, 45%)",
                 {user.username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()}
             }
@@ -2018,6 +2938,12 @@ fn LinkCard(url: String) -> Element {
 /// The quick-react strip: the crew's high-traffic emojis.
 const QUICK_REACTIONS: [&str; 6] = ["👍", "😂", "❤️", "😮", "😢", "🔥"];
 
+/// How long a finger has to stay on a reaction pill before it asks who
+/// reacted instead of toggling. A phone has no hover, so the press is the
+/// tooltip; short enough not to feel like a wait, long enough that a
+/// deliberate tap never trips it.
+const LONG_PRESS_MS: i64 = 400;
+
 #[component]
 fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: bool) -> Element {
     // Negative id: shown but not yet confirmed by the server.
@@ -2029,7 +2955,13 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
     let stickers_ctx = try_consume_context::<Signal<Vec<shared::Sticker>>>();
     let members_ctx = try_consume_context::<Signal<Vec<UserStatus>>>();
     let tags_ctx = try_consume_context::<Signal<Vec<shared::Tag>>>();
-    let mut strip_open = use_signal(|| false);
+    // Tapping the words opens the actions. The old always-visible strip
+    // reserved 104px on the right of every line for four icons, which is a
+    // quarter of a phone's width spent on controls nobody was using.
+    let mut actions_open = use_signal(|| false);
+    // Which pill's reactors are being shown, and when the finger went down.
+    let mut reactors_for = use_signal(|| None::<String>);
+    let mut pressed_at = use_signal(|| None::<i64>);
     // Editing and deleting your own words, the way the desktop app allows.
     // Deleting asks first: these are thumb-sized targets on a phone.
     let mut editing = use_signal(|| None::<String>);
@@ -2110,51 +3042,6 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     span { class: "msg-time", {format_time(msg.created_at)} }
                 }
             }
-            // Lifted out of the header row: a compact message has no header,
-            // and the controls still have to be reachable.
-            div { class: "msg-acts",
-                // Pinning is a desktop action, but the phone should at least
-                // show which messages someone thought were worth keeping.
-                if msg.pinned {
-                    span { class: "msg-pinned", title: "pinned", "📌" }
-                }
-                button {
-                    class: "msg-act",
-                    onclick: move |_| strip_open.set(!strip_open()),
-                    Icon { name: "smile", size: 14 }
-                }
-                button {
-                    class: "msg-act",
-                    onclick: {
-                        let msg_for_reply = msg.clone();
-                        move |_| replying.set(Some(msg_for_reply.clone()))
-                    },
-                    Icon { name: "reply", size: 14 }
-                }
-                if mine {
-                    button {
-                        class: "msg-act",
-                        onclick: {
-                            let original = msg.content.clone();
-                            move |_| {
-                                confirming_delete.set(false);
-                                editing.set(Some(original.clone()));
-                            }
-                        },
-                        Icon { name: "edit", size: 14 }
-                    }
-                }
-                if mine || me_admin {
-                    button {
-                        class: "msg-act",
-                        onclick: move |_| {
-                            editing.set(None);
-                            confirming_delete.set(!confirming_delete());
-                        },
-                        Icon { name: "trash", size: 14 }
-                    }
-                }
-            }
             if confirming_delete() {
                 div { class: "msg-confirm",
                     span { "Delete this message?" }
@@ -2202,8 +3089,19 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
             if let Some(preview) = msg.reply_preview.clone() {
                 div { class: "reply-ref", "↩ {preview.author}: {preview.content.chars().take(60).collect::<String>()}" }
             }
+            // Pinning is still a desktop action, but the phone should show
+            // which messages someone thought were worth keeping — including
+            // on a compact message, which has no header to hang it off.
+            if msg.pinned {
+                div { class: "reply-ref",
+                    Icon { name: "pin", size: 11 }
+                    "pinned"
+                }
+            }
             if !text.is_empty() {
-                div { class: "msg-body",
+                button {
+                    class: "msg-body",
+                    onclick: move |_| actions_open.set(true),
                     md::Md { nodes: md::parse_markdown(&text) }
                 }
             }
@@ -2245,29 +3143,140 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
             for link in preview_urls(&text) {
                 LinkCard { key: "{link}", url: link }
             }
-            if !reaction_groups.is_empty() || strip_open() {
+            if !reaction_groups.is_empty() {
                 div { class: "reaction-row",
                     for (emoji, count, mine) in reaction_groups {
                         button {
                             key: "{emoji}",
                             class: if mine { "reaction-pill mine" } else { "reaction-pill" },
+                            ontouchstart: move |_| pressed_at.set(Some(now_ms())),
                             onclick: {
                                 let emoji = emoji.clone();
-                                move |_| ws.send(ClientEvent::ToggleReaction { message_id: msg_id, emoji: emoji.clone() })
+                                move |_| {
+                                    let held = pressed_at().is_some_and(|at| now_ms() - at >= LONG_PRESS_MS);
+                                    pressed_at.set(None);
+                                    if held {
+                                        reactors_for.set(Some(emoji.clone()));
+                                    } else {
+                                        ws.send(ClientEvent::ToggleReaction { message_id: msg_id, emoji: emoji.clone() });
+                                    }
+                                }
                             },
                             "{emoji} {count}"
                         }
                     }
-                    if strip_open() {
-                        for quick in QUICK_REACTIONS {
+                }
+            }
+            // Tapped a message: everything you can do to it, in one sheet.
+            if actions_open() {
+                {
+                    let preview: String = msg.content.chars().take(46).collect();
+                    let author = msg.author.username.clone();
+                    let for_reply = msg.clone();
+                    let original = msg.content.clone();
+                    let to_copy = msg.content.clone();
+                    rsx! {
+                        div { class: "scrim", onclick: move |_| actions_open.set(false) }
+                        div { class: "sheet",
+                            div { class: "sheet-grip" }
+                            div { class: "sheet-preview ellipsis", "{author}: {preview}" }
+                            div { class: "quick-row",
+                                for quick in QUICK_REACTIONS {
+                                    button {
+                                        key: "q{quick}",
+                                        class: "quick-react",
+                                        onclick: move |_| {
+                                            actions_open.set(false);
+                                            ws.send(ClientEvent::ToggleReaction {
+                                                message_id: msg_id,
+                                                emoji: quick.to_string(),
+                                            });
+                                        },
+                                        "{quick}"
+                                    }
+                                }
+                            }
                             button {
-                                key: "q{quick}",
-                                class: "reaction-pill quick",
+                                class: "sheet-action",
                                 onclick: move |_| {
-                                    strip_open.set(false);
-                                    ws.send(ClientEvent::ToggleReaction { message_id: msg_id, emoji: quick.to_string() });
+                                    actions_open.set(false);
+                                    replying.set(Some(for_reply.clone()));
                                 },
-                                "{quick}"
+                                Icon { name: "reply", size: 18 }
+                                span { class: "grow", "Reply" }
+                            }
+                            button {
+                                class: "sheet-action",
+                                onclick: move |_| {
+                                    actions_open.set(false);
+                                    copy_text(&to_copy);
+                                },
+                                Icon { name: "copy", size: 18 }
+                                span { class: "grow", "Copy text" }
+                            }
+                            if mine {
+                                button {
+                                    class: "sheet-action",
+                                    onclick: move |_| {
+                                        actions_open.set(false);
+                                        confirming_delete.set(false);
+                                        editing.set(Some(original.clone()));
+                                    },
+                                    Icon { name: "edit", size: 18 }
+                                    span { class: "grow", "Edit" }
+                                }
+                            }
+                            if mine || me_admin {
+                                button {
+                                    class: "sheet-action danger",
+                                    onclick: move |_| {
+                                        actions_open.set(false);
+                                        editing.set(None);
+                                        confirming_delete.set(true);
+                                    },
+                                    Icon { name: "trash", size: 18 }
+                                    span { class: "grow", "Delete" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Held a pill down: who reacted. The ids came with the message, so
+            // this is a lookup in the roster, not a fetch.
+            if let Some(emoji) = reactors_for() {
+                {
+                    let roster = members_ctx.map(|m| m.read().clone()).unwrap_or_default();
+                    let names = shared::reactor_names(&msg.reactions, &emoji, &roster, me_id);
+                    let people: Vec<(Option<User>, String)> = msg
+                        .reactions
+                        .iter()
+                        .filter(|r| r.emoji == emoji)
+                        .map(|r| roster.iter().find(|m| m.user.id == r.user_id).map(|m| m.user.clone()))
+                        .zip(names)
+                        .collect();
+                    rsx! {
+                        div { class: "scrim", onclick: move |_| reactors_for.set(None) }
+                        div { class: "sheet",
+                            div { class: "sheet-grip" }
+                            div { class: "sheet-head",
+                                span { class: "sheet-title", "{emoji}  {people.len()}" }
+                                button {
+                                    class: "hbtn",
+                                    style: "width: 32px; height: 32px",
+                                    onclick: move |_| reactors_for.set(None),
+                                    Icon { name: "x", size: 14 }
+                                }
+                            }
+                            for (user, name) in people {
+                                div { key: "{name}", class: "member-row",
+                                    if let Some(user) = user {
+                                        Avatar { user }
+                                    }
+                                    div { class: "member-col",
+                                        div { class: "member-name", "{name}" }
+                                    }
+                                }
                             }
                         }
                     }

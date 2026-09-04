@@ -32,6 +32,18 @@ pub fn icon_svg(name: &str) -> &'static str {
         "download" => include_str!("../../client/assets/icons/download.svg"),
         "edit" => include_str!("../../client/assets/icons/edit.svg"),
         "trash" => include_str!("../../client/assets/icons/trash.svg"),
+        "search" => include_str!("../../client/assets/icons/search.svg"),
+        "at-sign" => include_str!("../../client/assets/icons/at-sign.svg"),
+        "message" => include_str!("../../client/assets/icons/message.svg"),
+        "pin" => include_str!("../../client/assets/icons/pin.svg"),
+        "camera" => include_str!("../../client/assets/icons/camera.svg"),
+        "screen" => include_str!("../../client/assets/icons/screen.svg"),
+        "chevron-up" => include_str!("../../client/assets/icons/chevron-up.svg"),
+        "chevron-down" => include_str!("../../client/assets/icons/chevron-down.svg"),
+        "chevron-left" => include_str!("../../client/assets/icons/chevron-left.svg"),
+        "copy" => include_str!("../../client/assets/icons/copy.svg"),
+        "tag" => include_str!("../../client/assets/icons/tag.svg"),
+        "power" => include_str!("../../client/assets/icons/power.svg"),
         _ => "",
     }
 }

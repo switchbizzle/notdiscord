@@ -2375,12 +2375,20 @@ pub async fn get_bot_settings(
         .filter(|m| !m.trim().is_empty())
         .or_else(|| std::env::var("NOTDISCORD_BOT_MODEL").ok().filter(|m| !m.trim().is_empty()))
         .unwrap_or_else(|| crate::bot::DEFAULT_MODEL.into());
+    let image_model = crate::bot::meta_value_opt(&state, "bot_image_model")
+        .await
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| {
+            std::env::var("NOTDISCORD_BOT_IMAGE_MODEL").ok().filter(|m| !m.trim().is_empty())
+        })
+        .unwrap_or_else(|| crate::bot::DEFAULT_IMAGE_MODEL.into());
     Ok(Json(shared::BotSettings {
         persona: crate::bot::persona(&state.db).await,
         name: bot.username,
         avatar: bot.avatar,
         announce_channel,
         model,
+        image_model,
         // Never the values themselves — only whether each is set and where
         // it came from.
         credentials: crate::creds::statuses(&state).await,
@@ -2479,6 +2487,22 @@ pub async fn set_bot_settings(
         // Empty resets to the built-in default.
         sqlx::query(
             "INSERT INTO server_meta (key, value) VALUES ('bot_model', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(model)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    }
+
+    if let Some(model) = &req.image_model {
+        let model = model.trim();
+        if model.len() > 120 {
+            return Err(err(StatusCode::BAD_REQUEST, "that model name is too long"));
+        }
+        // Empty resets to the built-in default.
+        sqlx::query(
+            "INSERT INTO server_meta (key, value) VALUES ('bot_image_model', ?) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
         .bind(model)
