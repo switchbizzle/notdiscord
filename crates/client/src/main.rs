@@ -5711,7 +5711,7 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
                 {
-                    let suggestions = mention_suggestions(&draft(), &members());
+                    let suggestions = shared::mention_suggestions(&draft(), &members());
                     rsx! {
                         if !suggestions.is_empty() {
                             div { class: "mention-pop",
@@ -5722,7 +5722,7 @@ fn MainView(session: api::Session) -> Element {
                                         onclick: {
                                             let name = name.clone();
                                             move |_| {
-                                                draft.set(complete_mention(&draft(), &name));
+                                                draft.set(shared::complete_mention(&draft(), &name));
                                                 mention_sel.set(0);
                                             }
                                         },
@@ -5954,7 +5954,7 @@ fn MainView(session: api::Session) -> Element {
                                     _ => {}
                                 }
                             }
-                            let suggestions = mention_suggestions(&draft(), &members());
+                            let suggestions = shared::mention_suggestions(&draft(), &members());
                             if !suggestions.is_empty() {
                                 let sel = mention_sel() % suggestions.len();
                                 match e.key() {
@@ -5970,7 +5970,7 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                     Key::Enter | Key::Tab => {
                                         e.prevent_default();
-                                        draft.set(complete_mention(&draft(), &suggestions[sel]));
+                                        draft.set(shared::complete_mention(&draft(), &suggestions[sel]));
                                         mention_sel.set(0);
                                         return;
                                     }
@@ -7611,8 +7611,6 @@ fn avatar_hue(user_id: i64) -> i64 {
     (user_id * 137) % 360
 }
 
-/// The partial name being typed after a trailing `@`, if the draft ends
-/// mid-mention (e.g. "hey @jo").
 /// One row of the `:` autocomplete.
 #[derive(Clone, PartialEq)]
 struct EmojiHit {
@@ -7718,40 +7716,6 @@ fn emoji_suggestions(
 fn complete_emoji(draft: &str, insert: &str) -> String {
     match draft.rfind([':', ';']) {
         Some(idx) => format!("{}{insert} ", &draft[..idx]),
-        None => draft.to_owned(),
-    }
-}
-
-fn mention_partial(draft: &str) -> Option<String> {
-    let idx = draft.rfind('@')?;
-    let boundary_ok = idx == 0 || !draft[..idx].chars().last().unwrap().is_alphanumeric();
-    let partial = &draft[idx + 1..];
-    if !boundary_ok || !partial.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        return None;
-    }
-    Some(partial.to_lowercase())
-}
-
-fn mention_suggestions(draft: &str, members: &[UserStatus]) -> Vec<String> {
-    let Some(partial) = mention_partial(draft) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = members
-        .iter()
-        .filter(|m| !m.banned)
-        .map(|m| m.user.username.clone())
-        .filter(|n| n.to_lowercase().starts_with(&partial) && n.to_lowercase() != partial)
-        .take(5)
-        .collect();
-    if "everyone".starts_with(&partial) && partial != "everyone" {
-        names.push("everyone".into());
-    }
-    names
-}
-
-fn complete_mention(draft: &str, name: &str) -> String {
-    match draft.rfind('@') {
-        Some(idx) => format!("{}@{} ", &draft[..idx], name),
         None => draft.to_owned(),
     }
 }

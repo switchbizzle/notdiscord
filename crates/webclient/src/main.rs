@@ -151,6 +151,8 @@ const TYPING_TTL_MS: i64 = 4000;
 const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 
 /// Collapsed category ids, per device.
+/// The composer input, so a mention tap can hand focus back to it.
+const COMPOSER_ID: &str = "nd-composer";
 const COLLAPSED_KEY: &str = "notdiscord_collapsed";
 const SESSION_KEY: &str = "nd_session";
 
@@ -190,6 +192,20 @@ fn presence_line(online: bool, status: Option<String>) -> String {
     match status {
         Some(status) if !status.trim().is_empty() => format!("{presence} · {status}"),
         _ => presence.to_string(),
+    }
+}
+
+/// Put the cursor back in the composer. Tapping a suggestion moves focus to
+/// the button it was on, which on a phone closes the keyboard — and having to
+/// tap the field again after every mention would be worse than typing the
+/// name out. Best-effort: if the element has gone, the person just taps.
+fn focus_composer() {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(COMPOSER_ID))
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = el.focus();
     }
 }
 
@@ -2177,6 +2193,57 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                         }
 
+                        {
+                            // Recomputed from the draft on every keystroke;
+                            // it's a prefix match over a handful of people,
+                            // so there is nothing to memoise.
+                            let suggestions = shared::mention_suggestions(&draft(), &members());
+                            rsx! {
+                                if !suggestions.is_empty() {
+                                    div { class: "mention-pop",
+                                        for name in suggestions {
+                                            {
+                                                let member = members()
+                                                    .into_iter()
+                                                    .find(|m| m.user.username == name);
+                                                let colour = member
+                                                    .as_ref()
+                                                    .map(|m| name_color(m.user.id, &members(), &tags()))
+                                                    .unwrap_or_default();
+                                                let for_tap = name.clone();
+                                                rsx! {
+                                                    button {
+                                                        key: "mention-{name}",
+                                                        class: "mention-row",
+                                                        onclick: move |_| {
+                                                            // Read out first: the peek guard would
+                                                            // still be alive at the set() below.
+                                                            let current = draft.peek().clone();
+                                                            draft.set(shared::complete_mention(&current, &for_tap));
+                                                            focus_composer();
+                                                        },
+                                                        if let Some(member) = member.clone() {
+                                                            Avatar { user: member.user.clone(), variant: "sm" }
+                                                        } else {
+                                                            // @everyone has no face.
+                                                            span { class: "mention-all", Icon { name: "at-sign", size: 14 } }
+                                                        }
+                                                        span {
+                                                            class: "mention-name ellipsis",
+                                                            style: if colour.is_empty() { String::new() } else { format!("color: {colour}") },
+                                                            "{name}"
+                                                        }
+                                                        if member.is_none() {
+                                                            span { class: "mention-hint", "notifies the whole channel" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         footer { class: if in_call { "composer" } else { "composer floor" },
                             button {
                                 class: "cbtn",
@@ -2185,6 +2252,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 if uploading() { "…" } else { Icon { name: "plus", size: 18 } }
                             }
                             input {
+                                id: COMPOSER_ID,
                                 class: "draft",
                                 placeholder: if chan_is_dm { "message {chan_title}" } else { "message {chan_title}" },
                                 value: "{draft}",

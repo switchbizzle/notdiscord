@@ -406,6 +406,30 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
     padding: 7px 14px; background: var(--n-900); color: var(--n-500); font-size: 12px;
 }
 
+/* ---------- @ mention autocomplete ---------- */
+/* Sits directly above the composer, where the desktop puts it and where a
+ * thumb already is. Capped so a big server can't fill the screen with names;
+ * the list itself is capped at six by mention_suggestions. */
+.mention-pop {
+    flex: 0 0 auto;
+    max-height: 216px; overflow-y: auto;
+    background: var(--surface);
+    border-top: 1px solid var(--n-800);
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.35);
+}
+.mention-row {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; min-height: 46px; padding: 7px 14px; text-align: left;
+}
+.mention-row:active { background: var(--n-900); }
+.mention-name { font-size: 14.5px; flex: 0 1 auto; }
+.mention-hint { font-size: 11.5px; color: var(--n-600); flex: 0 1 auto; }
+.mention-all {
+    width: 24px; height: 24px; flex: 0 0 auto; border-radius: 12px;
+    background: var(--accent-900); color: var(--accent-300);
+    display: flex; align-items: center; justify-content: center;
+}
+
 /* ---------- composer ---------- */
 .composer.floor { padding-bottom: calc(12px + var(--safe-bottom)); }
 .composer {

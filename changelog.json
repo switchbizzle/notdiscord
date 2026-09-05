@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.94.14",
+    "date": "2026-09-04",
+    "changes": [
+      "👤 @ someone from the phone (switchb). Type an @ in the web app and the list of people comes up above the keyboard — tap a name and it completes, with the space after it you would otherwise have to remember. The desktop has had this since v0.18.0; the phone just never got it, so mentioning anybody meant spelling their name exactly right and hoping",
+      "@everyone is in the list too, labelled with what it does, because \"notifies the whole channel\" is worth knowing before you tap it rather than after",
+      "Tapping a name hands focus straight back to the message box, so the keyboard stays up and you can keep typing the sentence you were in the middle of",
+      "The rules behind it moved into shared/, so the two apps cannot drift on what counts as a mention — an @ mid-word is still an email address, a finished name stops suggesting itself, and banned accounts never come up"
+    ]
+  },
+  {
     "version": "0.94.13",
     "date": "2026-09-04",
     "changes": [

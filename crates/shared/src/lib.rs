@@ -261,6 +261,55 @@ pub struct Tag {
     pub color: String,
 }
 
+/// The partial name being typed after a trailing `@`, if the draft ends
+/// mid-mention (e.g. "hey @jo"). None once the mention is finished — a space
+/// ends it, which is what stops "@jon said hi" from still offering names.
+///
+/// These three live here rather than in either client because both composers
+/// have to agree on what counts as a mention, and the server pings on
+/// `@name` by a rule of its own (ws.rs): three implementations of one idea is
+/// two too many.
+pub fn mention_partial(draft: &str) -> Option<String> {
+    let idx = draft.rfind('@')?;
+    // `idx == 0` short-circuits before the unwrap, which is the only case
+    // where there is no preceding character to look at.
+    let boundary_ok = idx == 0 || !draft[..idx].chars().last().unwrap().is_alphanumeric();
+    let partial = &draft[idx + 1..];
+    if !boundary_ok || !partial.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(partial.to_lowercase())
+}
+
+/// Names worth offering for the partial mention in `draft`, best first and
+/// capped so the popup can't swallow the screen. A name that is already
+/// complete is dropped: there is nothing left to autocomplete.
+pub fn mention_suggestions(draft: &str, members: &[UserStatus]) -> Vec<String> {
+    let Some(partial) = mention_partial(draft) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = members
+        .iter()
+        .filter(|m| !m.banned)
+        .map(|m| m.user.username.clone())
+        .filter(|n| n.to_lowercase().starts_with(&partial) && n.to_lowercase() != partial)
+        .take(5)
+        .collect();
+    if "everyone".starts_with(&partial) && partial != "everyone" {
+        names.push("everyone".into());
+    }
+    names
+}
+
+/// Swap the partial mention at the end of `draft` for the full name, with the
+/// trailing space you'd otherwise have to type yourself.
+pub fn complete_mention(draft: &str, name: &str) -> String {
+    match draft.rfind('@') {
+        Some(idx) => format!("{}@{} ", &draft[..idx], name),
+        None => draft.to_owned(),
+    }
+}
+
 /// The length of the `http://` or `https://` at the start of `s`, if it has
 /// one. Schemes are case-insensitive (RFC 3986 §3.1) and a phone keyboard
 /// autocapitalises the first letter of a line, so `Https://…` is both a
@@ -1015,6 +1064,58 @@ mod tests {
             parse_message_link("https://someone-else.example/app/channels/7/1204", &bases),
             None
         );
+    }
+
+    fn roster(names: &[(&str, bool)]) -> Vec<UserStatus> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, (name, banned))| UserStatus {
+                user: User {
+                    id: i as i64 + 1,
+                    username: (*name).to_string(),
+                    avatar: None,
+                    role: "member".into(),
+                },
+                online: true,
+                banned: *banned,
+                tag_ids: Vec::new(),
+                status: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mentions_complete_from_a_trailing_at() {
+        let people = roster(&[("JunkfoodJon", false), ("junk_drawer", false), ("mara", false), ("banned_jon", true)]);
+
+        // Case-insensitive prefix match, and the @ may follow other words.
+        assert_eq!(
+            mention_suggestions("hey @ju", &people),
+            vec!["JunkfoodJon".to_string(), "junk_drawer".to_string()]
+        );
+        // A finished mention has nothing left to offer.
+        assert!(mention_suggestions("hey @junkfoodjon", &people).is_empty());
+        // A space ends the mention.
+        assert!(mention_suggestions("@jon said hi", &people).is_empty());
+        // Mid-word @ is an email or a handle, not a mention.
+        assert!(mention_suggestions("mail me at bob@ju", &people).is_empty());
+        // Banned people are not suggested.
+        assert!(!mention_suggestions("@banned", &people).contains(&"banned_jon".to_string()));
+        // @everyone is offered, and only while it still matches.
+        assert_eq!(mention_suggestions("@ever", &people), vec!["everyone".to_string()]);
+        assert!(mention_suggestions("@everyone", &people).is_empty());
+        // A bare @ offers everybody who is not banned, plus everyone.
+        assert_eq!(mention_suggestions("@", &people).len(), 4);
+
+        // Completing replaces the partial and leaves a trailing space.
+        assert_eq!(complete_mention("hey @ju", "JunkfoodJon"), "hey @JunkfoodJon ");
+        assert_eq!(complete_mention("@ev", "everyone"), "@everyone ");
+        assert_eq!(complete_mention("no at sign", "mara"), "no at sign");
+
+        // Multi-byte text before the @ must not panic on the byte slice.
+        assert_eq!(mention_partial("héllo @ju"), Some("ju".to_string()));
+        assert_eq!(complete_mention("héllo @ju", "mara"), "héllo @mara ");
     }
 
     #[test]
