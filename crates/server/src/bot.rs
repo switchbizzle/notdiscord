@@ -97,9 +97,10 @@ async fn image_model(state: &SharedState) -> String {
 }
 
 /// The instance's public base URL (e.g. https://chat.example.com), needed to
-/// post absolute links to generated images. Optional; drawing is disabled
-/// without it.
-fn public_url() -> Option<String> {
+/// post absolute links to generated images, and handed to clients so a
+/// message permalink points somewhere the rest of the crew can open.
+/// Optional; drawing is disabled without it.
+pub fn public_url() -> Option<String> {
     std::env::var("NOTDISCORD_PUBLIC_URL")
         .ok()
         .map(|u| u.trim().trim_end_matches('/').to_owned())

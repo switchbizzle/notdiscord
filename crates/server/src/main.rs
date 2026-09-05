@@ -331,6 +331,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/download", get(routes::download_client))
         .route("/app", get(routes::webapp_index))
         .route("/app/", get(routes::webapp_index))
+        // A message permalink is a path, not a file: hand the shell to the
+        // browser and let the web app read the ids back out of its own URL.
+        // Static segments beat the wildcard below, so assets are unaffected.
+        .route("/app/channels/{channel}/{message}", get(routes::webapp_index))
         .route("/app/{*path}", get(routes::webapp_asset))
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))

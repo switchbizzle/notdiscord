@@ -93,7 +93,7 @@ fn close_tag(tag: Tag, children: Vec<MdNode>) -> Option<MdNode> {
         },
         Tag::Link { dest_url, .. } => {
             let url = dest_url.to_string();
-            if url.starts_with("http://") || url.starts_with("https://") {
+            if shared::is_web_url(&url) {
                 MdNode::Link { url, children }
             } else {
                 // Non-web schemes render as plain content — inline, so a
@@ -169,9 +169,9 @@ fn rich_segments(text: &str) -> Vec<Seg> {
         let at_boundary = i == 0 || !chars[i - 1].is_alphanumeric();
 
         // Bare URL detection.
-        if at_boundary && chars[i] == 'h' {
+        if at_boundary && (chars[i] == 'h' || chars[i] == 'H') {
             let rest: String = chars[i..].iter().take(8).collect();
-            if rest.starts_with("http://") || rest.starts_with("https://") {
+            if shared::is_web_url(&rest) {
                 let mut j = i;
                 while j < chars.len() && !chars[j].is_whitespace() && !matches!(chars[j], '<' | '>' | '"') {
                     j += 1;
@@ -241,16 +241,66 @@ fn CustomEmoji(name: String) -> Element {
     }
 }
 
-/// Copy link / Open link — the only two things a link can do.
-fn link_menu(ctx_menu: crate::menu::MenuSignal, url: String) -> impl FnMut(MouseEvent) {
+/// What a link click needs, gathered while rendering: contexts belong to the
+/// render pass, and the click comes long after it.
+#[derive(Clone, Copy)]
+struct Links {
+    session: Option<Signal<crate::api::Session>>,
+    public: Option<crate::PublicUrl>,
+    open_message: Option<crate::OpenMessage>,
+}
+
+impl Links {
+    fn here() -> Self {
+        Self {
+            session: try_consume_context::<Signal<crate::api::Session>>(),
+            public: try_consume_context::<crate::PublicUrl>(),
+            open_message: try_consume_context::<crate::OpenMessage>(),
+        }
+    }
+
+    /// The message a link points at, when it is a permalink into this same
+    /// server. Another NotDiscord's permalink has exactly the same shape and
+    /// unrelated ids, so it isn't ours to follow and stays a web link.
+    fn message(&self, url: &str) -> Option<(i64, i64)> {
+        let session = self.session?;
+        // No way to act on it is the same answer as "not ours": the menu
+        // offers to open it rather than to jump nowhere.
+        self.open_message?;
+        let public = self.public.and_then(|p| p.0());
+        shared::parse_message_link(url, &crate::permalink_bases(&session(), &public))
+    }
+
+    /// One of ours changes rooms and scrolls; anything else is the browser's
+    /// business.
+    fn follow(&self, url: &str) {
+        match (self.message(url), self.open_message) {
+            (Some(target), Some(open_message)) => {
+                let mut signal = open_message.0;
+                signal.set(Some(target));
+            }
+            _ => {
+                let _ = open::that(url);
+            }
+        }
+    }
+}
+
+/// Copy link / Open link — the only two things a link can do, except when it
+/// points at a message here, which is worth naming for what it does.
+fn link_menu(ctx_menu: crate::menu::MenuSignal, links: Links, url: String) -> impl FnMut(MouseEvent) {
+    let ours = links.message(&url).is_some();
     move |e: MouseEvent| {
         let url = url.clone();
+        let (label, icon) = if ours {
+            ("Jump to message", "reply")
+        } else {
+            ("Open link", "external-link")
+        };
         crate::menu::open(ctx_menu, &e, vec![
-            crate::menu::item("Open link", "external-link", {
+            crate::menu::item(label, icon, {
                 let url = url.clone();
-                move || {
-                    let _ = open::that(&url);
-                }
+                move || links.follow(&url)
             }),
             crate::menu::item("Copy link", "link", move || {
                 crate::menu::copy_to_clipboard(url.clone())
@@ -262,6 +312,7 @@ fn link_menu(ctx_menu: crate::menu::MenuSignal, url: String) -> impl FnMut(Mouse
 #[component]
 fn MdOne(node: MdNode) -> Element {
     let ctx_menu = use_context::<crate::menu::MenuSignal>();
+    let links = Links::here();
     match node {
         MdNode::Text(t) => rsx! {
             for (i, seg) in rich_segments(&t).into_iter().enumerate() {
@@ -277,10 +328,8 @@ fn MdOne(node: MdNode) -> Element {
                                 key: "{i}",
                                 class: "md-link",
                                 title: "{title}",
-                                onclick: move |_| {
-                                    let _ = open::that(&url);
-                                },
-                                oncontextmenu: link_menu(ctx_menu, menu_url),
+                                onclick: move |_| links.follow(&url),
+                                oncontextmenu: link_menu(ctx_menu, links, menu_url),
                                 "{title}"
                             }
                         }
@@ -320,10 +369,8 @@ fn MdOne(node: MdNode) -> Element {
                 span {
                     class: "md-link",
                     title: "{title}",
-                    onclick: move |_| {
-                        let _ = open::that(&url);
-                    },
-                    oncontextmenu: link_menu(ctx_menu, menu_url),
+                    onclick: move |_| links.follow(&url),
+                    oncontextmenu: link_menu(ctx_menu, links, menu_url),
                     Md { nodes: children }
                 }
             }

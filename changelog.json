@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.94.13",
+    "date": "2026-09-04",
+    "changes": [
+      "🔗 Copy link, on a message. Right-click any message and you get a link straight to it — the way people have been screenshotting messages to point at them. Click one and you land on that message, in the right channel, highlighted, however far back in history it is",
+      "The link opens in the web app, so it works for someone who hasn't installed the desktop client, and paste one into chat and the desktop app recognises its own server and jumps in place instead of launching a browser. A permalink from somebody ELSE's NotDiscord stays an ordinary web link — same shape, entirely different message ids",
+      "On the phone the same link is in the message sheet, and tapping one jumps you there without opening a second tab. The address bar tidies itself back up afterwards",
+      "\"Back to now\" actually gets you back now. Jumping deep into history used to load a page of messages ENDING at the one you jumped to, and the button had nothing below it to scroll to — it fetches the present back before scrolling",
+      "Tapping a push notification with no window open lands you in the right channel on the phone. The notification had been carrying the channel all along and the app was never reading it",
+      "👤 Every list of people now says who's actually around: a dot on the avatar, and \"online\" or \"offline\" in words underneath it — in the members sheet, the You tab, and the DM list. Anyone who had set a status used to hide their presence completely, which meant the people who use the app most were the ones you could tell least about. Presence leads now and the status follows it: \"online · cells interlinked\"",
+      "The same line runs under the name at the top of an open DM, where it used to say \"direct message\" — which told you only what the screen you were already looking at had told you",
+      "🔡 Links typed on a phone are links again. A phone keyboard capitalises the first letter of a line, so the URL people actually send is \"Https://…\", and every check in both apps compared raw bytes — so it rendered as grey text nobody could tap. Schemes are case-insensitive, and now we treat them that way: in the message renderer, in inline images, in preview cards, and in the music tab's queue-by-link"
+    ]
+  },
+  {
     "version": "0.94.12",
     "date": "2026-09-04",
     "changes": [

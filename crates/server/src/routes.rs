@@ -1750,6 +1750,9 @@ pub async fn server_info(State(state): State<SharedState>) -> ApiResult<Json<Ser
         name: meta_value(&state, "name").await?,
         icon: meta_value_opt(&state, "icon").await?,
         needs_setup: human_count(&state).await? == 0,
+        // So a client minting a message link can prefer the address other
+        // people can actually open over the one it happens to be using.
+        public_url: crate::bot::public_url(),
     }))
 }
 
@@ -1876,6 +1879,7 @@ pub async fn rename_server(
         name,
         // Renaming means someone is logged in, so setup is long done.
         needs_setup: false,
+        public_url: crate::bot::public_url(),
     }))
 }
 
@@ -2975,7 +2979,7 @@ pub async fn channel_files(
             let Some(idx) = token.find("/files/") else { continue };
             // A bare /files/ path or one inside an http(s) URL; anything else
             // is prose that happens to contain the string.
-            if idx != 0 && !(token.starts_with("http://") || token.starts_with("https://")) {
+            if idx != 0 && !shared::is_web_url(token) {
                 continue;
             }
             let rel = &token[idx..];

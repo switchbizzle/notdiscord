@@ -42,6 +42,7 @@ pub fn icon_svg(name: &str) -> &'static str {
         "chevron-down" => include_str!("../../client/assets/icons/chevron-down.svg"),
         "chevron-left" => include_str!("../../client/assets/icons/chevron-left.svg"),
         "copy" => include_str!("../../client/assets/icons/copy.svg"),
+        "link" => include_str!("../../client/assets/icons/link.svg"),
         "tag" => include_str!("../../client/assets/icons/tag.svg"),
         "power" => include_str!("../../client/assets/icons/power.svg"),
         _ => "",

@@ -260,6 +260,34 @@ pub struct ReactTarget(pub Signal<Option<i64>>);
 #[derive(Clone, Copy)]
 pub struct JumpTo(pub Signal<Option<i64>>);
 
+/// A permalink someone clicked: (channel, message). Distinct from `JumpTo`,
+/// which can only reach the open channel — following a link usually means
+/// changing rooms first.
+#[derive(Clone, Copy)]
+pub struct OpenMessage(pub Signal<Option<(i64, i64)>>);
+
+/// The server's `NOTDISCORD_PUBLIC_URL`, when it has one. Message permalinks
+/// are minted against it, because the address this client happens to have
+/// reached the server on may be one nobody else can open.
+#[derive(Clone, Copy)]
+pub struct PublicUrl(pub Signal<Option<String>>);
+
+/// Where this client mints message links. Falls back to the address it is
+/// connected on, which is at least right for whoever is holding the machine.
+pub fn permalink_base(session: &api::Session, public: &Option<String>) -> String {
+    public.clone().unwrap_or_else(|| session.base_url.clone())
+}
+
+/// Every address we'd recognise our own server by, so a pasted permalink
+/// jumps in place instead of opening a browser at the same message.
+pub fn permalink_bases(session: &api::Session, public: &Option<String>) -> Vec<String> {
+    let mut bases = vec![session.base_url.clone()];
+    if let Some(public) = public {
+        bases.push(public.clone());
+    }
+    bases
+}
+
 /// A track/video playing in the media dock (from a link preview card).
 #[derive(Clone, PartialEq)]
 struct NowPlaying {
@@ -1101,6 +1129,18 @@ fn MainView(session: api::Session) -> Element {
     // attachment explorer (Jon's spec). Declared before open_channel so a
     // channel switch can close it.
     let mut files_open = use_signal(|| None::<Vec<shared::FileEntry>>);
+    let mut jump_to = use_signal(|| None::<i64>);
+    use_context_provider(|| JumpTo(jump_to));
+    let mut open_message = use_signal(|| None::<(i64, i64)>);
+    use_context_provider(|| OpenMessage(open_message));
+    // Asked once, so a permalink can point at the address the crew uses
+    // rather than the one this client happens to be connected on.
+    let public_url = use_signal(|| None::<String>);
+    use_context_provider(|| PublicUrl(public_url));
+    // A permalink that changed channels leaves its message id here. The jump
+    // has to wait for the switch's own fetch to land: started any earlier,
+    // the two race and you end up looking at whichever finished last.
+    let mut pending_jump = use_signal(|| None::<i64>);
     let mut open_channel = move |channel: Channel| {
         swap_composer(channel.id);
         let previous = unread.write().remove(&channel.id);
@@ -1121,6 +1161,9 @@ fn MainView(session: api::Session) -> Element {
                         api::mark_read(&session(), channel.id, newest).await;
                     }
                     messages.set(msgs);
+                    if let Some(target) = pending_jump.write().take() {
+                        jump_to.set(Some(target));
+                    }
                 }
                 Err(e) => status.set(e),
             }
@@ -1171,8 +1214,6 @@ fn MainView(session: api::Session) -> Element {
     let mut new_category = use_signal(String::new);
     let mut stats = use_signal(|| None::<shared::ServerStats>);
     let mut rail_dms = use_signal(|| false);
-    let mut jump_to = use_signal(|| None::<i64>);
-    use_context_provider(|| JumpTo(jump_to));
     // The one open right-click menu, wherever it was opened from.
     let ctx_menu: menu::MenuSignal = use_context_provider(|| Signal::new(None::<menu::Menu>));
     // A context menu is placed at the pointer, which near an edge puts half of
@@ -1451,6 +1492,27 @@ fn MainView(session: api::Session) -> Element {
         });
     };
 
+    // Follow a permalink: change rooms if it points at another one, then jump.
+    // A link to a channel this account can't see (a DM, or one deleted since)
+    // says so rather than doing nothing at all.
+    use_effect(move || {
+        let Some((channel_id, message_id)) = open_message() else { return };
+        open_message.set(None);
+        let Some(channel) = channels.peek().iter().find(|c| c.id == channel_id).cloned() else {
+            status.set("that link points at a channel you can't see".into());
+            return;
+        };
+        view_tab.set("chat");
+        if selected.peek().as_ref().map(|c: &Channel| c.id) == Some(channel_id) {
+            jump_to.set(Some(message_id));
+        } else {
+            // `open_channel` loads the newest page and then hands the jump on,
+            // which loads history around the target if it isn't in it.
+            pending_jump.set(Some(message_id));
+            open_channel(channel);
+        }
+    });
+
     // Jump to a referenced message: highlight it, loading history if needed.
     use_effect(move || {
         if let Some(target) = jump_to() {
@@ -1462,6 +1524,11 @@ fn MainView(session: api::Session) -> Element {
                         if let Ok(msgs) = api::messages(&session(), ch.id, Some(target + 1)).await {
                             has_more.set(msgs.len() == api::HISTORY_PAGE);
                             messages.set(msgs);
+                            // That page ends at the target, so there is
+                            // nothing below it to scroll back down through —
+                            // without the button, a permalink into old
+                            // history is a room with no door.
+                            scrolled_up.set(true);
                         }
                     });
                 }
@@ -1601,6 +1668,14 @@ fn MainView(session: api::Session) -> Element {
     use_future(move || async move {
         if let Ok(list) = api::emojis(&session()).await {
             emojis.set(list);
+        }
+    });
+
+    // The server's public address, for minting message links.
+    use_future(move || async move {
+        let mut public_url = public_url;
+        if let Ok(info) = api::server_info(&session().base_url).await {
+            public_url.set(info.public_url.filter(|u| !u.trim().is_empty()));
         }
     });
 
@@ -2083,7 +2158,7 @@ fn MainView(session: api::Session) -> Element {
         if view_tab() == "music"
             && !content.starts_with('/')
             && content.split_whitespace().count() == 1
-            && (content.starts_with("http://") || content.starts_with("https://"))
+            && shared::is_web_url(&content)
         {
             let (channel_id, url) = (channel.id, content.clone());
             draft.set(String::new());
@@ -5266,11 +5341,23 @@ fn MainView(session: api::Session) -> Element {
                         onclick: move |_| {
                             highlight_msg.set(None);
                             scrolled_up.set(false);
-                            // Newest lives at scrollTop 0 in a column-reverse list.
-                            dioxus::document::eval(
-                                "const el = document.getElementById('message-list'); \
-                                 if (el) el.scrollTo({top: 0, behavior: 'smooth'});",
-                            );
+                            // A jump into old history leaves a page that ENDS
+                            // at the message you jumped to, so scrolling alone
+                            // can't reach the present: there is nothing below
+                            // it to scroll to. Fetch the newest page back
+                            // first — when it is already loaded this returns
+                            // the same messages and only the scroll shows.
+                            let Some(channel) = selected.peek().clone() else { return };
+                            spawn(async move {
+                                if let Ok(msgs) = api::messages(&session(), channel.id, None).await {
+                                    has_more.set(msgs.len() == api::HISTORY_PAGE);
+                                    messages.set(msgs);
+                                }
+                                // Newest lives at scrollTop 0 in a column-reverse list.
+                                dioxus::document::eval(
+                                    "const el = document.getElementById('message-list');                                      if (el) el.scrollTo({top: 0, behavior: 'smooth'});",
+                                );
+                            });
                         },
                         Icon { name: "chevron-down", size: 14 }
                         "Back to now"
@@ -6270,7 +6357,7 @@ fn extract_media(content: &str, base: &str) -> (Vec<String>, Vec<String>, Vec<St
         let mut kept: Vec<&str> = Vec::new();
         let mut pulled = false;
         for word in line.split_whitespace() {
-            let absolute = if word.starts_with("http://") || word.starts_with("https://") {
+            let absolute = if shared::is_web_url(word) {
                 Some(word.to_owned())
             } else if word.starts_with("/files/") {
                 Some(format!("{}{word}", base.trim_end_matches('/')))
@@ -6307,7 +6394,7 @@ fn extract_media(content: &str, base: &str) -> (Vec<String>, Vec<String>, Vec<St
 fn preview_urls(text: &str) -> Vec<String> {
     let mut urls: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
-        if !word.starts_with("http://") && !word.starts_with("https://") {
+        if !shared::is_web_url(word) {
             continue;
         }
         // Trailing sentence punctuation isn't part of the link.
@@ -7113,6 +7200,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let emojis_ctx = use_context::<Signal<Vec<shared::CustomEmoji>>>();
     let mut replying_ctx = use_context::<Signal<Option<Message>>>();
     let mut jump_ctx = use_context::<JumpTo>().0;
+    let public_url = use_context::<PublicUrl>().0;
     let ctx_menu = use_context::<menu::MenuSignal>();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
@@ -7127,6 +7215,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let me_id = session().user.id;
     let own = msg.author.id == me_id;
     let msg_id = msg.id;
+    let channel_id = msg.channel_id;
     let content_for_edit = msg.content.clone();
 
     // Aggregate raw reaction entries into (emoji, count, reacted-by-me).
@@ -7170,6 +7259,18 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                 }),
                 menu::item("Copy text", "copy", move || {
                     menu::copy_selection_or(content.clone())
+                }),
+                // Points at the web app, so it opens for someone who has
+                // never installed the desktop client — and is recognised
+                // here, so pasting one into chat jumps rather than launching
+                // a browser.
+                menu::item("Copy link", "link", {
+                    let link = shared::message_link(
+                        &permalink_base(&session(), &public_url()),
+                        channel_id,
+                        msg_id,
+                    );
+                    move || menu::copy_to_clipboard(link.clone())
                 }),
             ];
             if let Some(original) = reply_to {

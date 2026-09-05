@@ -82,7 +82,7 @@ fn close_tag(tag: Tag, children: Vec<MdNode>) -> Option<MdNode> {
         },
         Tag::Link { dest_url, .. } => {
             let url = dest_url.to_string();
-            if url.starts_with("http://") || url.starts_with("https://") {
+            if shared::is_web_url(&url) {
                 MdNode::Link { url, children }
             } else {
                 MdNode::Span(children)
@@ -113,6 +113,25 @@ fn flatten_text(nodes: &[MdNode]) -> String {
     out
 }
 
+/// A permalink into this same server opens the message here rather than in a
+/// second tab. Everything else — including another NotDiscord's permalink,
+/// which has the same shape and unrelated ids — stays an ordinary link, so
+/// the anchor keeps its href and its middle-click.
+fn follow_in_app(url: &str) -> bool {
+    let Some(open_message) = try_consume_context::<crate::OpenMessage>() else {
+        return false;
+    };
+    let public = try_consume_context::<crate::PublicUrl>().and_then(|p| p.0());
+    match shared::parse_message_link(url, &crate::permalink_bases(&public)) {
+        Some(target) => {
+            let mut signal = open_message.0;
+            signal.set(Some(target));
+            true
+        }
+        None => false,
+    }
+}
+
 #[component]
 pub fn Md(nodes: Vec<MdNode>) -> Element {
     rsx! {
@@ -138,7 +157,20 @@ fn MdOne(node: MdNode) -> Element {
             }
         },
         MdNode::Link { url, children } => rsx! {
-            a { class: "md-link", href: "{url}", target: "_blank", rel: "noopener",
+            a {
+                class: "md-link",
+                href: "{url}",
+                target: "_blank",
+                rel: "noopener",
+                onclick: move |e: MouseEvent| {
+                    if follow_in_app(&url) {
+                        e.prevent_default();
+                        // The whole message body is a button that opens the
+                        // actions sheet; without this a followed link jumps
+                        // and then buries the message under that sheet.
+                        e.stop_propagation();
+                    }
+                },
                 Md { nodes: children }
             }
         },
@@ -168,9 +200,9 @@ fn RichText(text: String) -> Element {
     let mut i = 0;
     while i < chars.len() {
         let at_boundary = i == 0 || !chars[i - 1].is_alphanumeric();
-        if at_boundary && chars[i] == 'h' {
+        if at_boundary && (chars[i] == 'h' || chars[i] == 'H') {
             let rest: String = chars[i..].iter().take(8).collect();
-            if rest.starts_with("http://") || rest.starts_with("https://") {
+            if shared::is_web_url(&rest) {
                 let mut j = i;
                 while j < chars.len() && !chars[j].is_whitespace() && !matches!(chars[j], '<' | '>' | '"') {
                     j += 1;
@@ -230,7 +262,23 @@ fn RichText(text: String) -> Element {
     rsx! {
         for (i, (kind, s)) in segs.into_iter().enumerate() {
             if kind == 1 {
-                a { key: "{i}", class: "md-link", href: "{s}", target: "_blank", rel: "noopener", "{s}" }
+                a {
+                    key: "{i}",
+                    class: "md-link",
+                    href: "{s}",
+                    target: "_blank",
+                    rel: "noopener",
+                    onclick: {
+                        let url = s.clone();
+                        move |e: MouseEvent| {
+                            if follow_in_app(&url) {
+                                e.prevent_default();
+                                e.stop_propagation();
+                            }
+                        }
+                    },
+                    "{s}"
+                }
             } else if kind == 2 {
                 span { key: "{i}", class: "md-mention", "{s}" }
             } else if kind == 3 {

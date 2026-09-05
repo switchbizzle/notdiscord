@@ -182,8 +182,67 @@ fn copy_text(text: &str) {
     }
 }
 
+/// "online", or "online · tinkering" when they've set a status. Presence
+/// leads because it's the part that decides whether messaging is a
+/// conversation or a note left on the fridge.
+fn presence_line(online: bool, status: Option<String>) -> String {
+    let presence = if online { "online" } else { "offline" };
+    match status {
+        Some(status) if !status.trim().is_empty() => format!("{presence} · {status}"),
+        _ => presence.to_string(),
+    }
+}
+
 fn host_name() -> String {
     web_sys::window().map(|w| w.location().host().unwrap_or_default()).unwrap_or_default()
+}
+
+/// The address this page was served from, and the fallback a message link is
+/// minted against when the server hasn't been told a public URL.
+fn origin() -> String {
+    web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default()
+}
+
+/// The permalink in the address bar, if this tab was opened by one.
+fn deep_linked_message() -> Option<(i64, i64)> {
+    let path = web_sys::window()?.location().pathname().ok()?;
+    shared::parse_message_path(&path)
+}
+
+/// The channel a push notification asked for: the service worker opens
+/// `/app/?channel=12` when there is no window to hand the tap to.
+fn deep_linked_channel() -> Option<i64> {
+    let search = web_sys::window()?.location().search().ok()?;
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("channel="))
+        .and_then(|id| id.parse().ok())
+}
+
+/// Put the address bar back to `/app/` once a deep link has been consumed.
+/// Not cosmetic: `freshen.js` re-fetches "./" to notice a new build, and from
+/// `/app/channels/7/12` that resolves to a 404 — the phone would quietly stop
+/// noticing deploys for as long as the tab stayed open.
+fn forget_deep_link() {
+    if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/app/"));
+    }
+}
+
+/// Scroll a message into view. False when the row isn't in the DOM (yet, or
+/// at all), so the caller can try again while the list renders.
+fn scroll_to_message(message_id: i64) -> bool {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    let Some(row) = document.get_element_by_id(&format!("msg-{message_id}")) else {
+        return false;
+    };
+    let options = web_sys::ScrollIntoViewOptions::new();
+    options.set_block(web_sys::ScrollLogicalPosition::Center);
+    row.scroll_into_view_with_scroll_into_view_options(&options);
+    true
 }
 
 fn format_time(ms: i64) -> String {
@@ -245,6 +304,32 @@ impl Lightbox {
 #[derive(Clone, Copy)]
 struct Gallery(Memo<Vec<String>>);
 
+/// The server's `NOTDISCORD_PUBLIC_URL`, when it has one. A phone on the LAN
+/// is served from an address nobody outside can open, so a link meant to be
+/// shared prefers this over the origin. Newtyped for the same reason as
+/// everything else here.
+#[derive(Clone, Copy)]
+struct PublicUrl(Signal<Option<String>>);
+
+/// A permalink someone tapped inside the app: (channel, message).
+#[derive(Clone, Copy)]
+struct OpenMessage(Signal<Option<(i64, i64)>>);
+
+/// Where this device mints message links.
+fn permalink_base(public: &Option<String>) -> String {
+    public.clone().unwrap_or_else(origin)
+}
+
+/// Every address we'd recognise our own server by, so a permalink pasted into
+/// chat opens the message here instead of in a second tab.
+fn permalink_bases(public: &Option<String>) -> Vec<String> {
+    let mut bases = vec![origin()];
+    if let Some(public) = public {
+        bases.push(public.clone());
+    }
+    bases
+}
+
 fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, String)>, String) {
     let mut images = Vec::new();
     let mut videos = Vec::new();
@@ -258,9 +343,7 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, Strin
         let mut kept: Vec<&str> = Vec::new();
         let mut pulled = false;
         for token in line.split_whitespace() {
-            let is_url = token.starts_with("http://")
-                || token.starts_with("https://")
-                || token.starts_with("/files/");
+            let is_url = shared::is_web_url(token) || token.starts_with("/files/");
             if is_url {
                 let lower = token.to_lowercase();
                 let path = lower.split(['?', '#']).next().unwrap_or("");
@@ -299,7 +382,7 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, Strin
 fn preview_urls(text: &str) -> Vec<String> {
     let mut urls: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
-        if !word.starts_with("http://") && !word.starts_with("https://") {
+        if !shared::is_web_url(word) {
             continue;
         }
         // Trailing sentence punctuation isn't part of the link.
@@ -612,6 +695,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         gloo_storage::LocalStorage::get::<Vec<i64>>(COLLAPSED_KEY).unwrap_or_default()
     });
     let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
+    // Asked once at load, so a message link can point at the address the crew
+    // uses rather than the one this phone happens to be on.
+    let mut public_url = use_signal(|| None::<String>);
+    use_context_provider(|| PublicUrl(public_url));
     // Where a finger went down, so touchend can measure how far it travelled.
     let mut swipe_from = use_signal(|| None::<f64>);
     let gallery = use_memo(move || {
@@ -730,6 +817,38 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // you'd be left replying to a message in a channel you left.
     let mut drafts = use_signal(HashMap::<i64, (String, Option<Message>)>::new);
 
+    // The message a permalink is pointing at, highlighted once we get there.
+    let mut highlight = use_signal(|| None::<i64>);
+    // A permalink that changed channels leaves its message id here. The jump
+    // waits for the switch's own fetch to land: started any earlier, the two
+    // race and you end up looking at whichever finished last.
+    let mut pending_jump = use_signal(|| None::<i64>);
+
+    // Scroll a message into view, loading the history around it first when it
+    // isn't in the page we have. The phone has no pins or search-hit jumping
+    // yet, so this exists for permalinks alone.
+    let jump_to_message = move |channel_id: i64, message_id: i64| {
+        spawn(async move {
+            if !messages.peek().iter().any(|m| m.id == message_id) {
+                // `before` is exclusive, so +1 puts the target at the end of
+                // the page — the same trick the desktop's jump uses.
+                if let Ok(msgs) = api::messages(&sess(), channel_id, Some(message_id + 1)).await {
+                    has_more.set(msgs.len() == api::HISTORY_PAGE);
+                    messages.set(msgs);
+                }
+            }
+            highlight.set(Some(message_id));
+            // The row may still be rendering. A couple of seconds of trying,
+            // then give up quietly rather than spinning forever.
+            for _ in 0..20 {
+                if scroll_to_message(message_id) {
+                    return;
+                }
+                gloo_timers::future::TimeoutFuture::new(100).await;
+            }
+        });
+    };
+
     let mut open_channel = move |channel: Channel| {
         let id = channel.id;
         unread.write().remove(&id);
@@ -757,6 +876,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         overlay.set(Some("channel"));
         sheet.set(None);
         messages.set(Vec::new());
+        highlight.set(None);
         spawn(async move {
             match api::messages(&sess(), id, None).await {
                 Ok(msgs) => {
@@ -765,6 +885,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         api::mark_read(&sess(), id, newest).await;
                     }
                     messages.set(msgs);
+                    if let Some(target) = pending_jump.write().take() {
+                        jump_to_message(id, target);
+                    }
                 }
                 Err(e) => status.set(e),
             }
@@ -797,6 +920,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             categories.set(api::categories(&sess()).await);
             if let Some(info) = api::server_info().await {
                 server_name.set(info.name);
+                public_url.set(info.public_url.filter(|u| !u.trim().is_empty()));
             }
             {
                 let mut tags = tags;
@@ -804,6 +928,47 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
             stickers.set(api::stickers(&sess()).await);
         });
+    });
+
+    // A link this tab was opened by, or one tapped inside it. Either way the
+    // channel list has to be loaded first — the ids in a link mean nothing
+    // until we know which channels this account can see.
+    let mut open_message = use_signal(deep_linked_message);
+    use_context_provider(|| OpenMessage(open_message));
+    // The service worker opens `/app/?channel=12` when a push is tapped with
+    // no window to hand it to, and nothing used to read it back.
+    let mut open_channel_id = use_signal(deep_linked_channel);
+    use_effect(move || {
+        let wanted = open_message().map(|(channel_id, _)| channel_id).or_else(|| open_channel_id());
+        let Some(channel_id) = wanted else { return };
+        let list = channels();
+        if list.is_empty() {
+            // Still loading, or an account with nothing to see. Either way
+            // there is nothing to open yet; the next change re-runs this.
+            return;
+        }
+        let target = open_message().map(|(_, message_id)| message_id);
+        open_message.set(None);
+        open_channel_id.set(None);
+        forget_deep_link();
+        let Some(channel) = list.iter().find(|c| c.id == channel_id).cloned() else {
+            status.set("that link points at a channel you can't see".into());
+            return;
+        };
+        match target {
+            // Already here: no reload, just find the message.
+            Some(message_id) if selected.peek().as_ref().map(|c: &Channel| c.id) == Some(channel_id) => {
+                overlay.set(Some("channel"));
+                jump_to_message(channel_id, message_id);
+            }
+            // `open_channel` loads the newest page and then hands the jump on,
+            // which pages back to the message if it isn't in it.
+            Some(message_id) => {
+                pending_jump.set(Some(message_id));
+                open_channel(channel);
+            }
+            None => open_channel(channel),
+        }
     });
 
     // Nobody sends a "stopped typing" event, so indicators expire on a timer.
@@ -1324,19 +1489,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         Some(c) => format!("# {}", c.name),
         None => String::new(),
     };
-    // A channel has no topic field, so the second line says the thing this
-    // app actually knows: for a DM, what that person is up to.
+    // A channel has no topic field, so for a DM the second line says the
+    // thing this app does know: whether they're around, and what they're up
+    // to if they've said. "direct message" used to sit here, which told you
+    // only what the screen you were already looking at had told you.
     let chan_topic = match selected() {
         Some(c) if c.kind == "dm" => {
             let peer = dm_peer(&c, me_id);
-            members()
-                .iter()
-                .find(|m| m.user.username == peer)
-                .and_then(|m| m.status.clone())
-                .unwrap_or_else(|| "direct message".into())
+            let entry = members().into_iter().find(|m| m.user.username == peer);
+            let online = entry.as_ref().is_some_and(|m| m.online);
+            presence_line(online, entry.and_then(|m| m.status))
         }
-        Some(_) => String::new(),
-        None => String::new(),
+        _ => String::new(),
     };
     let notify_prefs = notify();
     let notify_on =
@@ -1461,14 +1625,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 {
                                     let peer_name = dm_peer(&channel, me_id);
                                     let peer = channel.dm_members.iter().find(|u| u.id != me_id).cloned();
+                                    let roster = members().into_iter().find(|m| m.user.username == peer_name);
+                                    let online = roster.as_ref().is_some_and(|m| m.online);
                                     // The app has no last-message preview, so
-                                    // the second line says what it does know:
-                                    // whatever that person set as their status.
-                                    let sub = members()
-                                        .iter()
-                                        .find(|m| m.user.username == peer_name)
-                                        .and_then(|m| m.status.clone())
-                                        .unwrap_or_default();
+                                    // the second line carries presence, plus
+                                    // their status when they've set one. In
+                                    // words, not just the dot's colour — and
+                                    // the row is never blank, which it was for
+                                    // anyone who'd never set a status.
+                                    let sub = presence_line(online, roster.and_then(|m| m.status));
                                     let unread_here = unread().get(&channel.id).copied();
                                     let for_open = channel.clone();
                                     rsx! {
@@ -1477,13 +1642,20 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                             class: "dm-row",
                                             onclick: move |_| open_channel(for_open.clone()),
                                             if let Some(user) = peer {
-                                                Avatar { user }
+                                                span { class: "avatar-wrap",
+                                                    Avatar { user }
+                                                    // Reinforces the words above; the
+                                                    // line underneath is what actually
+                                                    // says it, so this is decoration.
+                                                    span {
+                                                        class: if online { "presence online" } else { "presence" },
+                                                        aria_hidden: "true",
+                                                    }
+                                                }
                                             }
                                             span { class: "dm-col",
                                                 span { class: "dm-name", "{peer_name}" }
-                                                if !sub.is_empty() {
-                                                    span { class: "dm-sub ellipsis", "{sub}" }
-                                                }
+                                                span { class: "dm-sub ellipsis", "{sub}" }
                                             }
                                             if let Some(n) = unread_here {
                                                 span { class: "badge", "{n}" }
@@ -1871,13 +2043,16 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             for member in members() {
                                 {
                                     let colour = name_color(member.user.id, &members(), &tags());
-                                    let sub = member
-                                        .status
-                                        .clone()
-                                        .unwrap_or_else(|| if member.online { "online".into() } else { "offline".into() });
+                                    let sub = presence_line(member.online, member.status.clone());
                                     rsx! {
                                         div { key: "m{member.user.id}", class: "member-row",
-                                            Avatar { user: member.user.clone() }
+                                            span { class: "avatar-wrap",
+                                                Avatar { user: member.user.clone() }
+                                                span {
+                                                    class: if member.online { "presence online" } else { "presence" },
+                                                    aria_hidden: "true",
+                                                }
+                                            }
                                             div { class: "member-col",
                                                 div { class: "member-line",
                                                     span {
@@ -1894,7 +2069,6 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 }
                                                 div { class: "member-status ellipsis", "{sub}" }
                                             }
-                                            span { class: if member.online { "member-dot online" } else { "member-dot" } }
                                         }
                                     }
                                 }
@@ -1946,13 +2120,21 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             // Grouped in reading order, then reversed:
                             // column-reverse pins the view to the newest.
                             for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                                MessageRow {
-                                    key: "{msg.id}",
-                                    failed: failed_sends().contains(&msg.id),
-                                    msg,
-                                    compact,
-                                    me_id,
-                                    me_admin,
+                                {
+                                let msg_id = msg.id;
+                                rsx! {
+                                div {
+                                    key: "{msg_id}",
+                                    class: if highlight() == Some(msg_id) { "hit-wrap" } else { "" },
+                                    MessageRow {
+                                        failed: failed_sends().contains(&msg.id),
+                                        msg,
+                                        compact,
+                                        me_id,
+                                        me_admin,
+                                    }
+                                }
+                                }
                                 }
                             }
                             if has_more() {
@@ -2686,15 +2868,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         for member in members() {
                             {
                                 let colour = name_color(member.user.id, &members(), &tags());
-                                let sub = member
-                                    .status
-                                    .clone()
-                                    .unwrap_or_else(|| if member.online { "online".into() } else { "offline".into() });
+                                let sub = presence_line(member.online, member.status.clone());
                                 let user_id = member.user.id;
                                 let is_me = user_id == me_id;
                                 rsx! {
                                     div { key: "sm{member.user.id}", class: "member-row",
-                                        Avatar { user: member.user.clone() }
+                                        span { class: "avatar-wrap",
+                                            Avatar { user: member.user.clone() }
+                                            span {
+                                                class: if member.online { "presence online" } else { "presence" },
+                                                aria_hidden: "true",
+                                            }
+                                        }
                                         div { class: "member-col",
                                             div { class: "member-line",
                                                 span {
@@ -2967,7 +3152,9 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
     let mut editing = use_signal(|| None::<String>);
     let mut confirming_delete = use_signal(|| false);
     let msg_id = msg.id;
+    let channel_id = msg.channel_id;
     let mine = msg.author.id == me_id;
+    let public_url = try_consume_context::<PublicUrl>();
 
     // The bot's music-player card is a desktop thing.
     if msg.content.starts_with(shared::PLAYER_MARKER) {
@@ -3004,6 +3191,8 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
 
     rsx! {
         div {
+            // What a permalink scrolls to.
+            id: "msg-{msg_id}",
             class: match (compact, pending, failed) {
                 (_, _, true) => "msg failed",
                 (true, true, _) => "msg compact pending",
@@ -3213,6 +3402,20 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                                 },
                                 Icon { name: "copy", size: 18 }
                                 span { class: "grow", "Copy text" }
+                            }
+                            button {
+                                class: "sheet-action",
+                                onclick: move |_| {
+                                    actions_open.set(false);
+                                    let public = public_url.and_then(|p| p.0());
+                                    copy_text(&shared::message_link(
+                                        &permalink_base(&public),
+                                        channel_id,
+                                        msg_id,
+                                    ));
+                                },
+                                Icon { name: "link", size: 18 }
+                                span { class: "grow", "Copy link" }
                             }
                             if mine {
                                 button {

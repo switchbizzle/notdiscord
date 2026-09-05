@@ -215,6 +215,43 @@ pub fn reaction_tooltip(
     format!("{} reacted with {}", join_names(&names), emoji)
 }
 
+// ---------- message permalinks ----------
+
+/// The path a permalink puts after the server: the web app is served at
+/// `/app`, and this is the one route under it that isn't a file on disk.
+pub const MESSAGE_LINK_PATH: &str = "/app/channels/";
+
+/// A link that points at one message — `https://chat.example/app/channels/7/1204`.
+/// `base` is the server's public URL when it has one, otherwise whatever
+/// address the client reached it on: a link that only works on the LAN still
+/// beats no link at all.
+pub fn message_link(base: &str, channel_id: i64, message_id: i64) -> String {
+    format!("{}{MESSAGE_LINK_PATH}{channel_id}/{message_id}", base.trim_end_matches('/'))
+}
+
+/// The ids out of `/app/channels/{channel}/{message}`, tolerating the
+/// trailing slash, query and fragment a browser or a chat client may have
+/// added. Anything else — including `/app` itself — is None.
+pub fn parse_message_path(path: &str) -> Option<(i64, i64)> {
+    let rest = path.strip_prefix(MESSAGE_LINK_PATH)?;
+    let rest = rest.split(['?', '#']).next()?.trim_end_matches('/');
+    let (channel, message) = rest.split_once('/')?;
+    Some((channel.parse().ok()?, message.parse().ok()?))
+}
+
+/// The ids out of a whole link, but only when it points at an address this
+/// client knows its own server by. A permalink to *someone else's*
+/// NotDiscord has exactly the same shape and entirely unrelated ids, so
+/// following one in place would land you on a stranger's number in a channel
+/// of ours; those keep going to the browser instead.
+pub fn parse_message_link(url: &str, bases: &[String]) -> Option<(i64, i64)> {
+    bases
+        .iter()
+        .filter(|base| !base.is_empty())
+        .find_map(|base| url.strip_prefix(base.trim_end_matches('/')))
+        .and_then(parse_message_path)
+}
+
 /// A custom cosmetic role: a named, colored badge admins assign to users.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
@@ -222,6 +259,27 @@ pub struct Tag {
     pub name: String,
     /// "#rrggbb"
     pub color: String,
+}
+
+/// The length of the `http://` or `https://` at the start of `s`, if it has
+/// one. Schemes are case-insensitive (RFC 3986 §3.1) and a phone keyboard
+/// autocapitalises the first letter of a line, so `Https://…` is both a
+/// perfectly valid URL and the one people actually send — it used to render
+/// as plain grey text because every check here compared bytes.
+pub fn web_scheme_len(s: &str) -> Option<usize> {
+    // Longest first: "http://" is not a prefix of "https://", but keeping the
+    // order explicit means adding a scheme later can't silently shadow one.
+    ["https://", "http://"]
+        .into_iter()
+        // get(), not slicing: `s` is user text and may not have a char
+        // boundary at byte 7 or 8.
+        .find(|scheme| s.get(..scheme.len()).is_some_and(|head| head.eq_ignore_ascii_case(scheme)))
+        .map(|scheme| scheme.len())
+}
+
+/// Does `s` begin with a web URL scheme, in any capitalisation?
+pub fn is_web_url(s: &str) -> bool {
+    web_scheme_len(s).is_some()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +472,13 @@ pub struct ServerInfo {
     /// server up instead of asking for a login nobody can have.
     #[serde(default)]
     pub needs_setup: bool,
+    /// `NOTDISCORD_PUBLIC_URL`, when the instance has one. The address a
+    /// client reached the server on is not necessarily one anybody else can
+    /// open — a LAN address, or `localhost` — so a link meant to be shared
+    /// prefers this. Optional: a self-hoster who hasn't set it still gets
+    /// links, they just point at whatever address the client is using.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 /// POST /api/setup — only accepted while a server has no people on it.
@@ -900,5 +965,74 @@ mod tests {
         let many: Vec<String> = (0..12).map(|i| format!("u{i}")).collect();
         assert!(join_names(&many).ends_with("and 4 more"));
         assert_eq!(join_names(&[]), "");
+    }
+
+    #[test]
+    fn a_permalink_round_trips() {
+        let link = message_link("https://chat.example", 7, 1204);
+        assert_eq!(link, "https://chat.example/app/channels/7/1204");
+        let bases = vec!["https://chat.example".to_string()];
+        assert_eq!(parse_message_link(&link, &bases), Some((7, 1204)));
+    }
+
+    #[test]
+    fn a_trailing_slash_on_the_base_doesnt_double_up() {
+        assert_eq!(
+            message_link("https://chat.example/", 7, 1204),
+            "https://chat.example/app/channels/7/1204"
+        );
+        let bases = vec!["https://chat.example/".to_string()];
+        assert_eq!(
+            parse_message_link("https://chat.example/app/channels/7/1204", &bases),
+            Some((7, 1204))
+        );
+    }
+
+    #[test]
+    fn what_a_browser_adds_is_tolerated() {
+        assert_eq!(parse_message_path("/app/channels/7/1204/"), Some((7, 1204)));
+        assert_eq!(parse_message_path("/app/channels/7/1204?x=1"), Some((7, 1204)));
+        assert_eq!(parse_message_path("/app/channels/7/1204#top"), Some((7, 1204)));
+    }
+
+    #[test]
+    fn anything_that_isnt_a_permalink_is_left_alone() {
+        assert_eq!(parse_message_path("/app/"), None);
+        assert_eq!(parse_message_path("/app/channels/7"), None);
+        assert_eq!(parse_message_path("/app/channels/seven/1204"), None);
+        assert_eq!(parse_message_path("/files/3/cat.png"), None);
+        // An empty base would match every URL in the world.
+        assert_eq!(
+            parse_message_link("https://elsewhere/app/channels/7/1204", &[String::new()]),
+            None
+        );
+    }
+
+    #[test]
+    fn another_servers_permalink_is_not_ours_to_follow() {
+        let bases = vec!["https://chat.example".to_string()];
+        assert_eq!(
+            parse_message_link("https://someone-else.example/app/channels/7/1204", &bases),
+            None
+        );
+    }
+
+    #[test]
+    fn web_urls_are_recognised_in_any_capitalisation() {
+        // The bug this guards: a phone keyboard capitalises the first letter
+        // of a line, so the link somebody actually sends is "Https://…" and
+        // it used to render as grey text nobody could tap.
+        assert_eq!(web_scheme_len("Https://notdiscord.example/app"), Some(8));
+        assert_eq!(web_scheme_len("HTTPS://SHOUTY.example"), Some(8));
+        assert_eq!(web_scheme_len("http://plain.example"), Some(7));
+        assert_eq!(web_scheme_len("HtTp://mixed.example"), Some(7));
+        // Not URLs.
+        assert_eq!(web_scheme_len("Hello there"), None);
+        assert_eq!(web_scheme_len("ftp://files.example"), None);
+        assert_eq!(web_scheme_len("https:/typo.example"), None);
+        assert_eq!(web_scheme_len(""), None);
+        // Multi-byte text must not panic on the byte slice.
+        assert_eq!(web_scheme_len("héllo—there"), None);
+        assert_eq!(web_scheme_len("日本語のテキスト"), None);
     }
 }
