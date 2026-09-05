@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.94.15",
+    "date": "2026-09-04",
+    "changes": [
+      "🖼️ Screenshots you post are actually legible on the phone (switchb). A phone screenshot is tall and narrow, and the old height cap squeezed one down to 135 pixels wide — a third of the screen, with any text in it reduced to mush. They now draw at about 190 by 420: big enough to read, small enough that one screenshot doesn’t bury the conversation under it. Tap still opens the full thing",
+      "Wide images use the whole width of the message now instead of stopping 9 pixels short of it, which was an arbitrary number left over from the old layout",
+      "The other half of the problem was the thumbnails themselves. The size budget is the LONGEST edge, so a 9:20 screenshot only ever got 180 pixels across — fewer than the phone was drawing it at, which is why it looked soft however big the box was. The budget went from 400 to 800, so that same screenshot now has 360 real pixels behind it",
+      "And a thumbnail that saves nothing is no longer kept. A flat PNG — a screenshot of a chat app, say — can encode LARGER as a JPEG than it started, and storing that costs disk to send more bytes. Where that happens the original is served instead, which is both smaller and sharper"
+    ]
+  },
+  {
     "version": "0.94.14",
     "date": "2026-09-04",
     "changes": [

@@ -8,9 +8,13 @@
 
 use std::path::{Path, PathBuf};
 
-/// Longest edge of a generated thumbnail. Comfortably covers both the Files
-/// panel's tiles and inline chat images at their rendered size.
-const THUMB_EDGE: u32 = 400;
+/// Longest edge of a generated thumbnail. This is a budget for the LONGEST
+/// edge, so the short edge of a tall image gets whatever the aspect ratio
+/// leaves it: at 400 a 9:20 phone screenshot came out 180px wide, which is
+/// less than half the width the phone draws it at and looked like mush. 800
+/// gives that same screenshot 360px — sharp at the size it is rendered, and
+/// still a fraction of a multi-megabyte original.
+const THUMB_EDGE: u32 = 800;
 const THUMB_QUALITY: u8 = 78;
 /// Refuse to decode anything claiming more pixels than this (~40 MP).
 const MAX_PIXELS: u64 = 40_000_000;
@@ -63,6 +67,13 @@ fn render(bytes: &[u8]) -> Option<Vec<u8>> {
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, THUMB_QUALITY)
         .encode(thumb.as_raw(), thumb.width(), thumb.height(), image::ExtendedColorType::Rgb8)
         .ok()?;
+    // A "thumbnail" bigger than the file it stands in for is worse than none:
+    // it costs disk to store and more bytes to send. Flat-coloured PNGs — a
+    // screenshot of a chat app, say — hit this readily now that the budget is
+    // 800px. Callers already fall back to the original when this is None.
+    if out.len() >= bytes.len() {
+        return None;
+    }
     Some(out)
 }
 
@@ -89,6 +100,22 @@ pub async fn ensure(original: PathBuf) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Photographic noise, which is what JPEG is good at and PNG is not —
+    /// the shape of file a thumbnail is actually for.
+    fn photo(w: u32, h: u32) -> Vec<u8> {
+        let mut seed: u32 = 0x9e3779b9;
+        let buf = image::RgbImage::from_fn(w, h, |_, _| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let v = (seed >> 16) as u8;
+            image::Rgb([v, v.wrapping_add(40), v.wrapping_add(90)])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(buf)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
     fn png(w: u32, h: u32) -> Vec<u8> {
         let buf = image::RgbImage::from_fn(w, h, |x, y| {
             image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
@@ -102,7 +129,7 @@ mod tests {
 
     #[test]
     fn shrinks_big_images() {
-        let big = png(1600, 1200);
+        let big = photo(1600, 1200);
         let thumb = render(&big).expect("thumbnail");
         assert!(thumb.starts_with(&[0xFF, 0xD8, 0xFF]), "not a JPEG");
         // Byte savings are what matter in production (a 12 MB photo becomes
@@ -119,10 +146,36 @@ mod tests {
         assert!((w as f32 / h as f32 - 4.0 / 3.0).abs() < 0.05);
     }
 
+    /// The case that made switchb say "images don't preview well": a phone
+    /// screenshot. The long edge is the budget, so what matters is that the
+    /// SHORT edge is still wide enough to draw at the width a phone gives it.
+    #[test]
+    fn a_phone_screenshot_keeps_a_usable_width() {
+        let shot = photo(1080, 2400);
+        let thumb = render(&shot).expect("thumbnail");
+        let (w, h) = image::ImageReader::new(std::io::Cursor::new(&thumb))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap();
+        assert_eq!((w, h), (360, 800), "9:20 screenshot should fill the long-edge budget");
+        // The phone draws inline images up to ~309px wide; anything narrower
+        // than that is being upscaled on screen.
+        assert!(w >= 309, "{w}px wide is narrower than the phone renders it");
+    }
+
     #[test]
     fn small_images_are_left_alone() {
         // Already tile-sized: making a "thumbnail" would only waste space.
         assert!(render(&png(320, 240)).is_none());
+    }
+
+    /// A flat PNG that JPEG cannot beat keeps no thumbnail at all, and the
+    /// caller serves the original — which is both smaller and sharper.
+    #[test]
+    fn a_thumbnail_that_saves_nothing_is_not_kept() {
+        // A smooth gradient: trivial for PNG, expensive for JPEG.
+        assert!(render(&png(1600, 1200)).is_none());
     }
 
     #[test]

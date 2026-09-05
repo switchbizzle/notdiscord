@@ -34,6 +34,12 @@ Thumbs.db
 # Distribution binaries
 /dist/
 
+# Running the server from a clone puts real uploads here (uploads_dir()
+# defaults to ./uploads relative to the working directory), so a dev session
+# leaves other people's files sitting in the working tree where `git add -A`
+# would happily commit them.
+/uploads/
+
 # Screenshots the visual harnesses take of themselves
 /callwindow-*.png
 

@@ -377,7 +377,13 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 }
 .msg-body.dim { color: var(--n-600); font-style: italic; }
 .reply-ref { font-size: 11.5px; color: var(--n-600); display: flex; align-items: center; gap: 5px; }
-.msg-img { max-width: min(100%, 300px); max-height: 300px; border-radius: var(--r-md); margin-top: 3px; cursor: zoom-in; }
+/* Images get the full width of the message column. The height cap is what
+ * actually binds for a phone screenshot — the shape people share most — and
+ * at 300px it squeezed a 9:20 shot down to 135px wide, a third of the screen
+ * and far too small to read. 420 is about half the viewport: big enough to
+ * make out, small enough that one screenshot doesn't bury the conversation
+ * under it. Tap still opens the full thing. */
+.msg-img { max-width: 100%; max-height: 420px; border-radius: var(--r-md); margin-top: 3px; cursor: zoom-in; }
 .msg-img.sticker-msg { max-width: 150px; max-height: 150px; cursor: default; }
 .msg-video { max-width: 100%; max-height: 300px; border-radius: var(--r-md); margin-top: 3px; }
 .msg-file { color: var(--accent-300); text-decoration: none; font-size: 14px; display: inline-flex; align-items: center; gap: 5px; }
