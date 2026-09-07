@@ -187,12 +187,18 @@ fn copy_text(text: &str) {
 /// "online", or "online · tinkering" when they've set a status. Presence
 /// leads because it's the part that decides whether messaging is a
 /// conversation or a note left on the fridge.
-fn presence_line(online: bool, status: Option<String>) -> String {
-    let presence = if online { "online" } else { "offline" };
+fn presence_line(online: bool, mode: &str, status: Option<String>) -> String {
+    let presence = shared::presence_label(shared::effective_presence(online, mode));
     match status {
         Some(status) if !status.trim().is_empty() => format!("{presence} · {status}"),
         _ => presence.to_string(),
     }
+}
+
+/// The class the presence dot wears. One place, so a mode added later can't
+/// be drawn one way in the DM list and another in the members sheet.
+fn presence_dot(online: bool, mode: &str) -> String {
+    format!("presence {}", shared::effective_presence(online, mode))
 }
 
 /// Put the cursor back in the composer. Tapping a suggestion moves focus to
@@ -1168,6 +1174,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     m.online = online;
                                 }
                             }
+                            ServerEvent::PresenceModeChanged { user_id, mode } => {
+                                if let Some(m) = members.write().iter_mut().find(|m| m.user.id == user_id) {
+                                    m.presence = mode;
+                                }
+                            }
                             ServerEvent::StatusChanged { user_id, status: text } => {
                                 if let Some(m) = members.write().iter_mut().find(|m| m.user.id == user_id) {
                                     m.status = text;
@@ -1514,7 +1525,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             let peer = dm_peer(&c, me_id);
             let entry = members().into_iter().find(|m| m.user.username == peer);
             let online = entry.as_ref().is_some_and(|m| m.online);
-            presence_line(online, entry.and_then(|m| m.status))
+            let mode = entry.as_ref().map(|m| m.presence.clone()).unwrap_or_default();
+            presence_line(online, &mode, entry.and_then(|m| m.status))
         }
         _ => String::new(),
     };
@@ -1530,6 +1542,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             _ => "mentions & DMs".to_string(),
         }
     };
+    // Your own mode, read from the roster so it stays right after somebody
+    // else's client changes it — the server tells everyone, including you.
+    let my_presence = members()
+        .iter()
+        .find(|m| m.user.id == me_id)
+        .map(|m| m.presence.clone())
+        .unwrap_or_else(|| "online".to_string());
     let armed = !draft().trim().is_empty();
 
     rsx! {
@@ -1643,13 +1662,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     let peer = channel.dm_members.iter().find(|u| u.id != me_id).cloned();
                                     let roster = members().into_iter().find(|m| m.user.username == peer_name);
                                     let online = roster.as_ref().is_some_and(|m| m.online);
+                                    let mode = roster.as_ref().map(|m| m.presence.clone()).unwrap_or_default();
                                     // The app has no last-message preview, so
                                     // the second line carries presence, plus
                                     // their status when they've set one. In
                                     // words, not just the dot's colour — and
                                     // the row is never blank, which it was for
                                     // anyone who'd never set a status.
-                                    let sub = presence_line(online, roster.and_then(|m| m.status));
+                                    let sub = presence_line(online, &mode, roster.and_then(|m| m.status));
                                     let unread_here = unread().get(&channel.id).copied();
                                     let for_open = channel.clone();
                                     rsx! {
@@ -1664,7 +1684,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                     // line underneath is what actually
                                                     // says it, so this is decoration.
                                                     span {
-                                                        class: if online { "presence online" } else { "presence" },
+                                                        class: presence_dot(online, &mode),
                                                         aria_hidden: "true",
                                                     }
                                                 }
@@ -1979,7 +1999,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         .and_then(|m| m.status.clone())
                                         .unwrap_or_default();
                                     rsx! {
-                                        Avatar { user: me.clone(), variant: "big" }
+                                        span { class: "avatar-wrap",
+                                            Avatar { user: me.clone(), variant: "big" }
+                                            span {
+                                                class: "{presence_dot(true, &my_presence)} big",
+                                                aria_hidden: "true",
+                                            }
+                                        }
                                         div { class: "grow",
                                             div { style: "display: flex; align-items: center; gap: 7px",
                                                 span {
@@ -1991,15 +2017,57 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                     span { class: "tag-badge", "ADMIN" }
                                                 }
                                             }
-                                            if my_status.is_empty() {
-                                                div { class: "you-status", "no status set" }
-                                            } else {
-                                                div { class: "you-status ellipsis", "{my_status}" }
+                                            {
+                                                let label = shared::presence_label(&my_presence);
+                                                rsx! {
+                                                    if my_status.is_empty() {
+                                                        div { class: "you-status", "{label}" }
+                                                    } else {
+                                                        div { class: "you-status ellipsis", "{label} · {my_status}" }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                            // Four taps, no menu: the whole point of do not
+                            // disturb is reaching it the moment you need it.
+                            div { class: "presence-picker",
+                                for mode in shared::PRESENCE_MODES {
+                                    button {
+                                        key: "pm-{mode}",
+                                        class: if my_presence == mode { "presence-chip on" } else { "presence-chip" },
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                if let Err(e) = api::set_presence(&sess(), mode).await {
+                                                    status.set(e);
+                                                    return;
+                                                }
+                                                // The roster is what draws it
+                                                // everywhere else, your own
+                                                // row included.
+                                                if let Ok(list) = api::users(&sess()).await {
+                                                    members.set(list);
+                                                }
+                                            });
+                                        },
+                                        span { class: "presence {mode}", aria_hidden: "true" }
+                                        span { "{shared::presence_label(mode)}" }
+                                    }
+                                }
+                            }
+                            if my_presence == "dnd" {
+                                div { class: "note",
+                                    "Notifications are held while you're on do not disturb — no push, no sound."
+                                }
+                            }
+                            if my_presence == "invisible" {
+                                div { class: "note",
+                                    "You'll show as offline to everyone else. Messages still reach you."
+                                }
+                            }
+
                             div { class: "you-actions",
                                 button {
                                     class: "btn btn-primary",
@@ -2059,13 +2127,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             for member in members() {
                                 {
                                     let colour = name_color(member.user.id, &members(), &tags());
-                                    let sub = presence_line(member.online, member.status.clone());
+                                    let sub = presence_line(member.online, &member.presence, member.status.clone());
                                     rsx! {
                                         div { key: "m{member.user.id}", class: "member-row",
                                             span { class: "avatar-wrap",
                                                 Avatar { user: member.user.clone() }
                                                 span {
-                                                    class: if member.online { "presence online" } else { "presence" },
+                                                    class: presence_dot(member.online, &member.presence),
                                                     aria_hidden: "true",
                                                 }
                                             }
@@ -2936,7 +3004,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         for member in members() {
                             {
                                 let colour = name_color(member.user.id, &members(), &tags());
-                                let sub = presence_line(member.online, member.status.clone());
+                                let sub = presence_line(member.online, &member.presence, member.status.clone());
                                 let user_id = member.user.id;
                                 let is_me = user_id == me_id;
                                 rsx! {
@@ -2944,7 +3012,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         span { class: "avatar-wrap",
                                             Avatar { user: member.user.clone() }
                                             span {
-                                                class: if member.online { "presence online" } else { "presence" },
+                                                class: presence_dot(member.online, &member.presence),
                                                 aria_hidden: "true",
                                             }
                                         }

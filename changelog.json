@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.94.16",
+    "date": "2026-09-04",
+    "changes": [
+      "🟣 Presence, properly. Online was a yes/no — either a socket existed or it did not — and now it is a choice: online, idle, do not disturb, or invisible. Pick it from the You tab on the phone or your own profile card on the desktop",
+      "🔕 Do not disturb is the one that earns its keep. One switch and it stops push, the notification sound, and ping toasts — the three things you used to have to turn off separately and remember to turn back on. It even beats a direct message, which nothing else does",
+      "👁️ Invisible shows you as offline to everyone else, and the server never sends anyone your mode — so no client can tell you apart from a closed laptop. Your own view stays honest. Messages still reach you: hiding is about who can see you, not about going without your notifications",
+      "⏱️ Idle sets itself after six minutes of nothing and clears the moment you touch anything, so \"online\" stops meaning \"left the app open on Tuesday\". It only ever moves a mode it set itself — if you deliberately chose do not disturb, it stays put however long you stare out of the window",
+      "One thing decided along the way: joining a voice channel still shows you in that channel even while invisible. Being in a call is audible presence, and hiding you there would mean the people in it hear a voice belonging to nobody — a worse lie than the one invisible is meant to tell"
+    ]
+  },
+  {
     "version": "0.94.15",
     "date": "2026-09-04",
     "changes": [

@@ -396,10 +396,11 @@ pub async fn reset_password(
 
 pub async fn list_users(
     State(state): State<SharedState>,
-    _user: AuthUser,
+    AuthUser(me): AuthUser,
 ) -> ApiResult<Json<Vec<UserStatus>>> {
     let rows = sqlx::query(
-        "SELECT id, username, avatar, role, banned, status_text FROM users ORDER BY username COLLATE NOCASE",
+        "SELECT id, username, avatar, role, banned, status_text, COALESCE(presence_mode, 'online') \
+         FROM users ORDER BY username COLLATE NOCASE",
     )
     .fetch_all(&state.db)
     .await
@@ -420,10 +421,24 @@ pub async fn list_users(
             let user = User { id: r.get(0), username: r.get(1), avatar: r.get(2), role: r.get(3) };
             let banned: i64 = r.get(4);
             let status: Option<String> = r.get(5);
+            let mode: String = r.get(6);
             // The bot never sleeps.
-            let is_online = online.contains(&user.id) || user.id == state.bot_user().id;
+            let mut is_online = online.contains(&user.id) || user.id == state.bot_user().id;
+            // Invisible is masked here rather than at every call site: to
+            // anybody else this person is simply offline, and their real mode
+            // never leaves the server. Your own row stays honest, or you
+            // could not see which mode you had picked.
+            let mine = user.id == me.id;
+            let mode = if mine {
+                mode
+            } else if mode == "invisible" {
+                is_online = false;
+                "online".to_string()
+            } else {
+                mode
+            };
             let tag_ids = tag_map.remove(&user.id).unwrap_or_default();
-            UserStatus { user, online: is_online, banned: banned != 0, tag_ids, status }
+            UserStatus { user, online: is_online, presence: mode, banned: banned != 0, tag_ids, status }
         })
         .collect();
     Ok(Json(users))
@@ -446,6 +461,42 @@ pub async fn set_status(
         .await
         .map_err(internal)?;
     state.broadcast(ServerEvent::StatusChanged { user_id: user.id, status });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Pick how you appear. Distinct from set_status above: that is a sentence,
+/// this changes what the server does with you.
+pub async fn set_presence(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Json(req): Json<shared::SetPresenceRequest>,
+) -> ApiResult<StatusCode> {
+    let mode = shared::normalize_presence(&req.mode);
+    sqlx::query("UPDATE users SET presence_mode = ? WHERE id = ?")
+        .bind(mode)
+        .bind(user.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+
+    let connected = state.presence.lock().unwrap().contains_key(&user.id);
+    if mode == "invisible" {
+        // Everyone else is told you left. They are never told the mode, so a
+        // client cannot infer the difference between invisible and a closed
+        // laptop — which is the entire point of the setting.
+        state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: false });
+        state.broadcast_only(
+            vec![user.id],
+            ServerEvent::PresenceModeChanged { user_id: user.id, mode: mode.to_string() },
+        );
+    } else {
+        // Coming back from invisible has to re-announce you, or you stay
+        // greyed out in everybody's list until you next reconnect.
+        if connected {
+            state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: true });
+        }
+        state.broadcast(ServerEvent::PresenceModeChanged { user_id: user.id, mode: mode.to_string() });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

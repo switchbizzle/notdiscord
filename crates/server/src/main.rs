@@ -261,6 +261,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/email/verify", post(routes::email_verify))
         .route("/api/users", get(routes::list_users))
         .route("/api/status", post(routes::set_status))
+        .route("/api/presence", post(routes::set_presence))
         .route("/api/notify", get(routes::get_notify_prefs).post(routes::set_notify_level))
         .route(
             "/api/push/subscribe",

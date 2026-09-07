@@ -169,7 +169,8 @@ pub async fn recipients(
     dm_members: Option<&[i64]>,
 ) -> anyhow::Result<Vec<(i64, Subscription)>> {
     let rows = sqlx::query(
-        "SELECT s.user_id, s.endpoint, s.p256dh, s.auth, COALESCE(u.notify_level, 'mentions') \
+        "SELECT s.user_id, s.endpoint, s.p256dh, s.auth, COALESCE(u.notify_level, 'mentions'), \
+                COALESCE(u.presence_mode, 'online') \
          FROM push_subscriptions s JOIN users u ON u.id = s.user_id",
     )
     .fetch_all(&state.db)
@@ -188,6 +189,7 @@ pub async fn recipients(
     for row in rows {
         let user_id: i64 = row.get(0);
         let level: String = row.get(4);
+        let mode: String = row.get(5);
         if muted.contains(&user_id) {
             continue;
         }
@@ -199,6 +201,13 @@ pub async fn recipients(
         // only that device can answer, and its service worker does (it stays
         // quiet when one of its own windows is open and focused).
         if user_id == message.author.id || level == "none" {
+            continue;
+        }
+        // Do not disturb. Note this is NOT the ambient presence the comment
+        // above refuses to consult: that asks "does a socket exist", which
+        // the tray client answers yes to all day. This is a switch somebody
+        // deliberately flipped, and it is the whole reason they flipped it.
+        if shared::presence_silences_alerts(&mode) {
             continue;
         }
         // A DM only notifies its participants, whatever their level says.
@@ -225,16 +234,24 @@ mod tests {
     async fn state_with_people() -> crate::SharedState {
         let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::migrate!().run(&db).await.unwrap();
-        for (id, name, level) in [
-            (1, "author", "all"),
-            (2, "atdesk", "all"),
-            (3, "mentions_only", "mentions"),
-            (4, "silenced", "none"),
+        for (id, name, level, presence) in [
+            (1, "author", "all", "online"),
+            (2, "atdesk", "all", "online"),
+            (3, "mentions_only", "mentions", "online"),
+            (4, "silenced", "none", "online"),
+            // Wants everything, but has said not right now.
+            (5, "heads_down", "all", "dnd"),
+            // Hiding is about who can see you, not about being shouted at.
+            (6, "lurker", "all", "invisible"),
         ] {
-            sqlx::query("INSERT INTO users (id, username, password_hash, created_at, notify_level) VALUES (?, ?, 'x', 0, ?)")
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, created_at, notify_level, presence_mode) \
+                 VALUES (?, ?, 'x', 0, ?, ?)",
+            )
                 .bind(id)
                 .bind(name)
                 .bind(level)
+                .bind(presence)
                 .execute(&db)
                 .await
                 .unwrap();
@@ -303,6 +320,31 @@ mod tests {
         assert!(!ids.contains(&1), "never notify the person who just typed it");
         assert!(!ids.contains(&3), "mentions-only, and this mentions nobody");
         assert!(!ids.contains(&4), "they asked for nothing");
+    }
+
+    #[tokio::test]
+    async fn do_not_disturb_silences_push_but_invisible_does_not() {
+        let state = state_with_people().await;
+        let got = recipients(&state, &message_from(1, "anyone about?"), &[], None).await.unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+
+        assert!(!ids.contains(&5), "do not disturb is exactly this");
+        // Invisible is about what other people can see, not about whether
+        // your own phone may buzz. Conflating the two would make hiding cost
+        // you your messages, and nobody would use it.
+        assert!(ids.contains(&6), "hiding from the roster is not asking for silence");
+        assert!(ids.contains(&2), "everybody else is unaffected");
+    }
+
+    #[tokio::test]
+    async fn do_not_disturb_outranks_a_direct_mention() {
+        let state = state_with_people().await;
+        // A DM, which normally reaches its participants whatever their level.
+        let got = recipients(&state, &message_from(1, "you there?"), &[5], Some(&[1, 5]))
+            .await
+            .unwrap();
+        let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
+        assert!(!ids.contains(&5), "dnd is the one setting that beats a DM");
     }
 
     #[tokio::test]

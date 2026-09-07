@@ -19,6 +19,52 @@ pub struct User {
     pub role: String,
 }
 
+/// The four ways to appear. Order is the order the pickers show them in:
+/// most present first, and the two that change behaviour last.
+pub const PRESENCE_MODES: [&str; 4] = ["online", "idle", "dnd", "invisible"];
+
+fn default_presence() -> String {
+    "online".to_string()
+}
+
+/// Coerce anything to a mode we recognise. User input reaches this from the
+/// API, and an unknown string quietly meaning "online" is far better than a
+/// row that no client knows how to draw.
+pub fn normalize_presence(mode: &str) -> &'static str {
+    let lower = mode.trim().to_ascii_lowercase();
+    PRESENCE_MODES.iter().copied().find(|m| *m == lower).unwrap_or("online")
+}
+
+/// What to actually draw for somebody: the mode they chose, unless they are
+/// not connected at all, in which case nothing they chose matters. Callers
+/// pass their own honest mode for themselves and whatever the server sent
+/// for everyone else.
+pub fn effective_presence(online: bool, mode: &str) -> &'static str {
+    if !online {
+        return "offline";
+    }
+    normalize_presence(mode)
+}
+
+/// What to call a presence in the interface. "dnd" is the only one whose
+/// short name is unreadable to anybody who has not seen it before, which is
+/// why this exists rather than each client capitalising the raw string.
+pub fn presence_label(presence: &str) -> &'static str {
+    match presence {
+        "offline" => "offline",
+        "idle" => "idle",
+        "dnd" => "do not disturb",
+        "invisible" => "invisible",
+        _ => "online",
+    }
+}
+
+/// Whether this mode should silence a notification. One switch, and every
+/// place that would make a noise asks this rather than testing the string.
+pub fn presence_silences_alerts(mode: &str) -> bool {
+    normalize_presence(mode) == "dnd"
+}
+
 fn default_role() -> String {
     "member".into()
 }
@@ -144,6 +190,12 @@ pub struct ReactionEntry {
 pub struct UserStatus {
     pub user: User,
     pub online: bool,
+    /// How this person chose to appear: "online", "idle", "dnd" or
+    /// "invisible". Nobody but the person themselves ever receives
+    /// "invisible" — the server reports them offline instead, so a client
+    /// can render this field naively without leaking anyone.
+    #[serde(default = "default_presence")]
+    pub presence: String,
     #[serde(default)]
     pub banned: bool,
     /// Ids of custom tags assigned to this user.
@@ -408,6 +460,13 @@ pub struct EmailRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailVerifyRequest {
     pub code: String,
+}
+
+/// Body for POST /api/presence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetPresenceRequest {
+    /// One of PRESENCE_MODES; anything else is coerced to "online".
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -925,6 +984,10 @@ pub enum ServerEvent {
     MessagePinChanged { channel_id: i64, message_id: i64, pinned: bool },
     /// A user set or cleared their custom status text.
     StatusChanged { user_id: i64, status: Option<String> },
+    /// A user picked a different presence mode. Never carries "invisible" to
+    /// anybody but that user: everyone else gets PresenceChanged{online:false}
+    /// instead, so this can be applied without a second thought.
+    PresenceModeChanged { user_id: i64, mode: String },
     StickerCreated { sticker: Sticker },
     StickerDeleted { sticker_id: i64 },
     ChannelDeleted { channel_id: i64 },
@@ -966,6 +1029,7 @@ mod tests {
                 role: "member".into(),
             },
             online: true,
+            presence: "online".into(),
             banned: false,
             tag_ids: Vec::new(),
             status: None,
@@ -1078,6 +1142,7 @@ mod tests {
                     role: "member".into(),
                 },
                 online: true,
+                presence: "online".into(),
                 banned: *banned,
                 tag_ids: Vec::new(),
                 status: None,

@@ -1336,6 +1336,23 @@ fn MainView(session: api::Session) -> Element {
     let mut editing_bio = use_signal(|| false);
     let mut status_draft = use_signal(String::new);
     let mut editing_status = use_signal(|| false);
+    // Your own mode, derived from the roster so it is right no matter which
+    // of your clients last changed it.
+    let my_presence = use_memo(move || {
+        let me = session().user.id;
+        members()
+            .iter()
+            .find(|m| m.user.id == me)
+            .map(|m| m.presence.clone())
+            .unwrap_or_else(|| "online".to_string())
+    });
+    // When the person last did anything. Deliberately NOT a Signal: mouse
+    // movement would rerender the entire app several hundred times a minute
+    // for a value only the idle timer ever reads.
+    let last_active = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(now_ms())));
+    // True only while the idle was ours to set, so coming back never
+    // overwrites a mode the person chose on purpose.
+    let mut auto_idle = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
     let mut settings_tab = use_signal(|| "voice");
     let mut pw_current = use_signal(String::new);
@@ -1650,6 +1667,42 @@ fn MainView(session: api::Session) -> Element {
         }
     });
 
+    // Idle after a spell of nothing, back to online the moment anything
+    // happens. This only ever moves the mode when WE were the one who set it:
+    // somebody who deliberately picked dnd or invisible keeps it, however
+    // long they stare out of the window.
+    {
+        let last_active = last_active.clone();
+        use_future(move || {
+            let last_active = last_active.clone();
+            async move {
+                // Long enough that reading a long message doesn't grey you
+                // out; short enough that "online" stops meaning "left it open
+                // on Tuesday".
+                const IDLE_AFTER_MS: i64 = 6 * 60 * 1000;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                    let quiet_for = now_ms() - last_active.get();
+                    let mode = my_presence();
+                    if mode == "online" && quiet_for >= IDLE_AFTER_MS {
+                        if api::set_presence(&session(), "idle").await.is_ok() {
+                            auto_idle.set(true);
+                        }
+                    } else if *auto_idle.peek() && quiet_for < IDLE_AFTER_MS {
+                        if mode == "idle" {
+                            if api::set_presence(&session(), "online").await.is_ok() {
+                                auto_idle.set(false);
+                            }
+                        } else {
+                            // They picked something else in the meantime.
+                            auto_idle.set(false);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // Load the sticker collection.
     use_future(move || async move {
         if let Ok(list) = api::stickers(&session()).await {
@@ -1819,7 +1872,19 @@ fn MainView(session: api::Session) -> Element {
                                 // A muted channel makes no sound and raises no
                                 // toast, even for an @you — that is what muting
                                 // one is for. It still counts as unread.
-                                let mentioned = message.author.id != me.id
+                                // One switch, and both the sound and the toast
+                                // below ask it. The push half lives in the
+                                // server's push.rs, which is the only place
+                                // that can answer for a device that is asleep.
+                                let heads_down = shared::presence_silences_alerts(
+                                    &members()
+                                        .iter()
+                                        .find(|m| m.user.id == me.id)
+                                        .map(|m| m.presence.clone())
+                                        .unwrap_or_default(),
+                                );
+                                let mentioned = !heads_down
+                                    && message.author.id != me.id
                                     && !muted().contains(&message.channel_id)
                                     && (is_dm
                                         || content_lower.contains("@everyone")
@@ -1915,6 +1980,11 @@ fn MainView(session: api::Session) -> Element {
                                     messages.write().retain(|m| m.id != message_id);
                                 }
                             }
+                            ServerEvent::PresenceModeChanged { user_id, mode } => {
+                                if let Some(m) = members.write().iter_mut().find(|m| m.user.id == user_id) {
+                                    m.presence = mode;
+                                }
+                            }
                             ServerEvent::StatusChanged { user_id, status: new_status } => {
                                 if let Some(m) = members.write().iter_mut().find(|m| m.user.id == user_id) {
                                     m.status = new_status.clone();
@@ -1971,7 +2041,17 @@ fn MainView(session: api::Session) -> Element {
                                 match list.iter_mut().find(|m| m.user.id == user.id) {
                                     Some(entry) => entry.online = online,
                                     None => {
-                                        list.push(UserStatus { user, online, banned: false, tag_ids: Vec::new(), status: None });
+                                        // Somebody we had never seen: presence
+                                        // defaults to online because the event
+                                        // that carried them here says they are.
+                                        list.push(UserStatus {
+                                            user,
+                                            online,
+                                            presence: "online".to_string(),
+                                            banned: false,
+                                            tag_ids: Vec::new(),
+                                            status: None,
+                                        });
                                         list.sort_by(|a, b| a.user.username.to_lowercase().cmp(&b.user.username.to_lowercase()));
                                     }
                                 }
@@ -2319,6 +2399,18 @@ fn MainView(session: api::Session) -> Element {
     rsx! {
         div {
             class: "app",
+            onmousemove: {
+                let last_active = last_active.clone();
+                move |_| last_active.set(now_ms())
+            },
+            onkeydown: {
+                let last_active = last_active.clone();
+                move |_| last_active.set(now_ms())
+            },
+            onmousedown: {
+                let last_active = last_active.clone();
+                move |_| last_active.set(now_ms())
+            },
             ondragover: move |e| {
                 e.prevent_default();
                 drag_over.set(true);
@@ -4105,6 +4197,34 @@ fn MainView(session: api::Session) -> Element {
                         div { class: "profile-name",
                             style: "color: hsl({avatar_hue(profile.user.id)}, 65%, 68%)",
                             "{profile.user.username}"
+                        }
+                        if profile.user.id == session().user.id {
+                            // Your own card is where you already come to set a
+                            // status, so it is where the mode belongs too.
+                            div { class: "presence-picker",
+                                for mode in shared::PRESENCE_MODES {
+                                    button {
+                                        key: "pm-{mode}",
+                                        class: if my_presence() == mode { "presence-chip on" } else { "presence-chip" },
+                                        title: "{shared::presence_label(mode)}",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                if let Err(e) = api::set_presence(&session(), mode).await {
+                                                    status.set(e);
+                                                }
+                                            });
+                                        },
+                                        span { class: "member-dot {mode}" }
+                                        "{shared::presence_label(mode)}"
+                                    }
+                                }
+                            }
+                            if my_presence() == "dnd" {
+                                div { class: "edit-hint", "No sound, no toasts, no push while this is on." }
+                            }
+                            if my_presence() == "invisible" {
+                                div { class: "edit-hint", "You appear offline to everyone else. Messages still arrive." }
+                            }
                         }
                         div { class: "profile-badges",
                             if profile.user.role == "admin" {
@@ -6262,7 +6382,10 @@ fn MainView(session: api::Session) -> Element {
                                 div { class: "member-status", "{text}" }
                             }
                         }
-                        span { class: "member-dot" }
+                        {
+                            let shown = shared::effective_presence(member.online, &member.presence);
+                            rsx! { span { class: "member-dot {shown}", title: "{shared::presence_label(shown)}" } }
+                        }
                     }
                 }
                 }

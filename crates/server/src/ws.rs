@@ -9,6 +9,18 @@ use shared::{ClientEvent, Message, ServerEvent, User, VoiceStateEntry};
 use crate::auth::AuthUser;
 use crate::{dm_recipients, now_ms, SharedState};
 
+/// Is this person hiding? Read per connect/disconnect rather than cached:
+/// it changes rarely and being wrong means outing somebody.
+async fn presence_hidden(state: &SharedState, user_id: i64) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT COALESCE(presence_mode, 'online') FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|m| m == "invisible")
+}
+
 /// Broadcast to a DM's participants when `recipients` is Some, else to all.
 /// Fan a new message out to subscribed devices whose owner isn't connected.
 /// Runs detached: a slow push service must never hold up chat.
@@ -133,7 +145,12 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         *count == 1
     };
     if came_online {
-        state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: true });
+        // An invisible person connecting must not announce themselves. They
+        // still go in the presence map above — they need to receive messages
+        // — they are simply never mentioned to anybody else.
+        if !presence_hidden(&state, user.id).await {
+            state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: true });
+        }
     }
 
     // Tell the fresh connection who's already in voice — hiding DM calls
@@ -326,7 +343,11 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
         }
     };
     if went_offline {
-        state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: false });
+        // Symmetrically: nobody was told they arrived, so telling everyone
+        // they left would be a message about a person who was never there.
+        if !presence_hidden(&state, user.id).await {
+            state.broadcast(ServerEvent::PresenceChanged { user: user.clone(), online: false });
+        }
     }
     tracing::info!("ws disconnected: {}", user.username);
 }

@@ -1392,7 +1392,40 @@ ul.md-list { list-style-type: disc; }
     flex-shrink: 0;
 }
 .member.online { color: #dbdee1; }
-.member.online .member-dot { background: #23a55a; }
+/* One colour per presence. These three already exist elsewhere in this
+   sheet — the online green, the amber the failed-send row uses, and the red
+   of the unread badge — so presence introduces no new hues, it just reuses
+   the ones people here already read as go / wait / stop. */
+.member-dot.online { background: #23a55a; }
+.member-dot.idle { background: #f0b232; }
+.member-dot.dnd { background: #f23f43; }
+.member-dot.offline { background: #4e5058; }
+/* Yourself, hidden: hollow, because you are not showing up anywhere. */
+.member-dot.invisible { background: transparent; box-shadow: inset 0 0 0 2px #6d7079; }
+
+/* The picker on your own profile card. */
+.presence-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    width: 100%;
+    margin: 10px 0 4px;
+}
+.presence-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: #2b2d31;
+    color: #b5bac1;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+}
+.presence-chip:hover { background: #35373c; }
+.presence-chip.on { background: rgba(88, 101, 242, 0.18); border-color: #5865f2; color: #fff; }
 
 .pending-row {
     display: flex;

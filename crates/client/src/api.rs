@@ -274,6 +274,24 @@ pub async fn link_preview(session: &Session, url: &str) -> Option<shared::LinkPr
     Some(preview)
 }
 
+/// How you appear to everyone else: "online", "idle", "dnd" or "invisible".
+pub async fn set_presence(session: &Session, mode: &str) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/presence", session.base_url))
+        .bearer_auth(&session.token)
+        .json(&shared::SetPresenceRequest { mode: mode.to_owned() }))
+        .await?;
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        match resp.json::<ApiError>().await {
+            Ok(e) => Err(e.error),
+            Err(_) => Err(format!("request failed ({status})")),
+        }
+    }
+}
+
 pub async fn change_password(session: &Session, current: String, new: String) -> Result<(), String> {
     let resp = send_retry(http()
         .post(format!("{}/api/password", session.base_url))

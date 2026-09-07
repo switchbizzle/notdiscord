@@ -157,6 +157,12 @@ pub async fn set_status(session: &Session, text: &str) -> Result<(), String> {
     post_ok(session, "status", &body, "could not save your status").await
 }
 
+/// How you appear to everyone else: "online", "idle", "dnd" or "invisible".
+pub async fn set_presence(session: &Session, mode: &str) -> Result<(), String> {
+    let body = shared::SetPresenceRequest { mode: mode.to_owned() };
+    post_ok(session, "presence", &body, "could not change your presence").await
+}
+
 /// Avatar and bio. Fields left None keep their current value.
 pub async fn update_profile(
     session: &Session,
