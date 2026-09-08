@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.18",
+    "date": "2026-09-08",
+    "changes": [
+      "🔖 The phone shows you where you left off. Open a channel with unread messages and a NEW line sits above the first one you have not seen — and the view lands there, not at the newest message with forty unread somewhere above it. The desktop has drawn this line since v0.35.0; the phone was fetching the number it needs and throwing it away",
+      "📅 Day separators in the phone’s message list — Today, Yesterday, then the date — so scrolling back through a slow week no longer reads as one long afternoon. Same three words the desktop uses"
+    ]
+  },
+  {
     "version": "0.94.17",
     "date": "2026-09-08",
     "changes": [

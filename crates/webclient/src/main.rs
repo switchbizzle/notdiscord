@@ -267,6 +267,42 @@ fn scroll_to_message(message_id: i64) -> bool {
     true
 }
 
+/// (year, month, day) on the phone's own clock — the only calendar that
+/// means anything for "was this today".
+fn local_day(ms: i64) -> (u32, u32, u32) {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
+    (d.get_full_year(), d.get_month(), d.get_date())
+}
+
+fn different_day(a: i64, b: i64) -> bool {
+    local_day(a) != local_day(b)
+}
+
+/// "Today", "Yesterday", or the date. Same three words the desktop uses so
+/// the two apps read alike; the arithmetic is JS's rather than chrono's,
+/// which this crate doesn't carry.
+fn day_label(ms: i64) -> String {
+    let day = local_day(ms);
+    let now = js_sys::Date::new_0();
+    let today = (now.get_full_year(), now.get_month(), now.get_date());
+    // Day 0 is JS for "the last day of the previous month", so this stays
+    // right across a month end and a DST change alike.
+    let y = js_sys::Date::new_with_year_month_day(now.get_full_year(), now.get_month() as i32, now.get_date() as i32 - 1);
+    let yesterday = (y.get_full_year(), y.get_month(), y.get_date());
+    if day == today {
+        return "Today".into();
+    }
+    if day == yesterday {
+        return "Yesterday".into();
+    }
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
+    let opts = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&opts, &"month".into(), &"long".into());
+    let _ = js_sys::Reflect::set(&opts, &"day".into(), &"numeric".into());
+    let _ = js_sys::Reflect::set(&opts, &"year".into(), &"numeric".into());
+    d.to_locale_date_string("en-US", &opts).into()
+}
+
 fn format_time(ms: i64) -> String {
     let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
     let opts = js_sys::Object::new();
@@ -804,7 +840,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         });
     };
     // channel_id -> unread count, for the channel-list and tab badges.
-    let mut unread = use_signal(HashMap::<i64, i64>::new);
+    // channel_id -> (unread count, id of the newest message you had read).
+    // Every channel is kept, not just the noisy ones: the second number is
+    // what draws the NEW divider, and it has to be known for a channel you
+    // are about to open even when its count is zero right now.
+    let mut unread = use_signal(HashMap::<i64, (i64, i64)>::new);
+    // The last-read id snapshotted the moment a channel opens — before the
+    // open marks everything read and would erase it. None means no divider.
+    let mut divider_at = use_signal(|| None::<i64>);
     // The message being replied to, shared with MessageRow via context.
     let replying = use_context_provider(|| Signal::new(None::<Message>));
     let mut replying = replying;
@@ -873,7 +916,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
 
     let mut open_channel = move |channel: Channel| {
         let id = channel.id;
-        unread.write().remove(&id);
+        // Where you left off, taken now: the load below marks the channel
+        // read, and after that the server no longer remembers.
+        let previous = unread.peek().get(&id).copied();
+        divider_at.set(previous.filter(|(count, _)| *count > 0).map(|(_, last_read)| last_read));
+        // The badge clears at once; the last-read id is carried forward
+        // until the load can replace it with something newer.
+        unread.write().insert(id, (0, previous.map(|(_, last_read)| last_read).unwrap_or(0)));
         // Park what's in the composer under the channel we're leaving, then
         // put back whatever this one was holding. Taken out of the map rather
         // than copied: the live signals are the open channel's draft.
@@ -903,12 +952,31 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             match api::messages(&sess(), id, None).await {
                 Ok(msgs) => {
                     has_more.set(msgs.len() == api::HISTORY_PAGE);
+                    // The first message after the divider, worked out before
+                    // the list is handed over and the ids move with it.
+                    let first_unread = divider_at
+                        .peek()
+                        .and_then(|last_read| msgs.iter().map(|m| m.id).filter(|i| *i > last_read).min());
                     if let Some(newest) = msgs.last().map(|m| m.id) {
                         api::mark_read(&sess(), id, newest).await;
+                        unread.write().insert(id, (0, newest));
                     }
                     messages.set(msgs);
                     if let Some(target) = pending_jump.write().take() {
                         jump_to_message(id, target);
+                    } else if let Some(first) = first_unread {
+                        // Land on where you left off, not on the newest
+                        // message with forty unread somewhere above it. The
+                        // row may still be rendering; same patience as a
+                        // permalink jump, then give up quietly.
+                        spawn(async move {
+                            for _ in 0..20 {
+                                if scroll_to_message(first) {
+                                    return;
+                                }
+                                gloo_timers::future::TimeoutFuture::new(100).await;
+                            }
+                        });
                     }
                 }
                 Err(e) => status.set(e),
@@ -934,7 +1002,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 members.set(list);
             }
             if let Ok(list) = api::unread(&sess()).await {
-                unread.set(list.into_iter().filter(|u| u.count > 0).map(|u| (u.channel_id, u.count)).collect());
+                unread.set(list.into_iter().map(|u| (u.channel_id, (u.count, u.last_read_id))).collect());
             }
             if let Ok(list) = api::emojis(&sess()).await {
                 emojis.set(list);
@@ -1116,9 +1184,16 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 if selected.peek().as_ref().map(|c| c.id) == Some(message.channel_id) {
                                     let (id, chan) = (message.id, message.channel_id);
                                     messages.write().push(message);
+                                    // Read the moment it lands, and remembered
+                                    // as read, so leaving and coming back
+                                    // doesn't draw a divider above it.
+                                    unread.write().insert(chan, (0, id));
                                     spawn(async move { api::mark_read(&sess(), chan, id).await });
                                 } else if message.author.id != me_id {
-                                    *unread.write().entry(message.channel_id).or_insert(0) += 1;
+                                    // A channel never seen before starts from
+                                    // 0: everything in it is new, which is
+                                    // the truth.
+                                    unread.write().entry(message.channel_id).or_insert((0, 0)).0 += 1;
                                 }
                             }
                             ServerEvent::ReactionAdded { channel_id, message_id, emoji, user_id } => {
@@ -1489,7 +1564,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // the macro so the four tabs stay readable.
     let over = overlay();
     let in_call = voice_conn().is_some();
-    let total_unread: i64 = unread().values().sum();
+    let total_unread: i64 = unread().values().map(|(count, _)| *count).sum();
     let online_now = members().iter().filter(|m| m.online).count();
     // DMs newest-first: the conversation you're actually having belongs at
     // the top, which is what `last_at` is for.
@@ -1630,18 +1705,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         // unread, or the channel you're in,
                                         // stays put.
                                         for channel in in_group.into_iter().filter(|c| {
-                                            !shut || unread().contains_key(&c.id) || selected_id == Some(c.id)
+                                            !shut || unread().get(&c.id).is_some_and(|(n, _)| *n > 0) || selected_id == Some(c.id)
                                         }) {
                                             button {
                                                 key: "{channel.id}",
-                                                class: if unread().contains_key(&channel.id) { "chan-row unread" } else { "chan-row" },
+                                                class: if unread().get(&channel.id).is_some_and(|(n, _)| *n > 0) { "chan-row unread" } else { "chan-row" },
                                                 onclick: {
                                                     let channel = channel.clone();
                                                     move |_| open_channel(channel.clone())
                                                 },
                                                 span { class: "chan-hash", "#" }
                                                 span { class: "chan-name ellipsis", "{channel.name}" }
-                                                if let Some(n) = unread().get(&channel.id).copied() {
+                                                if let Some(n) = unread().get(&channel.id).map(|(n, _)| *n).filter(|n| *n > 0) {
                                                     span { class: "badge", "{n}" }
                                                 }
                                             }
@@ -1670,7 +1745,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     // the row is never blank, which it was for
                                     // anyone who'd never set a status.
                                     let sub = presence_line(online, &mode, roster.and_then(|m| m.status));
-                                    let unread_here = unread().get(&channel.id).copied();
+                                    let unread_here = unread().get(&channel.id).map(|(n, _)| *n).filter(|n| *n > 0);
                                     let for_open = channel.clone();
                                     rsx! {
                                         button {
@@ -2201,24 +2276,52 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         }
 
                         main { class: "messages",
-                            // Grouped in reading order, then reversed:
-                            // column-reverse pins the view to the newest.
-                            for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                                {
-                                let msg_id = msg.id;
+                            {
+                                // The first message after where you left off,
+                                // and the messages that open a new day. Both
+                                // are worked out once per render, not per row.
+                                let first_unread = divider_at().and_then(|last_read| {
+                                    messages().iter().map(|m| m.id).filter(|id| *id > last_read).min()
+                                });
+                                let day_starts: std::collections::HashSet<i64> = {
+                                    let list = messages();
+                                    list.iter()
+                                        .enumerate()
+                                        .filter(|(i, m)| *i == 0 || different_day(list[i - 1].created_at, m.created_at))
+                                        .map(|(_, m)| m.id)
+                                        .collect()
+                                };
                                 rsx! {
-                                div {
-                                    key: "{msg_id}",
-                                    class: if highlight() == Some(msg_id) { "hit-wrap" } else { "" },
-                                    MessageRow {
-                                        failed: failed_sends().contains(&msg.id),
-                                        msg,
-                                        compact,
-                                        me_id,
-                                        me_admin,
+                                    // Grouped in reading order, then reversed:
+                                    // column-reverse pins the view to the newest.
+                                    // A divider is emitted AFTER its row, which
+                                    // in this flipped list puts it above.
+                                    for (msg, compact) in group_messages(&messages()).into_iter().rev() {
+                                        {
+                                        let msg_id = msg.id;
+                                        let divider_here = Some(msg_id) == first_unread;
+                                        let day_here = day_starts.contains(&msg_id).then(|| day_label(msg.created_at));
+                                        rsx! {
+                                        div {
+                                            key: "{msg_id}",
+                                            class: if highlight() == Some(msg_id) { "hit-wrap" } else { "" },
+                                            MessageRow {
+                                                failed: failed_sends().contains(&msg.id),
+                                                msg,
+                                                compact,
+                                                me_id,
+                                                me_admin,
+                                            }
+                                        }
+                                        if divider_here {
+                                            div { class: "new-divider", span { class: "new-pill", "NEW" } }
+                                        }
+                                        if let Some(label) = day_here {
+                                            div { class: "day-divider", span { class: "day-pill", "{label}" } }
+                                        }
+                                        }
+                                        }
                                     }
-                                }
-                                }
                                 }
                             }
                             if has_more() {

@@ -401,6 +401,22 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .msg-video { max-width: 100%; max-height: 300px; border-radius: var(--r-md); margin-top: 3px; }
 .msg-file { color: var(--accent-300); text-decoration: none; font-size: 14px; display: inline-flex; align-items: center; gap: 5px; }
 .msg-failed-row { font-size: 11px; color: var(--accent-400); margin-top: 2px; }
+/* Where you left off. The one place the palette's attention hue is used on
+ * a line rather than a dot: it has to be findable at a glance from the
+ * bottom of a long catch-up, and blurple would vanish into the accent. */
+.new-divider { display: flex; align-items: center; gap: 8px; margin: 8px 4px 2px; }
+.new-divider::before, .new-divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--dnd); opacity: 0.6;
+}
+.new-pill { color: var(--dnd); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; }
+
+/* Day separators: quieter than the NEW line, since there are many of them. */
+.day-divider { display: flex; align-items: center; gap: 10px; margin: 14px 4px 4px; }
+.day-divider::before, .day-divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--n-800);
+}
+.day-pill { color: var(--n-600); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; white-space: nowrap; }
+
 .load-older {
     align-self: center; color: var(--n-500); font-size: 13px;
     padding: 8px 14px; background: var(--n-900); border-radius: 14px; margin: 6px 0;
