@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.25",
+    "date": "2026-09-08",
+    "changes": [
+      "🎯 The phone tells @you apart from chatter. An unread badge is a quiet grey count now; when somebody said your name, wrote @everyone, or messaged you directly, that channel’s badge — and the Chats tab’s — turn the accent colour instead. The server has always sent the number that makes this possible; the phone was throwing it away",
+      "A channel you have read is never a “mention”, whatever the server says about it — which matters, because it currently says every DM is one even after you have read it"
+    ]
+  },
+  {
     "version": "0.94.24",
     "date": "2026-09-08",
     "changes": [

@@ -194,13 +194,17 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 }
 .tabbtn.on .tabpill { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .tablabel { font-size: 11px; font-weight: 500; }
+/* Two kinds of unread. Chatter is a quiet grey count; a mention — your
+ * name, @everyone, or any DM — is the accent, so the one number worth
+ * turning the phone over for is the one that looks different. */
 .tabbadge {
     position: absolute; top: 2px; right: 12px;
     min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-    background: var(--accent); color: var(--accent-900);
+    background: var(--n-600); color: var(--bg);
     font-size: 10px; font-weight: 600;
     display: flex; align-items: center; justify-content: center;
 }
+.tabbadge.mention { background: var(--accent); color: var(--accent-900); }
 
 /* ---------- chats tab ---------- */
 .chan-row {
@@ -243,10 +247,11 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 
 .badge {
     flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 6px;
-    border-radius: 10px; background: var(--accent-800); color: var(--accent-200);
+    border-radius: 10px; background: var(--n-800); color: var(--n-300);
     font-size: 11px; font-weight: 600;
     display: flex; align-items: center; justify-content: center;
 }
+.badge.mention { background: var(--accent-800); color: var(--accent-200); }
 .group-btn {
     display: flex; align-items: center; gap: 8px; width: 100%;
     text-align: left; font: inherit; letter-spacing: inherit;

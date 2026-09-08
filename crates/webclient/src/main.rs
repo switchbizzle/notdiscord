@@ -899,7 +899,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // Every channel is kept, not just the noisy ones: the second number is
     // what draws the NEW divider, and it has to be known for a channel you
     // are about to open even when its count is zero right now.
-    let mut unread = use_signal(HashMap::<i64, (i64, i64)>::new);
+    // channel_id -> (unread count, how many of those ping you, newest id
+    // you had read). The middle number is what tells "someone said my
+    // name" apart from "people were talking" — the server has always sent
+    // it, and until now the phone threw it away.
+    let mut unread = use_signal(HashMap::<i64, (i64, i64, i64)>::new);
     // The last-read id snapshotted the moment a channel opens — before the
     // open marks everything read and would erase it. None means no divider.
     let mut divider_at = use_signal(|| None::<i64>);
@@ -974,10 +978,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         // Where you left off, taken now: the load below marks the channel
         // read, and after that the server no longer remembers.
         let previous = unread.peek().get(&id).copied();
-        divider_at.set(previous.filter(|(count, _)| *count > 0).map(|(_, last_read)| last_read));
+        divider_at.set(previous.filter(|(count, _, _)| *count > 0).map(|(_, _, last_read)| last_read));
         // The badge clears at once; the last-read id is carried forward
         // until the load can replace it with something newer.
-        unread.write().insert(id, (0, previous.map(|(_, last_read)| last_read).unwrap_or(0)));
+        unread.write().insert(id, (0, 0, previous.map(|(_, _, last_read)| last_read).unwrap_or(0)));
         // Park what's in the composer under the channel we're leaving, then
         // put back whatever this one was holding. Taken out of the map rather
         // than copied: the live signals are the open channel's draft.
@@ -1014,7 +1018,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         .and_then(|last_read| msgs.iter().map(|m| m.id).filter(|i| *i > last_read).min());
                     if let Some(newest) = msgs.last().map(|m| m.id) {
                         api::mark_read(&sess(), id, newest).await;
-                        unread.write().insert(id, (0, newest));
+                        unread.write().insert(id, (0, 0, newest));
                     }
                     messages.set(msgs);
                     if let Some(target) = pending_jump.write().take() {
@@ -1057,7 +1061,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 members.set(list);
             }
             if let Ok(list) = api::unread(&sess()).await {
-                unread.set(list.into_iter().map(|u| (u.channel_id, (u.count, u.last_read_id))).collect());
+                unread.set(list.into_iter().map(|u| (u.channel_id, (u.count, u.mentions, u.last_read_id))).collect());
             }
             if let Ok(list) = api::emojis(&sess()).await {
                 emojis.set(list);
@@ -1130,7 +1134,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         has_more.set(msgs.len() == api::HISTORY_PAGE);
                         if let Some(newest) = msgs.last().map(|m| m.id) {
                             api::mark_read(&sess(), channel.id, newest).await;
-                            unread.write().insert(channel.id, (0, newest));
+                            unread.write().insert(channel.id, (0, 0, newest));
                         }
                         messages.set(msgs);
                     }
@@ -1138,7 +1142,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
             // Then the badges and who's around, which drift the same way.
             if let Ok(list) = api::unread(&sess()).await {
-                unread.set(list.into_iter().map(|u| (u.channel_id, (u.count, u.last_read_id))).collect());
+                unread.set(list.into_iter().map(|u| (u.channel_id, (u.count, u.mentions, u.last_read_id))).collect());
             }
             if let Ok(list) = api::users(&sess()).await {
                 members.set(list);
@@ -1326,13 +1330,26 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     // Read the moment it lands, and remembered
                                     // as read, so leaving and coming back
                                     // doesn't draw a divider above it.
-                                    unread.write().insert(chan, (0, id));
+                                    unread.write().insert(chan, (0, 0, id));
                                     spawn(async move { api::mark_read(&sess(), chan, id).await });
                                 } else if message.author.id != me_id {
+                                    // Does this one ping me? The same rule the
+                                    // desktop and the server's push use: any
+                                    // DM, @everyone, or my name.
+                                    let is_dm = channels.peek().iter().any(|c| c.id == message.channel_id && c.kind == "dm");
+                                    let lower = message.content.to_lowercase();
+                                    let pings_me = is_dm
+                                        || lower.contains("@everyone")
+                                        || lower.contains(&format!("@{}", sess().user.username.to_lowercase()));
                                     // A channel never seen before starts from
                                     // 0: everything in it is new, which is
                                     // the truth.
-                                    unread.write().entry(message.channel_id).or_insert((0, 0)).0 += 1;
+                                    let mut map = unread.write();
+                                    let entry = map.entry(message.channel_id).or_insert((0, 0, 0));
+                                    entry.0 += 1;
+                                    if pings_me {
+                                        entry.1 += 1;
+                                    }
                                 }
                             }
                             ServerEvent::ReactionAdded { channel_id, message_id, emoji, user_id } => {
@@ -1753,7 +1770,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // the macro so the four tabs stay readable.
     let over = overlay();
     let in_call = voice_conn().is_some();
-    let total_unread: i64 = unread().values().map(|(count, _)| *count).sum();
+    let total_unread: i64 = unread().values().map(|(count, _, _)| *count).sum();
+    // Whether any of it is aimed at me: the tab badge changes colour on this.
+    // Gated on there being something unread at all — the server reports a
+    // DM as "mentions: 1" whether or not you have read it, so on its own
+    // that number would keep the tab lit after every DM was read.
+    let any_mention = unread().values().any(|(count, mentions, _)| *count > 0 && *mentions > 0);
     let online_now = members().iter().filter(|m| m.online).count();
     // DMs newest-first: the conversation you're actually having belongs at
     // the top, which is what `last_at` is for.
@@ -1899,19 +1921,19 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         // unread, or the channel you're in,
                                         // stays put.
                                         for channel in in_group.into_iter().filter(|c| {
-                                            !shut || unread().get(&c.id).is_some_and(|(n, _)| *n > 0) || selected_id == Some(c.id)
+                                            !shut || unread().get(&c.id).is_some_and(|(n, _, _)| *n > 0) || selected_id == Some(c.id)
                                         }) {
                                             button {
                                                 key: "{channel.id}",
-                                                class: if unread().get(&channel.id).is_some_and(|(n, _)| *n > 0) { "chan-row unread" } else { "chan-row" },
+                                                class: if unread().get(&channel.id).is_some_and(|(n, _, _)| *n > 0) { "chan-row unread" } else { "chan-row" },
                                                 onclick: {
                                                     let channel = channel.clone();
                                                     move |_| open_channel(channel.clone())
                                                 },
                                                 span { class: "chan-hash", "#" }
                                                 span { class: "chan-name ellipsis", "{channel.name}" }
-                                                if let Some(n) = unread().get(&channel.id).map(|(n, _)| *n).filter(|n| *n > 0) {
-                                                    span { class: "badge", "{n}" }
+                                                if let Some((n, m)) = unread().get(&channel.id).map(|(n, m, _)| (*n, *m)).filter(|(n, _)| *n > 0) {
+                                                    span { class: if m > 0 { "badge mention" } else { "badge" }, "{n}" }
                                                 }
                                             }
                                         }
@@ -1939,7 +1961,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     // the row is never blank, which it was for
                                     // anyone who'd never set a status.
                                     let sub = presence_line(online, &mode, roster.and_then(|m| m.status));
-                                    let unread_here = unread().get(&channel.id).map(|(n, _)| *n).filter(|n| *n > 0);
+                                    let unread_here = unread().get(&channel.id).map(|(n, m, _)| (*n, *m)).filter(|(n, _)| *n > 0);
                                     let for_open = channel.clone();
                                     rsx! {
                                         button {
@@ -1962,8 +1984,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 span { class: "dm-name", "{peer_name}" }
                                                 span { class: "dm-sub ellipsis", "{sub}" }
                                             }
-                                            if let Some(n) = unread_here {
-                                                span { class: "badge", "{n}" }
+                                            if let Some((n, m)) = unread_here {
+                                                span { class: if m > 0 { "badge mention" } else { "badge" }, "{n}" }
                                             }
                                         }
                                     }
@@ -3198,7 +3220,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         span { class: "tabpill",
                             Icon { name: "message", size: 20 }
                             if total_unread > 0 {
-                                span { class: "tabbadge", "{total_unread}" }
+                                span { class: if any_mention { "tabbadge mention" } else { "tabbadge" }, "{total_unread}" }
                             }
                         }
                         span { class: "tablabel", "Chats" }
