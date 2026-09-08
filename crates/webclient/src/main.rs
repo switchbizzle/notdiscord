@@ -153,6 +153,8 @@ const TYPING_SEND_INTERVAL_MS: i64 = 2500;
 /// Collapsed category ids, per device.
 /// The composer input, so a mention tap can hand focus back to it.
 const COMPOSER_ID: &str = "nd-composer";
+/// Five lines of 14.5px at 1.35 plus the padding; past this it scrolls.
+const COMPOSER_MAX_PX: i32 = 132;
 const COLLAPSED_KEY: &str = "notdiscord_collapsed";
 const SESSION_KEY: &str = "nd_session";
 
@@ -205,6 +207,24 @@ fn presence_dot(online: bool, mode: &str) -> String {
 /// the button it was on, which on a phone closes the keyboard — and having to
 /// tap the field again after every mention would be worse than typing the
 /// name out. Best-effort: if the element has gone, the person just taps.
+/// Fit the composer to its text, up to five lines, after which it scrolls.
+/// Measured by resetting the height and reading scrollHeight, which is the
+/// only way that is right for wrapped lines too. Via an attribute rather
+/// than the style object, which would cost a web-sys feature for one line.
+fn autosize_composer() {
+    let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(COMPOSER_ID))
+    else {
+        return;
+    };
+    let _ = el.set_attribute("style", "height: auto");
+    // +2 for the borders, which scrollHeight does not include and
+    // border-box height does.
+    let wanted = (el.scroll_height() + 2).min(COMPOSER_MAX_PX);
+    let _ = el.set_attribute("style", &format!("height: {wanted}px"));
+}
+
 fn focus_composer() {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -1554,6 +1574,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         });
     };
 
+    // The box follows the draft wherever it changes — typing, the send
+    // clearing it, a mention completing, a channel switch putting one back.
+    // Runs after the render, so the element already holds the new text.
+    use_effect(move || {
+        let _ = draft();
+        autosize_composer();
+    });
+
     let mut send = move |_| {
         let content = draft().trim().to_owned();
         let Some(channel) = selected() else { return };
@@ -2619,9 +2647,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 onclick: move |_| sheet.set(Some("attach")),
                                 if uploading() { "…" } else { Icon { name: "plus", size: 18 } }
                             }
-                            input {
+                            // A textarea, so a message can have more than one
+                            // line. Return makes a newline, the way every phone
+                            // chat app works; the arrow sends, and so does
+                            // Ctrl/Cmd+Return for anyone on a real keyboard.
+                            textarea {
                                 id: COMPOSER_ID,
                                 class: "draft",
+                                rows: "1",
                                 placeholder: if chan_is_dm { "message {chan_title}" } else { "message {chan_title}" },
                                 value: "{draft}",
                                 oninput: move |e| {
@@ -2638,7 +2671,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     }
                                 },
                                 onkeydown: move |e| {
-                                    if e.key() == Key::Enter {
+                                    let mods = e.modifiers();
+                                    if e.key() == Key::Enter
+                                        && (mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META))
+                                    {
+                                        e.prevent_default();
                                         send(());
                                     }
                                 },

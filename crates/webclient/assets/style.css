@@ -532,9 +532,13 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .cbtn.plain { border-color: transparent; color: var(--n-500); }
 .cbtn:active { background: var(--n-900); }
 .cbtn input[type="file"] { display: none; }
+/* Grows with what you type, to five lines, then scrolls. display:block
+ * drops the baseline gap a textarea otherwise adds under itself; the height
+ * itself is set from script (autosize_composer). */
 .draft {
-    flex: 1; min-width: 0; background: var(--n-900); border: 1px solid var(--n-800);
-    border-radius: 19px; padding: 10px 14px; font-size: 14.5px;
+    flex: 1; min-width: 0; display: block; background: var(--n-900); border: 1px solid var(--n-800);
+    border-radius: 19px; padding: 10px 14px; font-size: 14.5px; line-height: 1.35;
+    resize: none; overflow-y: auto; max-height: 132px;
 }
 /* Dead until there is something to send: the button says so rather than
  * looking armed and doing nothing. */

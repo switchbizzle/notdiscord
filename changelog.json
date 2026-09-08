@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.94.24",
+    "date": "2026-09-08",
+    "changes": [
+      "⏎ Messages can have more than one line on the phone. Return makes a new line, the way every phone chat app works, and the box grows with what you type up to five lines before it scrolls. The arrow sends — and so does Ctrl+Return or Cmd+Return for anyone typing on a real keyboard. Until now the composer was a single-line field where Return sent, so a newline was not something you could type at all"
+    ]
+  },
+  {
     "version": "0.94.23",
     "date": "2026-09-08",
     "changes": [
