@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.94.17",
+    "date": "2026-09-08",
+    "changes": [
+      "🔗 Fixed: tapping a link in a message on the phone opened it AND popped the message actions sheet underneath, so you came back from the link to a sheet you never asked for. The message body is a button (that is how tap-for-actions works) and a tapped link is supposed to stop the tap there; it did for links to this server and not for links to anywhere else"
+    ]
+  },
+  {
     "version": "0.94.16",
     "date": "2026-09-04",
     "changes": [

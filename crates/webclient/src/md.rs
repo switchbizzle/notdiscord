@@ -163,12 +163,14 @@ fn MdOne(node: MdNode) -> Element {
                 target: "_blank",
                 rel: "noopener",
                 onclick: move |e: MouseEvent| {
+                    // The whole message body is a button that opens the
+                    // actions sheet, and a tapped link must never reach it —
+                    // EVERY link, not only the in-app kind. An external one
+                    // opened its tab and then left the sheet sitting under
+                    // it for you to find on coming back.
+                    e.stop_propagation();
                     if follow_in_app(&url) {
                         e.prevent_default();
-                        // The whole message body is a button that opens the
-                        // actions sheet; without this a followed link jumps
-                        // and then buries the message under that sheet.
-                        e.stop_propagation();
                     }
                 },
                 Md { nodes: children }
@@ -271,9 +273,10 @@ fn RichText(text: String) -> Element {
                     onclick: {
                         let url = s.clone();
                         move |e: MouseEvent| {
+                            // Same rule as MdNode::Link above.
+                            e.stop_propagation();
                             if follow_in_app(&url) {
                                 e.prevent_default();
-                                e.stop_propagation();
                             }
                         }
                     },
