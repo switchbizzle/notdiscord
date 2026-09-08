@@ -780,7 +780,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     use_context_provider(|| Gallery(gallery));
     let mut has_more = use_signal(|| false);
     let mut draft = use_signal(String::new);
+    // One-off messages — an error, "voice disconnected" — shown as a toast
+    // that dismisses itself. Connection state is NOT this: see `offline`.
     let mut status = use_signal(String::new);
+    // True from the moment the socket drops until it is back. Drawn as a
+    // small pill, not a bar across the title.
+    let mut offline = use_signal(|| false);
     let mut uploading = use_signal(|| false);
     // Which of the four tabs is showing.
     let mut tab = use_signal(|| "chats");
@@ -1091,6 +1096,74 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         }
     });
 
+    // Everything that could have changed while we weren't listening. Called
+    // when the socket comes back and when the app comes back to the
+    // foreground — on a phone those are the same moment more often than
+    // not, and either alone would leave the open channel showing what it
+    // showed when you switched away.
+    let resync = move || {
+        spawn(async move {
+            // The channel you are looking at, first.
+            if *overlay.peek() == Some("channel") {
+                if let Some(channel) = selected.peek().clone() {
+                    if let Ok(msgs) = api::messages(&sess(), channel.id, None).await {
+                        has_more.set(msgs.len() == api::HISTORY_PAGE);
+                        if let Some(newest) = msgs.last().map(|m| m.id) {
+                            api::mark_read(&sess(), channel.id, newest).await;
+                            unread.write().insert(channel.id, (0, newest));
+                        }
+                        messages.set(msgs);
+                    }
+                }
+            }
+            // Then the badges and who's around, which drift the same way.
+            if let Ok(list) = api::unread(&sess()).await {
+                unread.set(list.into_iter().map(|u| (u.channel_id, (u.count, u.last_read_id))).collect());
+            }
+            if let Ok(list) = api::users(&sess()).await {
+                members.set(list);
+            }
+        });
+    };
+
+    // Back to the foreground. The socket usually died while we were away
+    // and its reconnect resyncs; this covers the times it didn't die and
+    // simply missed things, and it is cheap. Polled, like everything else
+    // here, rather than a Closure wired into addEventListener.
+    use_future(move || async move {
+        let mut was_hidden = false;
+        loop {
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            let hidden = web_sys::window()
+                .and_then(|w| w.document())
+                .map(|d| d.hidden())
+                .unwrap_or(false);
+            if was_hidden && !hidden {
+                resync();
+            }
+            was_hidden = hidden;
+        }
+    });
+
+    // A toast that has sat unchanged for four seconds has been read. This
+    // is one loop rather than a timer at each of the twenty places that set
+    // one, and a message that changes restarts the clock.
+    use_future(move || async move {
+        let mut seen: (String, i64) = (String::new(), 0);
+        loop {
+            gloo_timers::future::TimeoutFuture::new(500).await;
+            let current = status.peek().clone();
+            if current.is_empty() {
+                continue;
+            }
+            if current != seen.0 {
+                seen = (current, now_ms());
+            } else if now_ms() - seen.1 >= 4000 {
+                status.set(String::new());
+            }
+        }
+    });
+
     // Nobody sends a "stopped typing" event, so indicators expire on a timer.
     use_future(move || async move {
         loop {
@@ -1142,7 +1215,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 gloo_timers::future::TimeoutFuture::new(3000).await;
                 continue;
             };
-            status.set(String::new());
+            // open() returning Ok means the handshake has STARTED, nothing
+            // more — a dead server takes seconds to say no, and clearing the
+            // pill here left it off for most of every retry. It clears when
+            // the first frame arrives, below.
             let (mut sink, stream) = socket.split();
             // A reconnect wiped our server-side voice presence (it's
             // connection-scoped) — re-announce if we're still in a call.
@@ -1190,6 +1266,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         let Ok(event) = serde_json::from_str::<ServerEvent>(&text) else {
                             continue;
                         };
+                        // A frame from the server is the proof the socket is
+                        // real. If we had been offline, this is the moment
+                        // the pill goes and the catch-up starts; the first
+                        // connect was never offline, so it does neither.
+                        if *offline.peek() {
+                            offline.set(false);
+                            resync();
+                        }
                         match event {
                             ServerEvent::MessageCreated { message } => {
                                 typing.write().remove(&message.author.id);
@@ -1213,6 +1297,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 }
                                 if selected.peek().as_ref().map(|c| c.id) == Some(message.channel_id) {
                                     let (id, chan) = (message.id, message.channel_id);
+                                    // A resync can fetch a message whose echo
+                                    // is still on its way; one copy is plenty.
+                                    if messages.peek().iter().any(|m| m.id == id) {
+                                        continue;
+                                    }
                                     messages.write().push(message);
                                     // Read the moment it lands, and remembered
                                     // as read, so leaving and coming back
@@ -1375,7 +1464,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
             }
             // Dropped: reconnect after a beat.
-            status.set("reconnecting…".into());
+            offline.set(true);
             gloo_timers::future::TimeoutFuture::new(2000).await;
         }
     });
@@ -1700,10 +1789,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
 
     rsx! {
         div { class: "app",
-            // Floats over everything: an error that claimed a row would be
-            // hidden by the first overlay that opened on top of it.
+            // Connection state is a small pill near the top that covers
+            // nothing; a one-off message is a toast at the bottom that goes
+            // away by itself. Both float over everything, or the first
+            // overlay to open would hide them.
+            if offline() {
+                div { class: "conn-pill", "reconnecting…" }
+            }
             if !status().is_empty() {
-                div { class: "statusbar", onclick: move |_| status.set(String::new()), "{status}" }
+                div { class: "toast", onclick: move |_| status.set(String::new()), "{status}" }
             }
 
             div { class: "app-body",

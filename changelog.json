@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.23",
+    "date": "2026-09-08",
+    "changes": [
+      "🔄 The phone catches up when you come back. Switching apps kills the connection, and until now the channel you returned to showed exactly what it showed when you left — anything that arrived in between only appeared after backing out and reopening. Now the moment the connection is back, or the app comes to the front, the open channel, the unread counts and who’s online all refresh",
+      "“Reconnecting…” is a small pill near the top instead of a bar across the title, and it stays put until the server has actually answered rather than blinking off every time a retry begins",
+      "🍞 One-off messages — an error, “voice disconnected” — are a toast at the bottom that leaves on its own after a few seconds. They used to be the same bar across the top, and it stayed until you tapped it"
+    ]
+  },
+  {
     "version": "0.94.22",
     "date": "2026-09-08",
     "changes": [
