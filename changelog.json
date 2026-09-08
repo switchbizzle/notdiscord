@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.21",
+    "date": "2026-09-08",
+    "changes": [
+      "🔑 Change your password from the phone. Settings has a Password section now — current, new, confirm — with the same rules the server applies checked as you type, so a weak one is caught before you tap Save rather than after. It was the last thing that still needed a desktop",
+      "Changing it signs out every other device you are logged in on, by design; the one you changed it from stays signed in. The screen says so, before and after"
+    ]
+  },
+  {
     "version": "0.94.20",
     "date": "2026-09-08",
     "changes": [

@@ -148,6 +148,14 @@ pub async fn search(session: &Session, query: &str) -> Result<Vec<shared::Search
     get(session, &format!("search?q={q}")).await
 }
 
+/// Change your password. The server keeps THIS session and signs out every
+/// other device, so the caller stays logged in; the message it returns on a
+/// wrong current password or a weak new one is worth showing verbatim.
+pub async fn change_password(session: &Session, current: String, new: String) -> Result<(), String> {
+    let body = shared::ChangePasswordRequest { current, new };
+    post_ok(session, "password", &body, "could not change your password").await
+}
+
 /// Your own profile — the "You" tab reads the tags off this to show the
 /// colour your name is drawn in.
 pub async fn my_profile(session: &Session, user_id: i64) -> Result<shared::Profile, String> {

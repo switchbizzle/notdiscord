@@ -563,6 +563,10 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .row-hint { font-size: 11.5px; color: var(--n-600); }
 .note { font-size: 11.5px; color: var(--n-600); margin-top: 12px; line-height: 1.5; }
 .note.good { color: var(--accent-300); }
+.note.bad { color: var(--dnd); }
+/* The password fields are disabled-looking until they're ready, and a
+ * disabled primary button must read as "not yet", not as broken. */
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .logout-btn {
     margin: 22px 0 6px; width: 100%; border: 1px solid var(--n-800);
     border-radius: var(--r-md); padding: 12px; color: var(--n-400); font-size: 13.5px;

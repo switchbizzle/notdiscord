@@ -811,6 +811,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut my_tags = use_signal(Vec::<shared::Tag>::new);
     // The music tab queues through its own field rather than the composer.
     let mut music_link = use_signal(String::new);
+    // Password change, in Settings.
+    let mut pw_current = use_signal(String::new);
+    let mut pw_new = use_signal(String::new);
+    let mut pw_confirm = use_signal(String::new);
+    // (text, is_good) — one line under the button for either outcome.
+    let mut pw_message = use_signal(|| (String::new(), false));
     // The GIF sheet.
     let mut gif_query = use_signal(String::new);
     let mut gif_results = use_signal(Vec::<shared::GifResult>::new);
@@ -2227,6 +2233,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     class: "btn btn-quiet",
                                     onclick: move |_| {
                                         notify_msg.set(String::new());
+                                        // A password half-typed and abandoned
+                                        // must not still be sitting there next
+                                        // time — this is a phone.
+                                        pw_current.set(String::new());
+                                        pw_new.set(String::new());
+                                        pw_confirm.set(String::new());
+                                        pw_message.set((String::new(), false));
                                         overlay.set(Some("settings"));
                                         load_notify();
                                     },
@@ -2240,6 +2253,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     class: "row-card",
                                     onclick: move |_| {
                                         notify_msg.set(String::new());
+                                        // A password half-typed and abandoned
+                                        // must not still be sitting there next
+                                        // time — this is a phone.
+                                        pw_current.set(String::new());
+                                        pw_new.set(String::new());
+                                        pw_confirm.set(String::new());
+                                        pw_message.set((String::new(), false));
                                         overlay.set(Some("settings"));
                                         load_notify();
                                     },
@@ -2779,6 +2799,96 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     }
                                     if !notify_msg().is_empty() {
                                         div { class: "note good", "{notify_msg}" }
+                                    }
+                                }
+                            }
+
+                            div { class: "section-label", style: "padding: 22px 2px 8px", "Password" }
+                            {
+                                let me_name = sess().user.username.clone();
+                                // The same rule the server applies, run as you
+                                // type, so the problem shows before you submit.
+                                let problem = if pw_new().is_empty() {
+                                    None
+                                } else {
+                                    shared::password_problem(&pw_new(), &me_name)
+                                };
+                                let mismatch = !pw_confirm().is_empty() && pw_confirm() != pw_new();
+                                let ready = !pw_current().is_empty()
+                                    && !pw_new().is_empty()
+                                    && pw_confirm() == pw_new()
+                                    && problem.is_none();
+                                rsx! {
+                                    div { class: "row-stack",
+                                        div { class: "field",
+                                            label { "Current password" }
+                                            input {
+                                                r#type: "password",
+                                                autocomplete: "current-password",
+                                                value: "{pw_current}",
+                                                oninput: move |e| pw_current.set(e.value()),
+                                            }
+                                        }
+                                        div { class: "field",
+                                            label { "New password" }
+                                            input {
+                                                r#type: "password",
+                                                autocomplete: "new-password",
+                                                value: "{pw_new}",
+                                                oninput: move |e| {
+                                                    pw_new.set(e.value());
+                                                    pw_message.set((String::new(), false));
+                                                },
+                                            }
+                                        }
+                                        div { class: "field",
+                                            label { "Confirm new password" }
+                                            input {
+                                                r#type: "password",
+                                                autocomplete: "new-password",
+                                                value: "{pw_confirm}",
+                                                oninput: move |e| pw_confirm.set(e.value()),
+                                            }
+                                        }
+                                    }
+                                    if let Some(problem) = problem {
+                                        div { class: "note bad", "{problem}" }
+                                    } else if mismatch {
+                                        div { class: "note bad", "passwords don't match" }
+                                    } else if !pw_confirm().is_empty() && !pw_new().is_empty() {
+                                        div { class: "note good", "looks good" }
+                                    }
+                                    if !pw_message().0.is_empty() {
+                                        div { class: if pw_message().1 { "note good" } else { "note bad" }, "{pw_message().0}" }
+                                    }
+                                    button {
+                                        class: "btn btn-primary",
+                                        style: "width: 100%; margin-top: 10px",
+                                        disabled: !ready,
+                                        onclick: move |_| {
+                                            let (current, new) = (pw_current(), pw_new());
+                                            spawn(async move {
+                                                match api::change_password(&sess(), current, new).await {
+                                                    Ok(()) => {
+                                                        pw_current.set(String::new());
+                                                        pw_new.set(String::new());
+                                                        pw_confirm.set(String::new());
+                                                        // This device keeps its
+                                                        // session by the server's
+                                                        // design; the others don't.
+                                                        pw_message.set((
+                                                            "changed — your other devices were signed out".into(),
+                                                            true,
+                                                        ));
+                                                    }
+                                                    Err(e) => pw_message.set((e, false)),
+                                                }
+                                            });
+                                        },
+                                        "Change password"
+                                    }
+                                    div { class: "note",
+                                        "Changing it signs out every other device you're logged in on. This one stays."
                                     }
                                 }
                             }
