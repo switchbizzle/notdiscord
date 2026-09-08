@@ -396,7 +396,12 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
     display: flex; flex-direction: column-reverse;
     padding: 12px 12px 6px;
 }
-.msg { display: flex; gap: 8px; }
+/* Hold a message for its actions. Selection and the iOS callout are off
+ * so the hold reads as a hold and not as "select this word" — "Copy text"
+ * lives in the sheet the hold opens. */
+.msg { display: flex; gap: 8px; -webkit-touch-callout: none; user-select: none; }
+.msg.pressing { background: var(--n-900); margin: 0 -12px; padding: 0 12px; border-radius: var(--r-md); }
+.msg.pressing:not(.compact) { margin-top: 9px; }
 /* The message a permalink landed on, so it's obvious which line was meant.
  * Wraps the row rather than restyling it, the way the desktop marks a hit. */
 .hit-wrap {

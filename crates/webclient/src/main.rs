@@ -219,8 +219,14 @@ fn focus_composer() {
 /// unlike a ringtone it needs no user gesture to be allowed. Best-effort: a
 /// browser without the API just doesn't buzz.
 fn buzz() {
+    haptic(400);
+}
+
+/// A tap you can feel. The long-press that opens a message's actions gives
+/// one, so you know it took without watching for the sheet.
+fn haptic(ms: u32) {
     if let Some(window) = web_sys::window() {
-        let _ = window.navigator().vibrate_with_duration(400);
+        let _ = window.navigator().vibrate_with_duration(ms);
     }
 }
 
@@ -3673,6 +3679,14 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
     // reserved 104px on the right of every line for four icons, which is a
     // quarter of a phone's width spent on controls nobody was using.
     let mut actions_open = use_signal(|| false);
+    // A finger down on this row: (which press, where it started). The
+    // timer that opens the actions checks the press is still the same one
+    // when it fires, so a released or scrolled press can't open anything.
+    let mut press = use_signal(|| None::<(u32, f64, f64)>);
+    let mut press_seq = use_signal(|| 0u32);
+    // When a long-press last fired, so the click the browser sends on
+    // release doesn't also open the image it happened to be over.
+    let mut long_pressed_at = use_signal(|| 0i64);
     // Which pill's reactors are being shown, and when the finger went down.
     let mut reactors_for = use_signal(|| None::<String>);
     let mut pressed_at = use_signal(|| None::<i64>);
@@ -3694,6 +3708,9 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
         };
     }
     let (images, videos, files, text) = extract_media(&msg.content);
+    // Counted now: the render loops below consume the lists, and the
+    // actions sheet's preview line wants the numbers after that.
+    let (n_images, n_videos, n_files) = (images.len(), videos.len(), files.len());
     // A message that is nothing but one of the server's stickers renders
     // small. Full width is right for a photo someone took and absurd for a
     // reaction sticker, and a sticker arrives as a bare URL so this is the
@@ -3722,12 +3739,62 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
         div {
             // What a permalink scrolls to.
             id: "msg-{msg_id}",
-            class: match (compact, pending, failed) {
-                (_, _, true) => "msg failed",
-                (true, true, _) => "msg compact pending",
-                (true, false, _) => "msg compact",
-                (false, true, _) => "msg pending",
-                (false, false, _) => "msg",
+            class: {
+                let base = match (compact, pending, failed) {
+                    (_, _, true) => "msg failed",
+                    (true, true, _) => "msg compact pending",
+                    (true, false, _) => "msg compact",
+                    (false, true, _) => "msg pending",
+                    (false, false, _) => "msg",
+                };
+                if press().is_some() { format!("{base} pressing") } else { base.to_string() }
+            },
+            // Hold anywhere on the message for its actions — words, picture,
+            // or the empty gutter. Until now the actions lived on the words
+            // alone, so a GIF or a screenshot could not be replied to,
+            // reacted to, or deleted from the phone at all.
+            ontouchstart: move |e: Event<TouchData>| {
+                // Nothing to do to a message the server hasn't confirmed yet.
+                if pending {
+                    return;
+                }
+                // Bound first: touches() is a fresh Vec, and a let-else
+                // would drop it before t is read.
+                let touches = e.touches();
+                let Some(t) = touches.first() else { return };
+                let (x, y) = (t.client_coordinates().x, t.client_coordinates().y);
+                let seq = press_seq() + 1;
+                press_seq.set(seq);
+                press.set(Some((seq, x, y)));
+                spawn(async move {
+                    gloo_timers::future::TimeoutFuture::new(LONG_PRESS_MS as u32).await;
+                    // Still the same finger, still down, hasn't scrolled.
+                    if (*press.peek()).map(|(s, _, _)| s) == Some(seq) {
+                        press.set(None);
+                        long_pressed_at.set(now_ms());
+                        haptic(25);
+                        actions_open.set(true);
+                    }
+                });
+            },
+            ontouchmove: move |e: Event<TouchData>| {
+                // A finger that travels is scrolling, not pressing.
+                if let (Some((_, x0, y0)), Some(t)) = (press(), e.touches().first()) {
+                    let (x, y) = (t.client_coordinates().x, t.client_coordinates().y);
+                    if (x - x0).abs() > 10.0 || (y - y0).abs() > 10.0 {
+                        press.set(None);
+                    }
+                }
+            },
+            ontouchend: move |_| press.set(None),
+            ontouchcancel: move |_| press.set(None),
+            // A right-click in a desktop browser is the same gesture; and on
+            // Android the native long-press menu must not fight the sheet.
+            oncontextmenu: move |e: Event<MouseData>| {
+                e.prevent_default();
+                if !pending {
+                    actions_open.set(true);
+                }
             },
             // The gutter holds the avatar on the first message of a block and
             // stays empty (but present) on the rest, so every line in a block
@@ -3817,9 +3884,7 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                 }
             }
             if !text.is_empty() {
-                button {
-                    class: "msg-body",
-                    onclick: move |_| actions_open.set(true),
+                div { class: "msg-body",
                     md::Md { nodes: md::parse_markdown(&text) }
                 }
             }
@@ -3836,7 +3901,15 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                             loading: "lazy",
                             onclick: {
                                 let src = src.clone();
-                                move |_| lightbox.set(Some(Lightbox::within(src.clone(), gallery())))
+                                move |_| {
+                                    // The browser sends a click when the finger
+                                    // lifts, long-press or not; that one is not
+                                    // a request to see the picture.
+                                    if now_ms() - long_pressed_at() < 800 {
+                                        return;
+                                    }
+                                    lightbox.set(Some(Lightbox::within(src.clone(), gallery())))
+                                }
                             },
                         }
                     }
@@ -3867,7 +3940,12 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                         button {
                             key: "{emoji}",
                             class: if mine { "reaction-pill mine" } else { "reaction-pill" },
-                            ontouchstart: move |_| pressed_at.set(Some(now_ms())),
+                            ontouchstart: move |e: Event<TouchData>| {
+                                // The pill has its own hold (who reacted); the
+                                // row must not open the actions on top of it.
+                                e.stop_propagation();
+                                pressed_at.set(Some(now_ms()));
+                            },
                             onclick: {
                                 let emoji = emoji.clone();
                                 move |_| {
@@ -3888,7 +3966,18 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
             // Tapped a message: everything you can do to it, in one sheet.
             if actions_open() {
                 {
-                    let preview: String = msg.content.chars().take(46).collect();
+                    // A picture's "text" is its URL, which is not what you
+                    // held your finger on. Say what the thing is instead.
+                    let preview: String = if text.is_empty() {
+                        match (n_images, n_videos, n_files) {
+                            (n, _, _) if n > 0 => if n == 1 { "a picture".into() } else { format!("{n} pictures") },
+                            (_, n, _) if n > 0 => "a video".into(),
+                            (_, _, n) if n > 0 => "a file".into(),
+                            _ => msg.content.chars().take(46).collect(),
+                        }
+                    } else {
+                        text.chars().take(46).collect()
+                    };
                     let author = msg.author.username.clone();
                     let for_reply = msg.clone();
                     let original = msg.content.clone();

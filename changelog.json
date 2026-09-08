@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.22",
+    "date": "2026-09-08",
+    "changes": [
+      "👆 Hold a message for its actions — anywhere on it, the way every phone chat app works. Until now the actions lived on the words alone, which meant a GIF, a screenshot or a sticker could not be replied to, reacted to, or deleted from the phone at all. A short tap does nothing now, so a thumb landing on some text no longer throws a sheet at you",
+      "The hold gives a small buzz when it takes, a scroll that starts on a message is a scroll and not a hold, and a right-click does the same thing in a desktop browser",
+      "The sheet says \"a picture\" for a picture instead of printing its address"
+    ]
+  },
+  {
     "version": "0.94.21",
     "date": "2026-09-08",
     "changes": [
