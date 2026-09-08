@@ -257,6 +257,9 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
     text-align: left; font: inherit; letter-spacing: inherit;
 }
 .group-btn:active { opacity: 0.6; }
+/* The message list with nothing in it: centred in the space, and says
+ * whether that is because it is still loading or because it is empty. */
+.list-note { margin: auto; color: var(--n-600); font-size: 13px; text-align: center; padding: 20px; }
 .empty-note {
     margin: 6px 8px; padding: 14px; border-radius: var(--r-md);
     border: 1px dashed var(--n-800); color: var(--n-600);
@@ -441,6 +444,15 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
  * under it. Tap still opens the full thing. */
 .msg-img { max-width: 100%; max-height: 420px; border-radius: var(--r-md); margin-top: 3px; cursor: zoom-in; }
 .msg-img.sticker-msg { max-width: 150px; max-height: 150px; cursor: default; }
+/* A picture whose size the server sent: the box is the size the picture
+ * will be (width and aspect-ratio inline, from image_box_style), drawn in
+ * the surface colour until the bytes arrive, and the picture then fills it
+ * exactly. Nothing beneath it moves. */
+.msg-img-box {
+    max-width: 100%; margin-top: 3px; border-radius: var(--r-md);
+    background: var(--n-900); overflow: hidden;
+}
+.msg-img-box .msg-img { display: block; width: 100%; height: 100%; max-height: none; margin-top: 0; object-fit: cover; }
 .msg-video { max-width: 100%; max-height: 300px; border-radius: var(--r-md); margin-top: 3px; }
 .msg-file { color: var(--accent-300); text-decoration: none; font-size: 14px; display: inline-flex; align-items: center; gap: 5px; }
 .msg-failed-row { font-size: 11px; color: var(--accent-400); margin-top: 2px; }

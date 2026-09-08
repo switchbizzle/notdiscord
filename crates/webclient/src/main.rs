@@ -225,6 +225,19 @@ fn autosize_composer() {
     let _ = el.set_attribute("style", &format!("height: {wanted}px"));
 }
 
+/// The box a picture will take once it arrives, from the size the server
+/// sent: the same caps .msg-img applies — full width, 420px tall, 150px
+/// either way for a sticker — worked out up front so the list does not
+/// jump when the bytes land. Width is the number to pin; the ratio gives
+/// the height, and max-width: 100% in the stylesheet still wins on a
+/// narrow screen, shrinking both together.
+fn image_box_style(width: u32, height: u32, sticker: bool) -> String {
+    let (max_w, max_h) = if sticker { (150.0, 150.0) } else { (f64::INFINITY, 420.0) };
+    let scale = (max_w / width as f64).min(max_h / height as f64).min(1.0);
+    let shown = (width as f64 * scale).round();
+    format!("width: {shown}px; aspect-ratio: {width} / {height}")
+}
+
 fn focus_composer() {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -799,6 +812,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     });
     use_context_provider(|| Gallery(gallery));
     let mut has_more = use_signal(|| false);
+    // True from tapping a channel until its history is back, so the screen
+    // can say so instead of standing blank.
+    let mut loading_channel = use_signal(|| false);
     let mut draft = use_signal(String::new);
     // One-off messages — an error, "voice disconnected" — shown as a toast
     // that dismisses itself. Connection state is NOT this: see `offline`.
@@ -1007,8 +1023,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         sheet.set(None);
         messages.set(Vec::new());
         highlight.set(None);
+        loading_channel.set(true);
         spawn(async move {
-            match api::messages(&sess(), id, None).await {
+            let loaded = api::messages(&sess(), id, None).await;
+            // Only the channel still open gets to clear it: a slow fetch for
+            // one you have already left must not say the next one is done.
+            // And cleared after the list is set, not before, or "nothing
+            // here yet" flashes between the two.
+            let still_here = selected.peek().as_ref().map(|c: &Channel| c.id) == Some(id);
+            match loaded {
                 Ok(msgs) => {
                     has_more.set(msgs.len() == api::HISTORY_PAGE);
                     // The first message after the divider, worked out before
@@ -1021,6 +1044,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         unread.write().insert(id, (0, 0, newest));
                     }
                     messages.set(msgs);
+                    if still_here {
+                        loading_channel.set(false);
+                    }
                     if let Some(target) = pending_jump.write().take() {
                         jump_to_message(id, target);
                     } else if let Some(first) = first_unread {
@@ -1038,7 +1064,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         });
                     }
                 }
-                Err(e) => status.set(e),
+                Err(e) => {
+                    status.set(e);
+                    if still_here {
+                        loading_channel.set(false);
+                    }
+                }
             }
         });
     };
@@ -1629,6 +1660,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             reply_to,
             reply_preview,
             pinned: false,
+            // The echo brings the sizes; an upload you just sent is in the
+            // browser's cache anyway, so there is nothing to wait for.
+            media: Vec::new(),
         });
         pending_at.write().insert(temp_id, now_ms());
         ws.send(ClientEvent::SendMessage { channel_id: channel.id, content, reply_to });
@@ -2573,6 +2607,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                             if has_more() {
                                 button { class: "load-older", onclick: load_older, "Load older messages" }
+                            }
+                            // An empty list means one of two things, and the
+                            // screen should say which.
+                            if messages().is_empty() {
+                                if loading_channel() {
+                                    div { class: "list-note", "loading…" }
+                                } else {
+                                    div { class: "list-note", "Nothing here yet. Say something." }
+                                }
                             }
                         }
 
@@ -4046,24 +4089,39 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     // Phones especially shouldn't pull full-size photos to
                     // draw a 340px image.
                     let shown = if src.contains("/files/") { format!("{src}?thumb=1") } else { src.clone() };
+                    // When the server said how big it is, the box is drawn at
+                    // that size now and the picture fills it when it lands,
+                    // so nothing below it moves. A picture from elsewhere
+                    // still arrives at whatever size it is.
+                    let boxed = msg
+                        .media
+                        .iter()
+                        .find(|m| m.url == src)
+                        .map(|m| image_box_style(m.width, m.height, is_sticker));
+                    let img_class = match (is_sticker, boxed.is_some()) {
+                        (true, _) => "msg-img sticker-msg",
+                        (false, true) => "msg-img boxed",
+                        (false, false) => "msg-img",
+                    };
+                    let open = {
+                        let src = src.clone();
+                        move |_| {
+                            // The browser sends a click when the finger
+                            // lifts, long-press or not; that one is not
+                            // a request to see the picture.
+                            if now_ms() - long_pressed_at() < 800 {
+                                return;
+                            }
+                            lightbox.set(Some(Lightbox::within(src.clone(), gallery())))
+                        }
+                    };
                     rsx! {
-                        img {
-                            key: "{i}",
-                            class: if is_sticker { "msg-img sticker-msg" } else { "msg-img" },
-                            src: "{shown}",
-                            loading: "lazy",
-                            onclick: {
-                                let src = src.clone();
-                                move |_| {
-                                    // The browser sends a click when the finger
-                                    // lifts, long-press or not; that one is not
-                                    // a request to see the picture.
-                                    if now_ms() - long_pressed_at() < 800 {
-                                        return;
-                                    }
-                                    lightbox.set(Some(Lightbox::within(src.clone(), gallery())))
-                                }
-                            },
+                        if let Some(style) = boxed {
+                            div { key: "{i}", class: "msg-img-box", style: "{style}",
+                                img { class: "{img_class}", src: "{shown}", loading: "lazy", onclick: open }
+                            }
+                        } else {
+                            img { key: "{i}", class: "{img_class}", src: "{shown}", loading: "lazy", onclick: open }
                         }
                     }
                 }

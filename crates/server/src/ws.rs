@@ -408,6 +408,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 .then(|| content.trim_start())
                 .and_then(|t| t.strip_prefix("/remindme").or_else(|| t.strip_prefix("/remind")))
                 .map(|rest| rest.to_owned());
+            let media = crate::routes::media_for(&content).await;
             let message = Message {
                 id: result.last_insert_rowid(),
                 channel_id,
@@ -419,6 +420,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 reply_to: valid_reply,
                 reply_preview,
                 pinned: false,
+                media,
             };
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message: message.clone() });
 

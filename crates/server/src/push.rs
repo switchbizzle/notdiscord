@@ -299,6 +299,7 @@ mod tests {
             created_at: 0,
             edited_at: None,
             reactions: Vec::new(),
+            media: Vec::new(),
             reply_to: None,
             reply_preview: None,
             pinned: false,

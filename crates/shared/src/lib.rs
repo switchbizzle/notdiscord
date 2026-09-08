@@ -170,6 +170,23 @@ pub struct Message {
     pub reply_preview: Option<ReplyPreview>,
     #[serde(default)]
     pub pinned: bool,
+    /// The size of each uploaded picture in `content`, so a client can draw
+    /// the box before the bytes arrive and the list doesn't jump when they
+    /// do. Only for images the server holds; a link to somewhere else is
+    /// still a bare URL. Absent from older servers, empty for messages with
+    /// no pictures.
+    #[serde(default)]
+    pub media: Vec<MediaDims>,
+}
+
+/// Where a picture in a message will be drawn, and how big it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaDims {
+    /// The URL exactly as it appears in the message, which is how a client
+    /// finds it again.
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

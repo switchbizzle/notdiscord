@@ -2741,6 +2741,7 @@ pub async fn search(
                 reply_to: None,
                 reply_preview: None,
                 pinned: false,
+                media: Vec::new(),
             },
             channel_name: r.get(9),
             channel_kind: r.get(10),
@@ -2864,9 +2865,13 @@ pub async fn channel_messages(
                 }
             },
             pinned: r.get(12),
+            media: Vec::new(),
         })
         .collect();
     messages.reverse();
+    for msg in &mut messages {
+        msg.media = media_for(&msg.content).await;
+    }
 
     if !messages.is_empty() {
         let mut qb = sqlx::QueryBuilder::new(
@@ -2984,6 +2989,60 @@ pub async fn push_unsubscribe(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Where a `/files/…` path from message content lives on disk, and the
+/// file's name. Message content is user text: this re-validates exactly like
+/// the serving endpoints before anything touches the filesystem, and answers
+/// None for anything that doesn't pass.
+fn upload_on_disk(uploads: &std::path::Path, rel: &str) -> Option<(std::path::PathBuf, String)> {
+    let rel = rel.split(['?', '#']).next().unwrap_or("");
+    let segments: Vec<&str> = rel.strip_prefix("/files/")?.split('/').collect();
+    match segments[..] {
+        [id, name] => {
+            let id_ok = id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+            if !id_ok || name.is_empty() || name != sanitize_filename(name) {
+                return None;
+            }
+            Some((uploads.join(id).join(name), name.to_owned()))
+        }
+        [single] => {
+            let valid = single.len() < 40
+                && single.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
+                && single.matches('.').count() == 1;
+            if !valid {
+                return None;
+            }
+            Some((uploads.join(single), single.to_owned()))
+        }
+        _ => None,
+    }
+}
+
+/// The size of every uploaded picture a message links to, for clients to
+/// size the box before the picture arrives. Found the way every client
+/// finds them — whitespace tokens that are a /files/ path, bare or inside
+/// this server's own URL — so what is measured is what gets drawn.
+pub(crate) async fn media_for(content: &str) -> Vec<shared::MediaDims> {
+    if !content.contains("/files/") {
+        return Vec::new();
+    }
+    let uploads = crate::uploads_dir();
+    let mut out: Vec<shared::MediaDims> = Vec::new();
+    for token in content.split_whitespace() {
+        let Some(idx) = token.find("/files/") else { continue };
+        if idx != 0 && !shared::is_web_url(token) {
+            continue;
+        }
+        if out.iter().any(|m| m.url == token) {
+            continue;
+        }
+        let Some((disk, _)) = upload_on_disk(&uploads, &token[idx..]) else { continue };
+        if let Some((width, height)) = crate::thumbs::dimensions(disk).await {
+            out.push(shared::MediaDims { url: token.to_owned(), width, height });
+        }
+    }
+    out
+}
+
 /// Every attachment ever posted in a channel, newest first — the Files panel.
 /// Files are found by scanning message content for /files/ links (that's the
 /// only way attachments exist), and anything retention already deleted from
@@ -3037,33 +3096,11 @@ pub async fn channel_files(
             if decoration.contains(rel) || !seen.insert(rel.to_owned()) {
                 continue;
             }
-            // Message content is user text: re-validate exactly like the
-            // serving endpoints before touching the filesystem.
-            let segments: Vec<&str> = rel.trim_start_matches("/files/").split('/').collect();
-            let (disk, name) = match segments[..] {
-                [id, name] => {
-                    let id_ok = id.len() == 32
-                        && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
-                    if !id_ok || name.is_empty() || name != sanitize_filename(name) {
-                        continue;
-                    }
-                    (uploads.join(id).join(name), name)
-                }
-                [single] => {
-                    let valid = single.len() < 40
-                        && single.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
-                        && single.matches('.').count() == 1;
-                    if !valid {
-                        continue;
-                    }
-                    (uploads.join(single), single)
-                }
-                _ => continue,
-            };
+            let Some((disk, name)) = upload_on_disk(&uploads, rel) else { continue };
             let Ok(meta) = std::fs::metadata(&disk) else { continue };
             out.push(shared::FileEntry {
                 url: rel.to_owned(),
-                name: name.to_owned(),
+                name,
                 size: meta.len() as i64,
                 created_at,
                 message_id,
@@ -3172,6 +3209,7 @@ pub async fn channel_pins(
             reply_to: None,
             reply_preview: None,
             pinned: true,
+            media: Vec::new(),
         })
         .collect();
     Ok(Json(pins))

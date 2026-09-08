@@ -191,6 +191,7 @@ pub async fn post_and_get_id(state: &SharedState, channel_id: i64, content: &str
         reply_to: None,
         reply_preview: None,
         pinned: false,
+        media: crate::routes::media_for(content).await,
     };
     let event = ServerEvent::MessageCreated { message };
     match &recipients {
@@ -219,6 +220,8 @@ pub async fn post_message(state: &SharedState, channel_id: i64, content: &str) -
             id: result.last_insert_rowid(),
             channel_id,
             author: bot.clone(),
+            // The /image model's pictures come through here.
+            media: crate::routes::media_for(&chunk).await,
             content: chunk,
             created_at,
             edited_at: None,

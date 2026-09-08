@@ -6,7 +6,9 @@
 //! limits: a malicious file can claim enormous dimensions and blow up
 //! memory long before anything looks at the pixels.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 /// Longest edge of a generated thumbnail. This is a budget for the LONGEST
 /// edge, so the short edge of a tall image gets whatever the aspect ratio
@@ -75,6 +77,42 @@ fn render(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     Some(out)
+}
+
+/// Width and height of every original asked about so far. A page of history
+/// asks about fifty files at once and the same files every time it is
+/// opened; the header read is cheap but not free, and an upload never
+/// changes size. Bounded by starting over once it is large — simpler than
+/// an LRU and never wrong, only occasionally slow again.
+static DIMENSIONS: LazyLock<Mutex<HashMap<PathBuf, (u32, u32)>>> = LazyLock::new(Default::default);
+const DIMENSIONS_CAP: usize = 4096;
+
+/// Width and height of an uploaded image, from its header alone — no decode,
+/// so nothing a malicious file claims about itself costs more than a few
+/// bytes to read. None for anything that isn't an image we can read.
+pub async fn dimensions(original: PathBuf) -> Option<(u32, u32)> {
+    let name = original.file_name()?.to_string_lossy().to_ascii_lowercase();
+    if !is_thumbable(&name) {
+        return None;
+    }
+    if let Some(known) = DIMENSIONS.lock().unwrap().get(&original) {
+        return Some(*known);
+    }
+    let path = original.clone();
+    let dims = tokio::task::spawn_blocking(move || {
+        image::ImageReader::open(&path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()
+    })
+    .await
+    .ok()??;
+    if dims.0 == 0 || dims.1 == 0 {
+        return None;
+    }
+    let mut cache = DIMENSIONS.lock().unwrap();
+    if cache.len() >= DIMENSIONS_CAP {
+        cache.clear();
+    }
+    cache.insert(original, dims);
+    Some(dims)
 }
 
 /// Make the thumbnail for `original` if it doesn't exist yet. Returns the
@@ -162,6 +200,23 @@ mod tests {
         // The phone draws inline images up to ~309px wide; anything narrower
         // than that is being upscaled on screen.
         assert!(w >= 309, "{w}px wide is narrower than the phone renders it");
+    }
+
+    #[tokio::test]
+    async fn dimensions_come_from_the_header() {
+        let dir = std::env::temp_dir().join(format!("nd-dims-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        std::fs::write(&path, photo(1080, 2400)).unwrap();
+        assert_eq!(dimensions(path.clone()).await, Some((1080, 2400)));
+        // Second time is the cache; still the same answer.
+        assert_eq!(dimensions(path).await, Some((1080, 2400)));
+        // Not an image, and not a file at all.
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"hello").unwrap();
+        assert_eq!(dimensions(text).await, None);
+        assert_eq!(dimensions(dir.join("missing.png")).await, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

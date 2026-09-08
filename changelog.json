@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.26",
+    "date": "2026-09-08",
+    "changes": [
+      "🖼️ Pictures on the phone no longer shove the conversation around as they load. The server now says how big each uploaded picture is, and the phone draws a box that size before a single byte of it has arrived — so a message stays exactly where it was while its photo fills in. Older servers and links to pictures elsewhere still behave the way they did",
+      "Opening a channel says “loading…” until the messages are back, and a channel with nothing in it says so, instead of both being a blank screen"
+    ]
+  },
+  {
     "version": "0.94.25",
     "date": "2026-09-08",
     "changes": [
