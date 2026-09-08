@@ -997,6 +997,11 @@ pub enum ServerEvent {
     ReactionAdded { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     MessageEdited { channel_id: i64, message_id: i64, content: String, edited_at: i64 },
+    /// This session is no longer honoured — the password changed somewhere
+    /// else, most likely. The socket closes immediately after; a client
+    /// should drop its stored token and show `reason` on the login screen
+    /// rather than sit there looking connected.
+    SignedOut { reason: String },
     MessageDeleted { channel_id: i64, message_id: i64 },
     MessagePinChanged { channel_id: i64, message_id: i64, pinned: bool },
     /// A user set or cleared their custom status text.

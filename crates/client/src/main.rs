@@ -2203,6 +2203,16 @@ fn MainView(session: api::Session) -> Element {
                             // anything else the server refuses. It used to be
                             // dropped on the floor at both ends.
                             ServerEvent::Error { message } => status.set(message),
+                            // The server has revoked this session — a password
+                            // change on another device. Sign out of this server
+                            // the way the button does, keeping it in the rail,
+                            // and say why rather than looking like a bug.
+                            ServerEvent::SignedOut { reason } => {
+                                status.set(reason);
+                                let active = api::load_servers().active;
+                                servers_file.set(api::sign_out(active));
+                                return;
+                            }
                         }
                     }
                 }

@@ -102,6 +102,11 @@ pub struct WsQuery {
     /// which is why it's optional rather than defaulted at the edge.
     #[serde(default)]
     tz: Option<i64>,
+    /// The session this socket authenticated with. Read again here — the
+    /// extractor consumes it — so the connection can notice later that the
+    /// session has been revoked.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 pub async fn ws_handler(
@@ -123,7 +128,8 @@ pub async fn ws_handler(
                 .await;
         });
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, state, user))
+    let token = q.token.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, state, user, token))
 }
 
 /// How often the server pings an idle connection. Short enough to keep a NAT
@@ -133,7 +139,13 @@ const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
 /// missed heartbeats, so one slow moment isn't a disconnect.
 const CLIENT_SILENT_FOR: std::time::Duration = std::time::Duration::from_secs(70);
 
-async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
+/// How often a live connection re-checks that its session still exists.
+/// Deleting the row (a password change elsewhere) does not by itself close
+/// sockets already open, so without this an old device keeps receiving
+/// everything until it happens to reconnect.
+const SESSION_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+
+async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User, token: Option<String>) {
     tracing::info!("ws connected: {}", user.username);
     let (mut sink, mut stream) = socket.split();
     let mut events = state.events.subscribe();
@@ -191,6 +203,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
     let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_heard = std::time::Instant::now();
+    let mut last_session_check = std::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -201,6 +214,29 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User) {
                 if last_heard.elapsed() > CLIENT_SILENT_FOR {
                     tracing::info!("ws idle too long, dropping {}", user.username);
                     break;
+                }
+                // Still a session? One indexed lookup per connection every
+                // 20 seconds, and the difference between "signed out
+                // everywhere" meaning it and meaning it eventually.
+                if last_session_check.elapsed() >= SESSION_CHECK_EVERY {
+                    last_session_check = std::time::Instant::now();
+                    if let Some(token) = &token {
+                        let alive: Option<i64> =
+                            sqlx::query_scalar("SELECT 1 FROM sessions WHERE token = ?")
+                                .bind(token)
+                                .fetch_optional(&state.db)
+                                .await
+                                .unwrap_or(Some(1)); // A database blip is not a sign-out.
+                        if alive.is_none() {
+                            tracing::info!("ws session revoked, closing {}", user.username);
+                            let bye = serde_json::to_string(&ServerEvent::SignedOut {
+                                reason: "Your password was changed somewhere else, so this device was signed out.".into(),
+                            })
+                            .expect("serialize");
+                            let _ = sink.send(WsMessage::text(bye)).await;
+                            break;
+                        }
+                    }
                 }
                 if sink.send(WsMessage::Ping(Vec::new().into())).await.is_err() {
                     break;

@@ -146,6 +146,13 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .login-card h1 { font-size: 30px; letter-spacing: -0.02em; font-weight: 600; margin-bottom: 6px; }
 .login-sub { font-size: 13.5px; color: var(--n-500); margin-bottom: 26px; }
 .login-fields { display: flex; flex-direction: column; gap: 14px; }
+/* Not an error — you did nothing wrong — but it needs to be read: this is
+ * the login screen explaining why you are looking at it. */
+.login-note {
+    margin-top: 12px; padding: 10px 12px; border-radius: var(--r-md);
+    background: var(--n-900); border: 1px solid var(--n-800);
+    color: var(--n-400); font-size: 12.5px; line-height: 1.45; text-align: left;
+}
 .login-error { color: var(--danger); font-size: 13px; margin-top: 12px; }
 .login-cta { width: 100%; margin-top: 22px; min-height: 46px; font-size: 15px; }
 .login-switch {

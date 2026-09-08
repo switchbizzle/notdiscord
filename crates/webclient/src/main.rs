@@ -166,9 +166,36 @@ fn load_session() -> Option<api::Session> {
     gloo_storage::LocalStorage::get(SESSION_KEY).ok()
 }
 
+/// Why the last session ended, kept where the session itself is kept: the
+/// sign-out swaps the whole tree for the login screen, and a fresh component
+/// remembers nothing. localStorage also survives the reload freshen.js can
+/// do at any moment.
+const SIGNOUT_KEY: &str = "nd_signout_reason";
+
+/// Sign out of a session the server no longer honours, saying why. Not the
+/// same act as the Log out button: nobody asked for this one, so the reason
+/// has to survive to the login screen or it looks like a crash.
+fn signed_out(mut session: Signal<Option<api::Session>>, reason: &str) {
+    if session.peek().is_none() {
+        return;
+    }
+    let _ = gloo_storage::LocalStorage::set(SIGNOUT_KEY, reason);
+    save_session(&None);
+    session.set(None);
+}
+
+/// The notice for the login screen, read once and cleared.
+fn take_signout_notice() -> String {
+    let notice: String = gloo_storage::LocalStorage::get(SIGNOUT_KEY).unwrap_or_default();
+    gloo_storage::LocalStorage::delete(SIGNOUT_KEY);
+    notice
+}
+
 fn save_session(session: &Option<api::Session>) {
     match session {
         Some(s) => {
+            // A fresh token is not answerable for the last one's 401.
+            api::forget_session_death();
             let _ = gloo_storage::LocalStorage::set(SESSION_KEY, s);
         }
         None => gloo_storage::LocalStorage::delete(SESSION_KEY),
@@ -669,6 +696,9 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
     let mut password = use_signal(String::new);
     let mut invite = use_signal(String::new);
     let mut error = use_signal(String::new);
+    // Set when we arrived here because the server ended the session rather
+    // than because anyone asked to leave. Cleared by the first thing typed.
+    let mut notice = use_signal(take_signout_notice);
     let mut busy = use_signal(|| false);
     // Logging in is what almost everyone is here to do; an invite code box on
     // that screen is a question nobody signing in can answer.
@@ -742,13 +772,19 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
                         }
                     }
                 }
+                if !notice().is_empty() {
+                    div { class: "login-note", "{notice}" }
+                }
                 if !error().is_empty() {
                     div { class: "login-error", "{error}" }
                 }
                 button {
                     class: "btn btn-primary login-cta",
                     disabled: busy(),
-                    onclick: move |_| submit(registering()),
+                    onclick: move |_| {
+                        notice.set(String::new());
+                        submit(registering());
+                    },
                     if registering() { "Create account" } else { "Log in" }
                 }
                 button {
@@ -1197,6 +1233,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 resync();
             }
             was_hidden = hidden;
+            // A request came back 401 somewhere. That is the server saying
+            // this token is not a session any more — the socket may never
+            // have noticed, having been asleep through the whole thing.
+            if api::session_died() {
+                signed_out(session, "You were signed out. Your password may have been changed on another device.");
+                return;
+            }
         }
     });
 
@@ -1498,6 +1541,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                             ServerEvent::ServerRenamed { name } => server_name.set(name),
                             ServerEvent::Error { message } => status.set(message),
+                            // The server has stopped honouring this token and
+                            // is about to close the socket. Going quietly is
+                            // wrong: say what happened, on the screen that
+                            // asks for the password again.
+                            ServerEvent::SignedOut { reason } => {
+                                signed_out(session, &reason);
+                                return;
+                            }
                             ServerEvent::StickerCreated { sticker } => {
                                 let mut list = stickers.write();
                                 if !list.iter().any(|s| s.id == sticker.id) {

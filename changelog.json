@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.27",
+    "date": "2026-09-08",
+    "changes": [
+      "🔐 Changing your password now actually signs out your other devices. It always ended their sessions on the server, but nothing told them — an old phone kept receiving messages until it happened to reconnect. Every device is now cut off within twenty seconds and sent back to the login screen, which says why it is asking",
+      "A device that was asleep through all of it works it out the moment it wakes: the first thing it asks the server for comes back refused, and it signs itself out rather than sitting there half-working",
+      "🎯 DM badges stop claiming a mention you have already read. The unread count and the mention count came from one query, and the mention half counted a DM with nothing unread in it — so every conversation you had ever had reported one forever. The phone was working around it; now the number is just right"
+    ]
+  },
+  {
     "version": "0.94.26",
     "date": "2026-09-08",
     "changes": [

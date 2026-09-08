@@ -49,6 +49,11 @@ pub fn new_token() -> String {
 
 /// Extractor: resolves the `Authorization: Bearer <token>` header (or
 /// `?token=` query param, used by the WebSocket route) to a logged-in user.
+///
+/// This is the ONLY thing in the server that answers 401, which is what
+/// lets a client treat a 401 as "my session is gone, go back to the login
+/// screen". An endpoint refusing what you asked for — a wrong password, a
+/// wrong code — answers 403: it is not disputing who you are.
 pub struct AuthUser(pub User);
 
 impl FromRequestParts<SharedState> for AuthUser {

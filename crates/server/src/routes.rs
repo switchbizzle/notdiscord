@@ -141,7 +141,10 @@ pub async fn change_password(
         .await
         .map_err(internal)?;
     if !auth::verify_password(req.current, hash).await {
-        return Err(err(StatusCode::UNAUTHORIZED, "current password is incorrect"));
+        // Not 401: your session is fine, it is the old password that is
+        // wrong. A 401 here would sign you out for a typo, since clients
+        // treat one as a revoked session.
+        return Err(err(StatusCode::FORBIDDEN, "current password is incorrect"));
     }
     if let Some(problem) = shared::password_problem(&req.new, &user.username) {
         return Err(err(StatusCode::BAD_REQUEST, problem));
@@ -300,7 +303,7 @@ async fn consume_code(
             .execute(&state.db)
             .await
             .map_err(internal)?;
-        return Err(err(StatusCode::UNAUTHORIZED, "wrong code"));
+        return Err(err(StatusCode::FORBIDDEN, "wrong code"));
     }
     sqlx::query("DELETE FROM mail_codes WHERE user_id = ? AND purpose = ?")
         .bind(user_id)
@@ -375,7 +378,7 @@ pub async fn reset_password(
             .map_err(internal)?;
     // Same message as a wrong code, so this can't probe usernames either.
     let Some(user_id) = user_id else {
-        return Err(err(StatusCode::UNAUTHORIZED, "wrong code"));
+        return Err(err(StatusCode::FORBIDDEN, "wrong code"));
     };
     consume_code(&state, user_id, "reset", &req.code).await?;
     let hash = auth::hash_password(req.new_password).await.map_err(internal)?;
@@ -1348,7 +1351,7 @@ async fn stream_file(
 mod setup_tests {
     use super::*;
 
-    async fn fresh_server() -> SharedState {
+    pub(super) async fn fresh_server() -> SharedState {
         let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::migrate!().run(&db).await.unwrap();
         // NotBot exists from first boot on a real server, and must not count
@@ -2348,6 +2351,14 @@ pub async fn set_mute(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// How many messages you haven't read in each channel, and how many of those
+/// are aimed at you.
+///
+/// The join is a LEFT JOIN, so a channel with nothing unread still produces
+/// one row with every `m.` column NULL — and `c.kind = 'dm'` is true on that
+/// row regardless. Without the `m.id IS NOT NULL` guard, every DM reported
+/// one mention forever, read or not. The desktop never showed it (it draws
+/// no badge at count 0) and the phone's tab badge lit up for nothing.
 pub async fn unread(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
@@ -2356,9 +2367,10 @@ pub async fn unread(
     let rows = sqlx::query(
         "SELECT c.id, \
                 COUNT(m.id) AS unread, \
-                COALESCE(SUM(CASE WHEN c.kind = 'dm' \
-                                    OR LOWER(m.content) LIKE '%@everyone%' \
-                                    OR LOWER(m.content) LIKE ? \
+                COALESCE(SUM(CASE WHEN m.id IS NOT NULL \
+                                   AND (c.kind = 'dm' \
+                                        OR LOWER(m.content) LIKE '%@everyone%' \
+                                        OR LOWER(m.content) LIKE ?) \
                                   THEN 1 ELSE 0 END), 0) AS mentions, \
                 COALESCE(r.last_read_id, 0) AS last_read \
          FROM channels c \
@@ -3213,4 +3225,112 @@ pub async fn channel_pins(
         })
         .collect();
     Ok(Json(pins))
+}
+
+#[cfg(test)]
+mod unread_tests {
+    use super::setup_tests::fresh_server;
+    use super::*;
+
+    async fn person(state: &SharedState, name: &str) -> User {
+        let id = sqlx::query("INSERT INTO users (username, password_hash, created_at) VALUES (?, '!x', 0)")
+            .bind(name)
+            .execute(&state.db)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+        User { id, username: name.into(), avatar: None, role: "member".into() }
+    }
+
+    async fn channel(state: &SharedState, name: &str, kind: &str) -> i64 {
+        sqlx::query("INSERT INTO channels (name, kind, created_at) VALUES (?, ?, 0)")
+            .bind(name)
+            .bind(kind)
+            .execute(&state.db)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+    }
+
+    async fn say(state: &SharedState, channel_id: i64, author: &User, content: &str) -> i64 {
+        sqlx::query("INSERT INTO messages (channel_id, author_id, content, created_at) VALUES (?, ?, ?, 0)")
+            .bind(channel_id)
+            .bind(author.id)
+            .bind(content)
+            .execute(&state.db)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+    }
+
+    async fn counts(state: &SharedState, user: &User, channel_id: i64) -> (i64, i64) {
+        let Json(list) = unread(State(state.clone()), AuthUser(user.clone())).await.unwrap();
+        let row = list.into_iter().find(|u| u.channel_id == channel_id).expect("channel missing");
+        (row.count, row.mentions)
+    }
+
+    async fn read_all(state: &SharedState, user: &User, channel_id: i64, up_to: i64) {
+        sqlx::query("INSERT OR REPLACE INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?)")
+            .bind(user.id)
+            .bind(channel_id)
+            .bind(up_to)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+
+    /// A channel you have read has nothing in it that is aimed at you. This
+    /// was wrong for DMs: the LEFT JOIN's empty row satisfied `kind = 'dm'`,
+    /// so every DM claimed one mention for the rest of time.
+    #[tokio::test]
+    async fn a_read_dm_is_not_a_mention() {
+        let state = fresh_server().await;
+        let alice = person(&state, "alice").await;
+        let bob = person(&state, "bob").await;
+        let dm = channel(&state, "dm-alice-bob", "dm").await;
+        for who in [&alice, &bob] {
+            sqlx::query("INSERT INTO dm_members (channel_id, user_id) VALUES (?, ?)")
+                .bind(dm)
+                .bind(who.id)
+                .execute(&state.db)
+                .await
+                .unwrap();
+        }
+
+        // Nothing said yet: no unread, and nothing aimed at anyone.
+        assert_eq!(counts(&state, &alice, dm).await, (0, 0), "an empty DM");
+
+        let hello = say(&state, dm, &bob, "you around?").await;
+        assert_eq!(counts(&state, &alice, dm).await, (1, 1), "a DM is always a mention");
+
+        read_all(&state, &alice, dm, hello).await;
+        assert_eq!(counts(&state, &alice, dm).await, (0, 0), "a read DM is not a mention");
+    }
+
+    /// The other two ways to be mentioned, and the chatter that is neither.
+    #[tokio::test]
+    async fn a_text_channel_counts_only_what_names_you() {
+        let state = fresh_server().await;
+        let alice = person(&state, "alice").await;
+        let bob = person(&state, "bob").await;
+        // Not "general" or "lounge": the first migration seeds both, and the
+        // name column is unique.
+        let general = channel(&state, "the-build", "text").await;
+
+        say(&state, general, &bob, "anyone seen the build").await;
+        assert_eq!(counts(&state, &alice, general).await, (1, 0), "chatter is not a mention");
+
+        say(&state, general, &bob, "@Alice have you got a minute").await;
+        assert_eq!(counts(&state, &alice, general).await, (2, 1), "a name is a name in any case");
+
+        let last = say(&state, general, &bob, "@everyone deploying now").await;
+        assert_eq!(counts(&state, &alice, general).await, (3, 2), "@everyone means everyone");
+
+        // Your own messages were never unread to you.
+        say(&state, general, &alice, "@alice talking to myself").await;
+        assert_eq!(counts(&state, &alice, general).await, (3, 2), "your own words are read");
+
+        read_all(&state, &alice, general, last).await;
+        assert_eq!(counts(&state, &alice, general).await, (0, 0), "read is read");
+    }
 }

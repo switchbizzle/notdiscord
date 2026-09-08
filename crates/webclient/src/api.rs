@@ -18,6 +18,33 @@ struct ApiError {
     error: String,
 }
 
+/// Set when the server answers 401 to a request we sent a token with. The
+/// server reserves 401 for exactly one thing — this token is not a session
+/// any more — so there is nothing else it could mean. A flag rather than a
+/// callback because api.rs has no signals: the app polls it (see main.rs)
+/// and does the signing out, which is its business, not this module's.
+static SESSION_DEAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn note_status(status: u16) {
+    if status == 401 {
+        SESSION_DEAD.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Has the server disowned our token since last time you asked? Reading it
+/// clears it, so one dead request signs you out once.
+pub fn session_died() -> bool {
+    SESSION_DEAD.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Drop any pending 401 because a NEW session just started. Without this a
+/// 401 that nothing got round to reading — the socket usually announces the
+/// sign-out first and wins the race — is still sitting there when you log
+/// back in, and signs you straight out again. Which it did, once.
+pub fn forget_session_death() {
+    SESSION_DEAD.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 async fn handle<T: DeserializeOwned>(resp: Response) -> Result<T, String> {
     if resp.ok() {
         resp.json().await.map_err(|e| format!("bad response: {e}"))
@@ -58,6 +85,7 @@ pub async fn get<T: DeserializeOwned>(session: &Session, path: &str) -> Result<T
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    note_status(resp.status());
     handle(resp).await
 }
 
@@ -237,6 +265,7 @@ async fn post_ok(session: &Session, path: &str, body: &impl serde::Serialize, fa
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    note_status(resp.status());
     if resp.ok() {
         Ok(())
     } else {
