@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.94.28",
+    "date": "2026-09-08",
+    "changes": [
+      "⌨️ The message box on the phone is one line again in a channel with a long name. It sized itself to the grey words sitting behind it — “message #announcements” — and those wrapped, so the box was two lines tall before anyone had typed anything. It just says “message” now, since the channel’s name is in the header directly above it, and an empty box no longer measures itself against whatever is written there"
+    ]
+  },
+  {
     "version": "0.94.27",
     "date": "2026-09-08",
     "changes": [

@@ -230,15 +230,16 @@ fn presence_dot(online: bool, mode: &str) -> String {
     format!("presence {}", shared::effective_presence(online, mode))
 }
 
-/// Put the cursor back in the composer. Tapping a suggestion moves focus to
-/// the button it was on, which on a phone closes the keyboard — and having to
-/// tap the field again after every mention would be worse than typing the
-/// name out. Best-effort: if the element has gone, the person just taps.
 /// Fit the composer to its text, up to five lines, after which it scrolls.
 /// Measured by resetting the height and reading scrollHeight, which is the
 /// only way that is right for wrapped lines too. Via an attribute rather
 /// than the style object, which would cost a web-sys feature for one line.
-fn autosize_composer() {
+///
+/// An empty box is left at one row without measuring anything. scrollHeight
+/// counts the PLACEHOLDER when there is no text, so a placeholder long
+/// enough to wrap made an empty composer two lines tall — which is how
+/// switchb found this, in a channel whose name was one word too long.
+fn autosize_composer(empty: bool) {
     let Some(el) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(COMPOSER_ID))
@@ -246,6 +247,9 @@ fn autosize_composer() {
         return;
     };
     let _ = el.set_attribute("style", "height: auto");
+    if empty {
+        return;
+    }
     // +2 for the borders, which scrollHeight does not include and
     // border-box height does.
     let wanted = (el.scroll_height() + 2).min(COMPOSER_MAX_PX);
@@ -265,6 +269,10 @@ fn image_box_style(width: u32, height: u32, sticker: bool) -> String {
     format!("width: {shown}px; aspect-ratio: {width} / {height}")
 }
 
+/// Put the cursor back in the composer. Tapping a suggestion moves focus to
+/// the button it was on, which on a phone closes the keyboard — and having to
+/// tap the field again after every mention would be worse than typing the
+/// name out. Best-effort: if the element has gone, the person just taps.
 fn focus_composer() {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -1677,8 +1685,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // clearing it, a mention completing, a channel switch putting one back.
     // Runs after the render, so the element already holds the new text.
     use_effect(move || {
-        let _ = draft();
-        autosize_composer();
+        autosize_composer(draft().is_empty());
     });
 
     let mut send = move |_| {
@@ -2771,7 +2778,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 id: COMPOSER_ID,
                                 class: "draft",
                                 rows: "1",
-                                placeholder: if chan_is_dm { "message {chan_title}" } else { "message {chan_title}" },
+                                // Just "message": the channel's name is in
+                                // the header directly above, and a long one
+                                // here wrapped to a second line.
+                                placeholder: "message",
                                 value: "{draft}",
                                 oninput: move |e| {
                                     draft.set(e.value());
