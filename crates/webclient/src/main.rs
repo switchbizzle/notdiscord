@@ -811,6 +811,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut my_tags = use_signal(Vec::<shared::Tag>::new);
     // The music tab queues through its own field rather than the composer.
     let mut music_link = use_signal(String::new);
+    // The GIF sheet.
+    let mut gif_query = use_signal(String::new);
+    let mut gif_results = use_signal(Vec::<shared::GifResult>::new);
+    let mut gif_status = use_signal(String::new);
     let mut music = use_signal(MusicState::default);
     // user_id -> voice channel_id, for the 🔊 pills in the members panel.
     let mut voice_users = use_signal(HashMap::<i64, i64>::new);
@@ -1494,6 +1498,22 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 let mut combined = older;
                 combined.append(&mut list);
                 *list = combined;
+            }
+        });
+    };
+
+    // One call for "open the sheet" (empty query = trending) and for the
+    // search button, so the sheet is never blank and the two can't drift.
+    let search_gifs = move |query: String| {
+        spawn(async move {
+            gif_status.set("searching…".into());
+            match api::gifs(&sess(), &query).await {
+                Ok(list) => {
+                    gif_status.set(if list.is_empty() { "nothing for that".into() } else { String::new() });
+                    gif_results.set(list);
+                }
+                // The server says plainly when GIPHY isn't set up; show it.
+                Err(e) => gif_status.set(e),
             }
         });
     };
@@ -3152,6 +3172,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 Icon { name: "smile", size: 20 }
                                 span { "Sticker" }
                             }
+                            button {
+                                class: "attach-opt",
+                                onclick: move |_| {
+                                    gif_query.set(String::new());
+                                    sheet.set(Some("gifs"));
+                                    // Trending, so there's something to tap
+                                    // before you've typed a letter.
+                                    search_gifs(String::new());
+                                },
+                                span { class: "gif-glyph", "GIF" }
+                                span { "GIF" }
+                            }
                         }
                         div { class: "note",
                             "Uploads keep for as long as this server's retention allows, then the file goes and the message stays."
@@ -3175,6 +3207,62 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     alt: "{sticker.name}",
                                     onclick: {
                                         let url = sticker.url.clone();
+                                        move |_| {
+                                            if let Some(channel) = selected.peek().clone() {
+                                                ws.send(ClientEvent::SendMessage {
+                                                    channel_id: channel.id,
+                                                    content: url.clone(),
+                                                    reply_to: None,
+                                                });
+                                            }
+                                            sheet.set(None);
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    }
+
+                    if which == "gifs" {
+                        div { class: "sheet-head",
+                            span { class: "sheet-title", "GIFs" }
+                            span { class: "sheet-note", "via GIPHY" }
+                        }
+                        div { class: "gif-search",
+                            input {
+                                class: "text-input",
+                                placeholder: "search, or browse what's trending",
+                                value: "{gif_query}",
+                                autocapitalize: "none",
+                                oninput: move |e| gif_query.set(e.value()),
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        search_gifs(gif_query.peek().clone());
+                                    }
+                                },
+                            }
+                            button {
+                                class: "hbtn accent",
+                                aria_label: "Search GIFs",
+                                onclick: move |_| search_gifs(gif_query.peek().clone()),
+                                Icon { name: "search", size: 18 }
+                            }
+                        }
+                        if !gif_status().is_empty() {
+                            div { class: "note", style: "margin: 4px 0 10px", "{gif_status}" }
+                        }
+                        div { class: "gif-grid",
+                            for (i, gif) in gif_results().into_iter().enumerate() {
+                                img {
+                                    key: "g{i}",
+                                    class: "gif-cell",
+                                    src: "{gif.preview}",
+                                    loading: "lazy",
+                                    alt: "GIF",
+                                    onclick: {
+                                        // The full-size URL goes in the message;
+                                        // the preview was only for the grid.
+                                        let url = gif.url.clone();
                                         move |_| {
                                             if let Some(channel) = selected.peek().clone() {
                                                 ws.send(ClientEvent::SendMessage {

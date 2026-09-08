@@ -638,7 +638,7 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 }
 .sheet-action .icon { color: var(--n-400); }
 .sheet-action.danger, .sheet-action.danger .icon { color: var(--danger); }
-.attach-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.attach-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
 .attach-opt {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     background: var(--n-900); border-radius: var(--r-md);
@@ -648,6 +648,24 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .attach-opt .icon { color: var(--accent-300); }
 .attach-opt:active { background: var(--n-800); }
 .attach-opt input[type="file"] { display: none; }
+/* The GIF tile's glyph: the design drew the three letters in a box, and
+ * the icon set has no picture for it. Same footprint as the icons beside it. */
+.gif-glyph {
+    width: 24px; height: 20px; border-radius: var(--r-sm);
+    border: 1.5px solid var(--accent-300); color: var(--accent-300);
+    font-size: 8.5px; font-weight: 700; letter-spacing: 0.04em;
+    display: flex; align-items: center; justify-content: center;
+}
+.gif-search { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.gif-search .text-input { flex: 1; min-width: 0; padding: 10px 12px; font-size: 13.5px; }
+/* Two across: a GIF has to be big enough to read as more than a texture,
+ * and the sheet scrolls. */
+.gif-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.gif-cell {
+    width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
+    border-radius: var(--r-md); background: var(--n-900); cursor: pointer;
+}
+.gif-cell:active { opacity: 0.8; }
 .sticker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .sticker-cell {
     width: 100%; aspect-ratio: 1; object-fit: contain;

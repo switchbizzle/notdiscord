@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.20",
+    "date": "2026-09-08",
+    "changes": [
+      "🎬 GIFs from the phone. The attach sheet has a fifth tile; tap it and you get what’s trending straight away, or type to search. Tap one and it’s sent — the full-size version, not the little preview the grid drew",
+      "Same GIPHY search the desktop has had, through the same server route, so the key never reaches a phone. If a server hasn’t got GIPHY set up, the sheet says so in words rather than sitting there empty"
+    ]
+  },
+  {
     "version": "0.94.19",
     "date": "2026-09-08",
     "changes": [

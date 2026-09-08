@@ -134,6 +134,13 @@ pub async fn mark_read(session: &Session, channel_id: i64, message_id: i64) {
     }
 }
 
+/// GIF search, proxied through the server so the GIPHY key never reaches a
+/// phone. An empty query is "trending", which is what the sheet opens on.
+pub async fn gifs(session: &Session, query: &str) -> Result<Vec<shared::GifResult>, String> {
+    let q = js_sys::encode_uri_component(query).as_string().unwrap_or_default();
+    get(session, &format!("gifs?q={q}")).await
+}
+
 /// Full-text message search. The server already scopes DM hits to rooms you
 /// are in, so anything it returns is safe to show.
 pub async fn search(session: &Session, query: &str) -> Result<Vec<shared::SearchResult>, String> {
