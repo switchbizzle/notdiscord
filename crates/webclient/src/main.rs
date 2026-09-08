@@ -215,6 +215,15 @@ fn focus_composer() {
     }
 }
 
+/// A short vibration, the phone-native way of saying "look at me" — and
+/// unlike a ringtone it needs no user gesture to be allowed. Best-effort: a
+/// browser without the API just doesn't buzz.
+fn buzz() {
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().vibrate_with_duration(400);
+    }
+}
+
 fn host_name() -> String {
     web_sys::window().map(|w| w.location().host().unwrap_or_default()).unwrap_or_default()
 }
@@ -783,6 +792,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // the clock only runs while there is a call to time.
     let mut call_secs = use_signal(|| 0i64);
     let mut call_since = use_signal(|| 0i64);
+    // Somebody has joined the voice room of a DM you're in and you aren't
+    // there yet: (the DM's channel id, who). That IS the ring — a DM channel
+    // doubles as its own voice room, so a call is a join, and the desktop
+    // has rung off exactly this event since v0.20.0.
+    let mut incoming_call = use_signal(|| None::<(i64, User)>);
     // What the volume sliders draw. LiveKit holds the real gain; without
     // this the slider would snap back to 100 on every re-render.
     let mut volumes = use_signal(HashMap::<String, i64>::new);
@@ -1271,9 +1285,25 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 match channel_id {
                                     Some(id) => {
                                         voice_users.write().insert(user.id, id);
+                                        // Ring on an incoming DM call: a room of a
+                                        // DM I'm in, joined by somebody who isn't
+                                        // me, while I'm not in it. Same rule as the
+                                        // desktop, so the two never disagree about
+                                        // what a call is.
+                                        let is_my_dm = channels.peek().iter().any(|c| c.id == id && c.kind == "dm");
+                                        let already_there = voice_conn.peek().as_ref().map(|(c, _)| *c) == Some(id);
+                                        if is_my_dm && user.id != me_id && !already_there {
+                                            incoming_call.set(Some((id, user.clone())));
+                                            buzz();
+                                        }
                                     }
                                     None => {
                                         voice_users.write().remove(&user.id);
+                                        // The caller gave up before you answered:
+                                        // the ring must not outlive the call.
+                                        if incoming_call.peek().as_ref().is_some_and(|(_, who)| who.id == user.id) {
+                                            incoming_call.set(None);
+                                        }
                                     }
                                 }
                             }
@@ -1375,7 +1405,17 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     let state: VoiceGlue =
                         serde_json::from_str(&voice_get_state_js()).unwrap_or_default();
                     if state.connected {
-                        voice_conn.set(Some((channel.id, channel.name.clone())));
+                        // A DM's stored name is "dm:2:5"; what you're in a
+                        // call with is a person.
+                        let label = if channel.kind == "dm" {
+                            format!("@{}", dm_peer(&channel, me_id))
+                        } else {
+                            channel.name.clone()
+                        };
+                        voice_conn.set(Some((channel.id, label)));
+                        // Answering, or calling: either way there's nothing
+                        // left to ring about.
+                        incoming_call.set(None);
                         // Straight into the call screen, and start the clock.
                         call_since.set(now_ms());
                         call_secs.set(0);
@@ -2267,6 +2307,23 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     div { class: "chan-head-topic ellipsis", "{chan_topic}" }
                                 }
                             }
+                            if chan_is_dm {
+                                button {
+                                    class: "hbtn accent",
+                                    aria_label: "Call",
+                                    onclick: move |_| {
+                                        let Some(channel) = selected.peek().clone() else { return };
+                                        if voice_conn.peek().as_ref().map(|(id, _)| *id) == Some(channel.id) {
+                                            // Already on the line: show it rather
+                                            // than dialling on top of yourself.
+                                            call_open.set(true);
+                                        } else {
+                                            join_voice(channel);
+                                        }
+                                    },
+                                    Icon { name: "phone", size: 18 }
+                                }
+                            }
                             button {
                                 class: "hbtn",
                                 aria_label: "Members",
@@ -3016,6 +3073,41 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             aria_label: "Leave call",
                             onclick: leave_voice,
                             Icon { name: "phone-off", size: 22 }
+                        }
+                    }
+                }
+            }
+
+            // ---------------- somebody is calling ----------------
+            // Above the sheets: a call arriving while you're picking a
+            // sticker should still be the first thing you see.
+            if let Some((ring_channel, caller)) = incoming_call() {
+                div { class: "ring-screen",
+                    div { class: "ring-halo",
+                        span { class: "ring-wave" }
+                        span { class: "ring-wave late" }
+                        Avatar { user: caller.clone(), variant: "ring" }
+                    }
+                    div { class: "ring-name", "{caller.username}" }
+                    div { class: "ring-sub", "is calling you" }
+                    div { class: "grow" }
+                    div { class: "ring-actions",
+                        button {
+                            class: "ring-btn",
+                            onclick: move |_| incoming_call.set(None),
+                            span { class: "ring-circle", Icon { name: "phone-off", size: 24 } }
+                            span { "Decline" }
+                        }
+                        button {
+                            class: "ring-btn answer",
+                            onclick: move |_| {
+                                incoming_call.set(None);
+                                if let Some(channel) = channels.peek().iter().find(|c| c.id == ring_channel).cloned() {
+                                    join_voice(channel);
+                                }
+                            },
+                            span { class: "ring-circle", Icon { name: "phone", size: 24 } }
+                            span { "Answer" }
                         }
                     }
                 }

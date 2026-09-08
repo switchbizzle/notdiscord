@@ -340,6 +340,39 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .callbtn.active { border-color: var(--accent-700); background: var(--accent-900); color: var(--accent-300); }
 .callbtn.leave { width: 64px; border-color: var(--accent-700); background: var(--accent-900); color: var(--accent-200); }
 
+/* ---------- somebody is calling ---------- */
+/* Above sheets and the call screen both: whatever you were doing, a ring is
+ * the thing to look at. The halo is two rings breathing on the design's own
+ * nd-ring keyframes, offset so they never pulse in step. */
+.ring-screen {
+    position: absolute; inset: 0; z-index: 80;
+    display: flex; flex-direction: column; align-items: center;
+    padding-top: calc(76px + var(--safe-top));
+    background: linear-gradient(180deg, var(--section) 0%, var(--bg) 70%);
+    animation: nd-in 0.2s ease;
+}
+.ring-halo { position: relative; width: 132px; height: 132px; display: flex; align-items: center; justify-content: center; }
+.ring-wave {
+    position: absolute; inset: 0; border-radius: 66px; background: var(--accent-700);
+    animation: nd-ring 1.8s ease-in-out infinite;
+}
+.ring-wave.late { inset: 14px; border-radius: 52px; background: var(--accent-800); animation-delay: 0.5s; }
+.avatar.ring { position: relative; width: 96px; height: 96px; font-size: 38px; }
+.ring-name { margin-top: 26px; font-size: 26px; font-weight: 500; letter-spacing: -0.015em; }
+.ring-sub { margin-top: 6px; font-size: 13px; color: var(--accent-300); }
+.ring-actions {
+    display: flex; align-items: center; justify-content: space-between; gap: 24px;
+    width: 100%; padding: 0 44px; padding-bottom: calc(54px + var(--safe-bottom));
+}
+.ring-btn { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--n-400); font-size: 12px; }
+.ring-circle {
+    width: 68px; height: 68px; border-radius: 34px; border: 1px solid var(--n-700);
+    display: flex; align-items: center; justify-content: center;
+}
+.ring-btn.answer { color: var(--accent-200); }
+.ring-btn.answer .ring-circle { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+@media (prefers-reduced-motion: reduce) { .ring-screen, .ring-wave { animation: none; } }
+
 /* ---------- overlays: channel, search, settings, profile ---------- */
 .overlay {
     position: absolute; inset: 0; z-index: 30;

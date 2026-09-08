@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.19",
+    "date": "2026-09-08",
+    "changes": [
+      "📞 Call someone from the phone. Open a DM and there is a phone button in the header; tap it and you are in a voice call with them, the same way the desktop has done it since v0.20.0. On their end a full-screen ring comes up — their name, \"is calling you\", Answer or Decline — and the phone buzzes, which is the one kind of ringtone a mobile browser lets a page make without being asked first",
+      "A ring that nobody answers does not hang around: if the caller gives up before you pick up, the screen clears itself. And a call you are already on shows you the call rather than dialling on top of it",
+      "Under the hood this needed no server work at all. A DM channel has always doubled as its own voice room, and the desktop rings off the same event — somebody joining a room of a conversation you are in. The phone just never asked"
+    ]
+  },
+  {
     "version": "0.94.18",
     "date": "2026-09-08",
     "changes": [
