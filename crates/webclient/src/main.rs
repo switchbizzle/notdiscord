@@ -417,22 +417,19 @@ fn different_day(a: i64, b: i64) -> bool {
     local_day(a) != local_day(b)
 }
 
-/// "Today", "Yesterday", or the date. Same three words the desktop uses so
-/// the two apps read alike; the arithmetic is JS's rather than chrono's,
-/// which this crate doesn't carry.
+/// "Today", "Yesterday", "3 days ago", or the date. The words are
+/// shared::day_words, so the two apps read alike; the arithmetic is JS's
+/// rather than chrono's, which this crate doesn't carry.
 fn day_label(ms: i64) -> String {
-    let day = local_day(ms);
+    let (y, m, d) = local_day(ms);
     let now = js_sys::Date::new_0();
-    let today = (now.get_full_year(), now.get_month(), now.get_date());
-    // Day 0 is JS for "the last day of the previous month", so this stays
-    // right across a month end and a DST change alike.
-    let y = js_sys::Date::new_with_year_month_day(now.get_full_year(), now.get_month() as i32, now.get_date() as i32 - 1);
-    let yesterday = (y.get_full_year(), y.get_month(), y.get_date());
-    if day == today {
-        return "Today".into();
-    }
-    if day == yesterday {
-        return "Yesterday".into();
+    // Local midnight of each day, then whole days between them. A DST
+    // change makes one of those days 23 or 25 hours; rounding absorbs it.
+    let midnight = |y: u32, m: u32, d: u32| js_sys::Date::new_with_year_month_day(y, m as i32, d as i32).get_time();
+    let today = midnight(now.get_full_year(), now.get_month(), now.get_date());
+    let days_ago = ((today - midnight(y, m, d)) / 86_400_000.0).round() as i64;
+    if let Some(words) = shared::day_words(days_ago) {
+        return words;
     }
     let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
     let opts = js_sys::Object::new();
@@ -916,6 +913,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // True from tapping a channel until its history is back, so the screen
     // can say so instead of standing blank.
     let mut loading_channel = use_signal(|| false);
+    // Bumped when the local date changes, so the day dividers move from
+    // "Today" to "Yesterday" to "2 days ago" at midnight on their own.
+    let mut day_tick = use_signal(|| 0u32);
     let mut draft = use_signal(String::new);
     // One-off messages — an error, "voice disconnected" — shown as a toast
     // that dismisses itself. Connection state is NOT this: see `offline`.
@@ -1310,6 +1310,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // here, rather than a Closure wired into addEventListener.
     use_future(move || async move {
         let mut was_hidden = false;
+        let mut today = local_day(now_ms());
         loop {
             gloo_timers::future::TimeoutFuture::new(1000).await;
             let hidden = web_sys::window()
@@ -1320,6 +1321,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 resync();
             }
             was_hidden = hidden;
+            // The date turned over — at midnight, or a phone waking up on
+            // another day. Checked, not scheduled, for the second reason.
+            let date = local_day(now_ms());
+            if date != today {
+                today = date;
+                let n = *day_tick.peek();
+                day_tick.set(n.wrapping_add(1));
+            }
             // A request came back 401 somewhere. That is the server saying
             // this token is not a session any more — the socket may never
             // have noticed, having been asleep through the whole thing.
@@ -2743,6 +2752,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 // The first message after where you left off,
                                 // and the messages that open a new day. Both
                                 // are worked out once per render, not per row.
+                                // Read for the subscription: the day labels
+                                // are relative to now, and this is what
+                                // re-renders them when the date changes.
+                                let _ = day_tick();
                                 let first_unread = divider_at().and_then(|last_read| {
                                     messages().iter().map(|m| m.id).filter(|id| *id > last_read).min()
                                 });

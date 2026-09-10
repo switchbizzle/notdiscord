@@ -553,6 +553,22 @@ pub struct ApiError {
     pub error: String,
 }
 
+/// The words for a day `days_ago` whole local days back. Today and
+/// yesterday are named; the next few weeks are counted, which is what a
+/// person actually wants to know about a message ("3 days ago", not "Sep 7
+/// at 4:15 PM" — Jon); further back a date says more, and the caller has
+/// one. A negative number is a clock that disagrees with the server's,
+/// and reads as today rather than as nonsense. Shared so the two apps
+/// agree on where each boundary falls.
+pub fn day_words(days_ago: i64) -> Option<String> {
+    match days_ago {
+        i64::MIN..=0 => Some("Today".into()),
+        1 => Some("Yesterday".into()),
+        2..=29 => Some(format!("{days_ago} days ago")),
+        _ => None,
+    }
+}
+
 /// Response from POST /api/upload; `url` is server-relative (e.g. `/files/ab12….gif`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadResponse {
@@ -1141,6 +1157,19 @@ mod tests {
             parse_message_link("https://elsewhere/app/channels/7/1204", &[String::new()]),
             None
         );
+    }
+
+    #[test]
+    fn days_are_named_then_counted_then_dated() {
+        assert_eq!(day_words(0).as_deref(), Some("Today"));
+        assert_eq!(day_words(1).as_deref(), Some("Yesterday"));
+        assert_eq!(day_words(2).as_deref(), Some("2 days ago"));
+        assert_eq!(day_words(29).as_deref(), Some("29 days ago"));
+        // A month back, the date is the better answer.
+        assert_eq!(day_words(30), None);
+        // A message stamped later than "now" is a clock that is off, not
+        // something from tomorrow.
+        assert_eq!(day_words(-1).as_deref(), Some("Today"));
     }
 
     #[test]

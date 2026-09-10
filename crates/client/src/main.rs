@@ -254,6 +254,10 @@ impl ConfirmAction {
 /// second. That is exactly what happened — the React button set the jump
 /// target, so it scrolled to the message instead of opening the palette, and
 /// the palette never opened at all (Jon, #feature-requests).
+/// See MainView: bumped when the local date changes.
+#[derive(Clone, Copy)]
+pub struct DayTick(pub Signal<u32>);
+
 #[derive(Clone, Copy)]
 pub struct ReactTarget(pub Signal<Option<i64>>);
 
@@ -1049,6 +1053,11 @@ fn MainView(session: api::Session) -> Element {
     let mut tags = use_signal(Vec::<Tag>::new);
     use_context_provider(|| members);
     use_context_provider(|| tags);
+    // Bumped when the local date changes. Every row reads it, so at
+    // midnight "Today at" becomes "Yesterday at" and "2 days ago" becomes
+    // "3 days ago" without anybody sending anything (Jon's "updated
+    // properly as a new message reaches a new day old").
+    let mut day_tick = use_context_provider(|| DayTick(Signal::new(0u32))).0;
     // Server emojis, shared with the markdown renderer for :name: lookups.
     let mut emojis = use_signal(Vec::<shared::CustomEmoji>::new);
     use_context_provider(|| emojis);
@@ -1758,13 +1767,23 @@ fn MainView(session: api::Session) -> Element {
         }
     });
 
-    // Expire stale typing indicators once a second.
+    // Expire stale typing indicators once a second — and notice the date
+    // turning over. Checked rather than scheduled: a timer set for midnight
+    // fires late after a laptop sleeps through it, and a check every second
+    // catches up the moment it wakes.
     use_future(move || async move {
+        let mut today = chrono::Local::now().date_naive();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             let now = now_ms();
             if typing.peek().values().any(|(_, _, expiry)| *expiry < now) {
                 typing.write().retain(|_, (_, _, expiry)| *expiry >= now);
+            }
+            let date = chrono::Local::now().date_naive();
+            if date != today {
+                today = date;
+                let n = *day_tick.peek();
+                day_tick.set(n.wrapping_add(1));
             }
         }
     });
@@ -7335,6 +7354,9 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
     let mut jump_ctx = use_context::<JumpTo>().0;
     let public_url = use_context::<PublicUrl>().0;
     let ctx_menu = use_context::<menu::MenuSignal>();
+    // Read for its subscription alone: the stamp below is computed against
+    // "now", and this is what re-renders the row when the date changes.
+    let _ = use_context::<DayTick>().0();
     let mut editing = use_signal(|| false);
     let mut edit_draft = use_signal(String::new);
 
@@ -7509,7 +7531,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                             style: "color: {name_color(msg.author.id, &members_ctx(), &tags_ctx())}",
                             "{msg.author.username}"
                         }
-                        span { class: "msg-time", {format_time(msg.created_at)} }
+                        span { class: "msg-time", title: "{format_exact(msg.created_at)}", {format_time(msg.created_at)} }
                         if msg.pinned {
                             span { class: "pin-flag", title: "Pinned message",
                                 Icon { name: "pin", size: 11 }
@@ -8348,21 +8370,31 @@ fn format_date(unix_ms: i64) -> String {
         .unwrap_or_default()
 }
 
+/// "Today at 4:15 PM", "Yesterday at 5:01 PM", "3 days ago", then a date.
+/// The boundary words are shared::day_words, so the phone says the same.
+/// Past yesterday the clock is dropped — "3 days ago" is a day, not a
+/// moment (Jon) — and the exact moment is on the hover, see format_exact.
 fn format_time(unix_ms: i64) -> String {
-    use chrono::{Datelike, Duration, Local};
+    use chrono::{Datelike, Local};
     let Some(dt) = chrono::DateTime::from_timestamp_millis(unix_ms) else {
         return String::new();
     };
     let dt = dt.with_timezone(&Local);
     let now = Local::now();
     let clock = dt.format("%-I:%M %p");
-    if dt.date_naive() == now.date_naive() {
-        format!("Today at {clock}")
-    } else if dt.date_naive() == (now - Duration::days(1)).date_naive() {
-        format!("Yesterday at {clock}")
-    } else if dt.year() == now.year() {
-        dt.format("%b %-d at %-I:%M %p").to_string()
-    } else {
-        dt.format("%b %-d, %Y").to_string()
+    // Whole calendar days, not 24-hour spans: 11pm to 1am is "yesterday".
+    let days_ago = (now.date_naive() - dt.date_naive()).num_days();
+    match shared::day_words(days_ago) {
+        Some(words) if days_ago <= 1 => format!("{words} at {clock}"),
+        Some(words) => words,
+        None if dt.year() == now.year() => dt.format("%b %-d at %-I:%M %p").to_string(),
+        None => dt.format("%b %-d, %Y").to_string(),
     }
+}
+
+/// The full moment, for hovering a stamp that only says "3 days ago".
+fn format_exact(unix_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(unix_ms)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%A, %B %-d, %Y at %-I:%M %p").to_string())
+        .unwrap_or_default()
 }

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.31",
+    "date": "2026-09-10",
+    "changes": [
+      "📅 Older messages say how old they are. Anything past yesterday reads “3 days ago” rather than a clock time — a day is what you want to know about a message that old, not the minute — and the labels move on their own at midnight instead of waiting for the next message to arrive. Hover one on the desktop for the exact moment. Beyond a month it is a date, as before",
+      "📦 The phone app is half the download it was. The web app’s code has been shipping unoptimised for months because the optimiser crashed on this build machine; that is fixed, and it is 1.7 MB where it was 3.3 MB — before the compression added last time, which now works on the smaller file"
+    ]
+  },
+  {
     "version": "0.94.30",
     "date": "2026-09-10",
     "changes": [
