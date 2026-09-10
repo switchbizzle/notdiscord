@@ -249,6 +249,23 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+    // The web app, compressed. Brotli or gzip, whichever the phone asks for:
+    // the wasm is 3.3 MB raw and about a quarter of that squeezed, and it
+    // went out raw — neither this server nor the proxy in front of it did
+    // anything about it. Scoped to /app on purpose: /files answers Range
+    // requests for video and the client download, and compressing a
+    // partial response would corrupt it. The immutable cache header on the
+    // hashed assets means each phone pays for this once per release.
+    let webapp = Router::new()
+        .route("/app", get(routes::webapp_index))
+        .route("/app/", get(routes::webapp_index))
+        // A message permalink is a path, not a file: hand the shell to the
+        // browser and let the web app read the ids back out of its own URL.
+        // Static segments beat the wildcard below, so assets are unaffected.
+        .route("/app/channels/{channel}/{message}", get(routes::webapp_index))
+        .route("/app/{*path}", get(routes::webapp_asset))
+        .layer(tower_http::compression::CompressionLayer::new());
+
 
     let app = Router::new()
         .route("/api/register", post(routes::register))
@@ -330,13 +347,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/unread", get(routes::unread))
         .route("/api/read", post(routes::mark_read))
         .route("/download", get(routes::download_client))
-        .route("/app", get(routes::webapp_index))
-        .route("/app/", get(routes::webapp_index))
-        // A message permalink is a path, not a file: hand the shell to the
-        // browser and let the web app read the ids back out of its own URL.
-        // Static segments beat the wildcard below, so assets are unaffected.
-        .route("/app/channels/{channel}/{message}", get(routes::webapp_index))
-        .route("/app/{*path}", get(routes::webapp_asset))
+        .merge(webapp)
         .route("/files/{name}", get(routes::serve_file_legacy))
         .route("/files/{id}/{name}", get(routes::serve_file))
         .route("/ws", any(ws::ws_handler))

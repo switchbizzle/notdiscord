@@ -11,6 +11,9 @@ tokio = { workspace = true }
 futures-util = { workspace = true }
 anyhow = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
+# Brotli/gzip for the web app's assets. Already in the tree transitively, so
+# this costs nothing new; the 3 MB wasm was going out raw.
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 argon2 = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }

@@ -314,6 +314,25 @@ fn deep_linked_message() -> Option<(i64, i64)> {
     shared::parse_message_path(&path)
 }
 
+/// The channel that was open when the phone put the app away. Android
+/// drops a backgrounded tab whenever it wants the memory back, and the app
+/// then boots from nothing — at the channel list, every time, which Jon read
+/// as "it forgot where I was". It had. localStorage, next to the session.
+const LAST_CHANNEL_KEY: &str = "nd_last_channel";
+
+fn remembered_channel() -> Option<i64> {
+    gloo_storage::LocalStorage::get::<i64>(LAST_CHANNEL_KEY).ok()
+}
+
+fn remember_channel(id: Option<i64>) {
+    match id {
+        Some(id) => {
+            let _ = gloo_storage::LocalStorage::set(LAST_CHANNEL_KEY, id);
+        }
+        None => gloo_storage::LocalStorage::delete(LAST_CHANNEL_KEY),
+    }
+}
+
 /// The channel a push notification asked for: the service worker opens
 /// `/app/?channel=12` when there is no window to hand the tap to.
 fn deep_linked_channel() -> Option<i64> {
@@ -1162,9 +1181,23 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // The service worker opens `/app/?channel=12` when a push is tapped with
     // no window to hand it to, and nothing used to read it back.
     let mut open_channel_id = use_signal(deep_linked_channel);
+    // Read once, at the first render — before the effect below has had a
+    // chance to clear it for "no channel open yet".
+    let mut resume_channel = use_signal(remembered_channel);
+
+    // Keep the note current: a channel on screen is remembered, backing out
+    // to the list forgets it, so a reload lands where you actually were.
+    use_effect(move || match (overlay(), selected()) {
+        (Some("channel"), Some(channel)) => remember_channel(Some(channel.id)),
+        (None, _) => remember_channel(None),
+        _ => {}
+    });
+
     use_effect(move || {
-        let wanted = open_message().map(|(channel_id, _)| channel_id).or_else(|| open_channel_id());
-        let Some(channel_id) = wanted else { return };
+        let linked = open_message().map(|(channel_id, _)| channel_id).or_else(|| open_channel_id());
+        // A link someone tapped beats where we happened to be.
+        let resuming = linked.is_none();
+        let Some(channel_id) = linked.or_else(|| resume_channel()) else { return };
         let list = channels();
         if list.is_empty() {
             // Still loading, or an account with nothing to see. Either way
@@ -1174,9 +1207,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         let target = open_message().map(|(_, message_id)| message_id);
         open_message.set(None);
         open_channel_id.set(None);
+        resume_channel.set(None);
         forget_deep_link();
         let Some(channel) = list.iter().find(|c| c.id == channel_id).cloned() else {
-            status.set("that link points at a channel you can't see".into());
+            // A link to somewhere you can't see is worth saying. A remembered
+            // channel that has since gone is not; the list is fine.
+            if !resuming {
+                status.set("that link points at a channel you can't see".into());
+            }
             return;
         };
         match target {

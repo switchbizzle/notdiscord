@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.29",
+    "date": "2026-09-10",
+    "changes": [
+      "🚀 The phone app loads a lot faster on a slow connection. The web app is compressed on the way out now — the biggest piece of it was going over the wire at four times the size it needed to be, and nothing was squeezing it. The first load after an update is where you will feel it; after that the pieces are cached as before",
+      "No more white page while it starts. The page draws the app’s background and the NotDiscord mark the instant it arrives, and takes them down the moment the app is on its feet",
+      "📍 The phone comes back to where you were. Android quietly closes the app when it wants the memory, and it used to come back to the channel list every time; now it reopens the channel or DM you had open, and only the list if that is where you had backed out to"
+    ]
+  },
+  {
     "version": "0.94.28",
     "date": "2026-09-08",
     "changes": [
