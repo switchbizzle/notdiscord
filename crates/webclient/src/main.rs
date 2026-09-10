@@ -47,6 +47,43 @@ extern "C" {
     fn push_state_js() -> String;
 }
 
+// Upload glue (pwa/upload.js). The file stays in the browser, which streams
+// it from disk straight into the request; wasm only sees its name and size.
+#[wasm_bindgen(js_namespace = ndUpload)]
+extern "C" {
+    #[wasm_bindgen(js_name = stage)]
+    fn upload_stage_js(input_id: &str) -> String;
+    #[wasm_bindgen(js_name = send)]
+    fn upload_send_js(url: &str, token: &str) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = progress)]
+    fn upload_progress_js() -> f64;
+    #[wasm_bindgen(js_name = discard)]
+    fn upload_discard_js();
+}
+
+/// What the glue tells us about a picked file: enough to show it and name it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct StagedFile {
+    name: String,
+    size: u64,
+    /// "image", "video", or "file".
+    kind: String,
+    /// A blob: URL for the preview; empty for a plain file.
+    url: String,
+}
+
+/// "4.3 MB", the way a person would say it.
+fn human_size(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1_048_576.0 {
+        format!("{:.1} MB", b / 1_048_576.0)
+    } else if b >= 1024.0 {
+        format!("{:.0} KB", b / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 // Install glue (pwa/install.js).
 #[wasm_bindgen(js_namespace = ndInstall)]
 extern "C" {
@@ -595,6 +632,7 @@ fn App() -> Element {
         document::Script { src: "/app/voice.js" }
         document::Script { src: "/app/push.js" }
         document::Script { src: "/app/install.js" }
+        document::Script { src: "/app/upload.js" }
         // Notices when a newer build is on the server and reloads, because an
         // installed app otherwise runs whatever it booted with forever.
         document::Script { src: "/app/freshen.js" }
@@ -886,6 +924,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // small pill, not a bar across the title.
     let mut offline = use_signal(|| false);
     let mut uploading = use_signal(|| false);
+    // A picked file waiting on the preview sheet, and how far its send is.
+    let mut staged = use_signal(|| None::<StagedFile>);
+    let mut upload_pct = use_signal(|| 0.0f64);
     // Which of the four tabs is showing.
     let mut tab = use_signal(|| "chats");
     // A full-screen layer over the tabs: "channel", "search", "settings" or
@@ -1867,27 +1908,71 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         });
     };
 
-    // Both attach options upload and post the same way; only the accept
-    // filter differs, which is a matter for the input element.
-    let mut upload_files = move |evt: Event<FormData>| {
-        sheet.set(None);
+    // Picking a file no longer sends it. It goes to a preview sheet with a
+    // Send button and a progress bar. It used to upload straight away behind
+    // a "…" on the plus button, and a big photo on mobile data spent ten
+    // seconds there looking exactly like "did not send" — right up until it
+    // appeared (Jon, twice, and once from the camera). The three inputs
+    // differ only in their accept filter; the glue takes the File out of
+    // whichever fired.
+    let mut stage_file = move |input_id: &'static str| {
+        let json = upload_stage_js(input_id);
+        match serde_json::from_str::<StagedFile>(&json) {
+            Ok(file) => {
+                staged.set(Some(file));
+                upload_pct.set(0.0);
+                sheet.set(Some("preview"));
+            }
+            // Nothing picked: the dialog was cancelled. Back to chat.
+            Err(_) => sheet.set(None),
+        }
+    };
+
+    let mut discard_staged = move || {
+        upload_discard_js();
+        staged.set(None);
+        upload_pct.set(0.0);
+    };
+
+    let mut send_staged = move |_| {
+        if uploading() {
+            return;
+        }
+        let Some(file) = staged() else { return };
+        let Some(channel) = selected.peek().clone() else { return };
+        uploading.set(true);
         spawn(async move {
-            let Some(file) = evt.files().into_iter().next() else { return };
-            let name = file.name();
-            uploading.set(true);
-            if let Ok(bytes) = file.read_bytes().await {
-                match api::upload(&sess(), &name, bytes.to_vec()).await {
-                    Ok(url) => {
-                        if let Some(channel) = selected.peek().clone() {
+            // Progress is polled off the glue, in the house style: a number
+            // read every 100ms, no Closure to wire up or tear down.
+            let ticker = spawn(async move {
+                loop {
+                    gloo_timers::future::TimeoutFuture::new(100).await;
+                    upload_pct.set(upload_progress_js());
+                }
+            });
+            let name = js_sys::encode_uri_component(&file.name).as_string().unwrap_or_default();
+            let url = format!("/api/upload?name={name}");
+            let result = wasm_bindgen_futures::JsFuture::from(upload_send_js(&url, &sess().token)).await;
+            ticker.cancel();
+            match result {
+                Ok(body) => {
+                    let body = body.as_string().unwrap_or_default();
+                    match serde_json::from_str::<shared::UploadResponse>(&body) {
+                        Ok(out) => {
                             ws.send(ClientEvent::SendMessage {
                                 channel_id: channel.id,
-                                content: url,
+                                content: out.url,
                                 reply_to: None,
                             });
+                            discard_staged();
+                            sheet.set(None);
                         }
+                        Err(_) => status.set("the server answered something odd".into()),
                     }
-                    Err(e) => status.set(e),
                 }
+                // The file is still staged: the sheet stays up and Send
+                // tries again, rather than making you find the photo twice.
+                Err(e) => status.set(e.as_string().unwrap_or_else(|| "upload failed".into())),
             }
             uploading.set(false);
         });
@@ -1907,6 +1992,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // that number would keep the tab lit after every DM was read.
     let any_mention = unread().values().any(|(count, mentions, _)| *count > 0 && *mentions > 0);
     let online_now = members().iter().filter(|m| m.online).count();
+    let upload_percent = (upload_pct() * 100.0).round() as i64;
     // DMs newest-first: the conversation you're actually having belongs at
     // the top, which is what `last_at` is for.
     let dm_list = {
@@ -3546,34 +3632,89 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
 
             // ---------------- sheets ----------------
             if let Some(which) = sheet() {
-                div { class: "scrim", onclick: move |_| sheet.set(None) }
+                div {
+                    class: "scrim",
+                    onclick: move |_| {
+                        // A send in flight keeps its sheet; anything else
+                        // staged and not sent is let go of with the sheet.
+                        if uploading() {
+                            return;
+                        }
+                        discard_staged();
+                        sheet.set(None);
+                    },
+                }
                 div { class: "sheet",
                     div { class: "sheet-grip" }
+
+                    if which == "preview" {
+                        if let Some(file) = staged() {
+                            div { class: "sheet-head", span { class: "sheet-title", "Send this?" } }
+                            if file.kind == "image" {
+                                img { class: "preview-img", src: "{file.url}", alt: "" }
+                            } else if file.kind == "video" {
+                                video { class: "preview-img", src: "{file.url}", controls: true, preload: "metadata" }
+                            } else {
+                                div { class: "preview-file",
+                                    Icon { name: "file", size: 20 }
+                                    span { class: "grow", "{file.name}" }
+                                }
+                            }
+                            div { class: "preview-meta", "{file.name} · {human_size(file.size)}" }
+                            if uploading() {
+                                div { class: "upload-bar", div { style: "width: {upload_percent}%" } }
+                                div { class: "preview-meta", "sending… {upload_percent}%" }
+                            }
+                            div { class: "preview-actions",
+                                button {
+                                    class: "btn",
+                                    disabled: uploading(),
+                                    onclick: move |_| {
+                                        discard_staged();
+                                        sheet.set(None);
+                                    },
+                                    "Cancel"
+                                }
+                                button {
+                                    class: "btn btn-primary",
+                                    disabled: uploading(),
+                                    onclick: send_staged,
+                                    if uploading() { "Sending…" } else { "Send" }
+                                }
+                            }
+                        }
+                    }
 
                     if which == "attach" {
                         div { class: "sheet-head", span { class: "sheet-title", "Send something" } }
                         div { class: "attach-grid",
                             label { class: "attach-opt",
                                 input {
+                                    id: "nd-pick-photo",
                                     r#type: "file",
                                     accept: "image/*",
-                                    onchange: move |evt| upload_files(evt),
+                                    onchange: move |_| stage_file("nd-pick-photo"),
                                 }
                                 Icon { name: "camera", size: 20 }
                                 span { "Photo" }
                             }
                             label { class: "attach-opt",
                                 input {
+                                    id: "nd-pick-camera",
                                     r#type: "file",
                                     accept: "image/*",
                                     capture: "environment",
-                                    onchange: move |evt| upload_files(evt),
+                                    onchange: move |_| stage_file("nd-pick-camera"),
                                 }
                                 Icon { name: "camera", size: 20 }
                                 span { "Camera" }
                             }
                             label { class: "attach-opt",
-                                input { r#type: "file", onchange: move |evt| upload_files(evt) }
+                                input {
+                                    id: "nd-pick-file",
+                                    r#type: "file",
+                                    onchange: move |_| stage_file("nd-pick-file"),
+                                }
                                 Icon { name: "file", size: 20 }
                                 span { "File" }
                             }
@@ -4122,21 +4263,31 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     span { class: "msg-time", {format_time(msg.created_at)} }
                 }
             }
+            // A centred dialog, not a bar inside the row: on a tall picture
+            // the row starts above the screen, and so did the question (Jon).
+            // Touches are stopped at the card so the row underneath doesn't
+            // start a long-press timer.
             if confirming_delete() {
-                div { class: "msg-confirm",
-                    span { "Delete this message?" }
-                    button {
-                        class: "msg-confirm-yes",
-                        onclick: move |_| {
-                            confirming_delete.set(false);
-                            ws.send(ClientEvent::DeleteMessage { message_id: msg_id });
-                        },
-                        "Delete"
-                    }
-                    button {
-                        class: "msg-confirm-no",
-                        onclick: move |_| confirming_delete.set(false),
-                        "Cancel"
+                div { class: "confirm-scrim", onclick: move |_| confirming_delete.set(false) }
+                div {
+                    class: "confirm-card",
+                    ontouchstart: move |e| e.stop_propagation(),
+                    div { class: "confirm-title", "Delete this message?" }
+                    div { class: "confirm-sub", "Everyone loses it. There is no undo." }
+                    div { class: "confirm-actions",
+                        button {
+                            class: "msg-confirm-no",
+                            onclick: move |_| confirming_delete.set(false),
+                            "Cancel"
+                        }
+                        button {
+                            class: "msg-confirm-yes danger",
+                            onclick: move |_| {
+                                confirming_delete.set(false);
+                                ws.send(ClientEvent::DeleteMessage { message_id: msg_id });
+                            },
+                            "Delete"
+                        }
                     }
                 }
             }

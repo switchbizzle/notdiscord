@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.30",
+    "date": "2026-09-10",
+    "changes": [
+      "📷 Sending a photo from the phone shows you the photo first. Pick one from the gallery, the camera, or a file and it goes to a preview with a Send button and a progress bar, instead of quietly uploading behind a “…” on the plus button — which on mobile data looked exactly like nothing happening until it suddenly appeared. If the upload fails, the photo stays put and Send tries again",
+      "🗑️ “Delete this message?” is a dialog in the middle of the screen now. It used to sit inside the message itself, so on a tall picture it was off the top of the screen"
+    ]
+  },
+  {
     "version": "0.94.29",
     "date": "2026-09-10",
     "changes": [

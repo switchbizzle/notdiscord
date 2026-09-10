@@ -689,6 +689,22 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .sheet-action .icon { color: var(--n-400); }
 .sheet-action.danger, .sheet-action.danger .icon { color: var(--danger); }
 .attach-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+/* The preview sheet: what you picked, how big it is, and while it goes up,
+ * how far it has got. */
+.preview-img {
+    display: block; max-width: 100%; max-height: 42vh; margin: 0 auto;
+    border-radius: var(--r-md); object-fit: contain; background: var(--n-900);
+}
+.preview-file {
+    display: flex; align-items: center; gap: 10px; padding: 14px;
+    background: var(--n-900); border-radius: var(--r-md); font-size: 14px;
+    overflow-wrap: anywhere;
+}
+.preview-meta { font-size: 12px; color: var(--n-600); margin-top: 8px; text-align: center; overflow-wrap: anywhere; }
+.preview-actions { display: flex; gap: 8px; margin-top: 14px; }
+.preview-actions .btn { flex: 1; min-height: 44px; }
+.upload-bar { height: 6px; border-radius: 3px; background: var(--n-800); overflow: hidden; margin-top: 12px; }
+.upload-bar > div { height: 100%; background: var(--accent); transition: width 0.15s linear; }
 .attach-opt {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     background: var(--n-900); border-radius: var(--r-md);
@@ -839,7 +855,23 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
     font-size: 13px; font-weight: 600;
 }
 .msg-confirm-yes { background: var(--accent-800); color: var(--accent-100); }
+.msg-confirm-yes.danger { background: var(--danger); color: var(--bg); }
 .msg-confirm-no { background: var(--n-800); color: var(--n-200); }
+/* The delete question, centred over everything rather than sitting in the
+ * row it is about. Fixed, so a row scrolled half off the top can't take
+ * the question with it. Under the toast and the connection pill. */
+.confirm-scrim { position: fixed; inset: 0; z-index: 90; background: rgba(9, 10, 16, 0.62); }
+.confirm-card {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 91;
+    width: min(320px, calc(100vw - 48px));
+    background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-md);
+    padding: 18px 16px 14px; animation: nd-fade 0.16s ease-out;
+}
+.confirm-title { font-size: 15px; font-weight: 600; }
+.confirm-sub { font-size: 12.5px; color: var(--n-600); margin-top: 6px; line-height: 1.45; }
+.confirm-actions { display: flex; gap: 8px; margin-top: 16px; }
+.confirm-actions button { flex: 1; }
+@keyframes nd-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---------- image viewer ---------- */
 .lightbox {
