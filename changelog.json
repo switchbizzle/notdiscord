@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.94.32",
+    "date": "2026-09-11",
+    "changes": [
+      "📷 The upload progress bar on the phone now actually moves. It sat at 0% for the whole send on some phones — which on a slow connection looked exactly like stuck — because the app’s background worker was relaying uploads and the browser reports no progress for those. Uploads go straight to the server now",
+      "Cancel on the photo preview works while a send is in flight: it stops the upload and closes the sheet, instead of being greyed out at the one moment you’d want it",
+      "The first tile in the attach sheet is called Gallery now, since Photo and Camera side by side read like the same thing twice",
+      "📡 The channel list comes back with everything else. If the very first request after Android woke the app failed — the radio not quite up yet — the Chats tab stayed empty until you reloaded while people and messages recovered fine. It retries at startup now and is refreshed whenever the app reconnects"
+    ]
+  },
+  {
     "version": "0.94.31",
     "date": "2026-09-10",
     "changes": [

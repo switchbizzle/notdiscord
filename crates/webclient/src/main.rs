@@ -1188,9 +1188,19 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 session.set(None);
                 return;
             }
-            match api::channels(&sess()).await {
-                Ok(list) => channels.set(list),
-                Err(e) => status.set(e),
+            // The list everything else hangs off. A few tries, because the
+            // first request after Android restores the app can go out before
+            // the connection is really back, and an empty Chats tab that never
+            // fills is what that used to look like.
+            for attempt in 0..5u32 {
+                match api::channels(&sess()).await {
+                    Ok(list) => {
+                        channels.set(list);
+                        break;
+                    }
+                    Err(e) if attempt == 4 => status.set(e),
+                    Err(_) => gloo_timers::future::TimeoutFuture::new(1500).await,
+                }
             }
             if let Ok(list) = api::users(&sess()).await {
                 members.set(list);
@@ -1293,6 +1303,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         messages.set(msgs);
                     }
                 }
+            }
+            // The channel list too: it is fetched once at boot, and if that
+            // one request failed — a phone coming back with the radio not
+            // quite up yet — the Chats tab stayed empty until a manual reload
+            // while everything else recovered (Jon).
+            if let Ok(list) = api::channels(&sess()).await {
+                channels.set(list);
             }
             // Then the badges and who's around, which drift the same way.
             if let Ok(list) = api::unread(&sess()).await {
@@ -1981,7 +1998,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
                 // The file is still staged: the sheet stays up and Send
                 // tries again, rather than making you find the photo twice.
-                Err(e) => status.set(e.as_string().unwrap_or_else(|| "upload failed".into())),
+                // A cancel rejects too, and is not news to the person who did it.
+                Err(e) => {
+                    let message = e.as_string().unwrap_or_else(|| "upload failed".into());
+                    if message != "cancelled" {
+                        status.set(message);
+                    }
+                }
             }
             uploading.set(false);
         });
@@ -3679,11 +3702,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 div { class: "preview-meta", "sending… {upload_percent}%" }
                             }
                             div { class: "preview-actions",
+                                // Never disabled: mid-upload it aborts the
+                                // request. It used to grey out while sending,
+                                // which on a send that had stalled made it "a
+                                // lie" (Jon) — the one moment you want it.
                                 button {
                                     class: "btn",
-                                    disabled: uploading(),
                                     onclick: move |_| {
                                         discard_staged();
+                                        uploading.set(false);
                                         sheet.set(None);
                                     },
                                     "Cancel"
@@ -3708,8 +3735,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     accept: "image/*",
                                     onchange: move |_| stage_file("nd-pick-photo"),
                                 }
-                                Icon { name: "camera", size: 20 }
-                                span { "Photo" }
+                                Icon { name: "image", size: 20 }
+                                span { "Gallery" }
                             }
                             label { class: "attach-opt",
                                 input {

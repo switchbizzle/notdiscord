@@ -4,6 +4,12 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", (e) => {
+  // Only GETs. A request this worker answers is one the browser makes on
+  // the worker's behalf, and an upload that goes that way reports no
+  // progress at all — the page's XMLHttpRequest sees 0% from start to
+  // finish, which on a slow connection is indistinguishable from stuck
+  // (Jon, with a 4 MB photo). Let uploads go straight to the network.
+  if (e.request.method !== "GET") return;
   e.respondWith(fetch(e.request));
 });
 
