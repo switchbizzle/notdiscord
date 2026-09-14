@@ -959,6 +959,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut query = use_signal(String::new);
     let mut results = use_signal(Vec::<shared::SearchResult>::new);
     let mut searching = use_signal(|| false);
+    // The Files screen: what the open channel has had attached, and whether
+    // the list is still on its way.
+    let mut files = use_signal(Vec::<shared::FileEntry>::new);
+    let mut files_loading = use_signal(|| false);
     // Edit profile.
     let mut status_draft = use_signal(String::new);
     let mut bio_draft = use_signal(String::new);
@@ -2813,6 +2817,27 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     Icon { name: "phone", size: 18 }
                                 }
                             }
+                            // Everything ever attached here, the way the
+                            // desktop's file icon shows it (switchb: "should i
+                            // add the files viewer to mobile too").
+                            button {
+                                class: "hbtn",
+                                aria_label: "Files",
+                                onclick: move |_| {
+                                    let Some(channel) = selected.peek().clone() else { return };
+                                    files.set(Vec::new());
+                                    files_loading.set(true);
+                                    overlay.set(Some("files"));
+                                    spawn(async move {
+                                        match api::channel_files(&sess(), channel.id).await {
+                                            Ok(list) => files.set(list),
+                                            Err(e) => status.set(e),
+                                        }
+                                        files_loading.set(false);
+                                    });
+                                },
+                                Icon { name: "file", size: 18 }
+                            }
                             button {
                                 class: "hbtn",
                                 aria_label: "Members",
@@ -3034,6 +3059,108 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
 
                 // ---------------- Search ----------------
+                // ---------------- Files ----------------
+                // Pictures as a grid of thumbnails that open in the viewer,
+                // everything else as rows that open the file. Each row can
+                // also jump to the message it was posted in, which is what
+                // "where did that come from" actually wants.
+                if over == Some("files") {
+                    {
+                        let all = files();
+                        let is_picture = |name: &str| {
+                            let lower = name.to_lowercase();
+                            [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| lower.ends_with(e))
+                        };
+                        let pictures: Vec<shared::FileEntry> = all.iter().filter(|f| is_picture(&f.name)).cloned().collect();
+                        let others: Vec<shared::FileEntry> = all.iter().filter(|f| !is_picture(&f.name)).cloned().collect();
+                        // The viewer walks this set with its arrows.
+                        let picture_urls: Vec<String> = pictures.iter().map(|f| f.url.clone()).collect();
+                        let channel_id = selected().map(|c| c.id).unwrap_or(0);
+                        let count_label = match all.len() {
+                            0 if files_loading() => "loading…".to_string(),
+                            0 => "nothing attached here yet".to_string(),
+                            1 => "1 file".to_string(),
+                            n => format!("{n} files"),
+                        };
+                        rsx! {
+                            div { class: "overlay",
+                                div { class: "overlay-head",
+                                    button {
+                                        class: "hbtn",
+                                        aria_label: "Back",
+                                        onclick: move |_| overlay.set(Some("channel")),
+                                        Icon { name: "chevron-left", size: 20 }
+                                    }
+                                    div { class: "chan-head-main",
+                                        div { class: "chan-head-name ellipsis", "Files" }
+                                        div { class: "chan-head-topic ellipsis", "{chan_title} · {count_label}" }
+                                    }
+                                }
+                                div { class: "scroll grow", style: "padding: 10px 12px 14px",
+                                    if all.is_empty() && !files_loading() {
+                                        div { class: "empty-note",
+                                            "Nothing has been attached in this channel yet. Photos and files people send show up here."
+                                        }
+                                    }
+                                    if !pictures.is_empty() {
+                                        div { class: "section-label", "Pictures" }
+                                        div { class: "files-grid",
+                                            for picture in pictures.iter() {
+                                                {
+                                                    let url = picture.url.clone();
+                                                    let urls = picture_urls.clone();
+                                                    let thumb = format!("{url}?thumb=1");
+                                                    rsx! {
+                                                        button {
+                                                            key: "p{picture.message_id}-{picture.url}",
+                                                            class: "files-cell",
+                                                            onclick: move |_| lightbox.set(Some(Lightbox::within(url.clone(), urls.clone()))),
+                                                            img { src: "{thumb}", loading: "lazy", alt: "{picture.name}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !others.is_empty() {
+                                        div { class: "section-label", "Files" }
+                                        for file in others.iter() {
+                                            {
+                                                let message_id = file.message_id;
+                                                let when = day_label(file.created_at);
+                                                let size = human_size(file.size.max(0) as u64);
+                                                rsx! {
+                                                    div { key: "f{file.message_id}-{file.url}", class: "file-row",
+                                                        a {
+                                                            class: "file-row-main",
+                                                            href: "{file.url}",
+                                                            target: "_blank",
+                                                            span { class: "file-row-icon", Icon { name: "file", size: 18 } }
+                                                            span { class: "file-row-text",
+                                                                span { class: "file-row-name ellipsis", "{file.name}" }
+                                                                span { class: "file-row-meta ellipsis", "{size} · {file.uploader} · {when}" }
+                                                            }
+                                                        }
+                                                        button {
+                                                            class: "hbtn",
+                                                            aria_label: "Jump to message",
+                                                            onclick: move |_| {
+                                                                overlay.set(Some("channel"));
+                                                                jump_to_message(channel_id, message_id);
+                                                            },
+                                                            Icon { name: "reply", size: 16 }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if over == Some("search") {
                     div { class: "overlay",
                         div { class: "overlay-head",

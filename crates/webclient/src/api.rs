@@ -341,3 +341,10 @@ pub async fn setup(req: shared::SetupRequest) -> Result<Session, String> {
     let auth: shared::AuthResponse = handle(resp).await?;
     Ok(Session { token: auth.token, user: auth.user })
 }
+
+/// Every attachment ever posted in a channel, newest first — the Files
+/// screen. The server scopes it: a private channel answers 403 to
+/// outsiders, and stickers and emojis are left out.
+pub async fn channel_files(session: &Session, channel_id: i64) -> Result<Vec<shared::FileEntry>, String> {
+    get(session, &format!("channels/{channel_id}/files")).await
+}

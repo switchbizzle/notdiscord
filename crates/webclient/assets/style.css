@@ -617,6 +617,24 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .search-author { font-size: 13px; font-weight: 600; }
 .search-text { font-size: 13.5px; color: var(--n-300); line-height: 1.45; }
 
+/* ---------- files ---------- */
+.files-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 14px; }
+.files-cell {
+    aspect-ratio: 1; overflow: hidden; border-radius: var(--r-sm); background: var(--n-900);
+    padding: 0; display: block;
+}
+.files-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.files-cell:active { opacity: 0.7; }
+.file-row {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--n-900); border-radius: var(--r-md); padding: 4px 4px 4px 12px; margin-bottom: 8px;
+}
+.file-row-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; min-height: 44px; }
+.file-row-icon { color: var(--accent-300); display: flex; flex: 0 0 auto; }
+.file-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.file-row-name { font-size: 14px; color: var(--text); }
+.file-row-meta { font-size: 11.5px; color: var(--n-600); }
+
 /* ---------- settings / you ---------- */
 .you-head { display: flex; align-items: center; gap: 14px; }
 .you-name { font-size: 19px; font-weight: 500; }

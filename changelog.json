@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.95.1",
+    "date": "2026-09-14",
+    "changes": [
+      "📁 The phone has the Files screen the desktop has had. The file icon at the top of a channel lists everything ever attached there — pictures as a grid you can tap into the viewer and swipe through, other files as rows that open, each with a jump to the message it came from"
+    ]
+  },
+  {
     "version": "0.95.0",
     "date": "2026-09-13",
     "changes": [
