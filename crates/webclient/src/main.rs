@@ -303,7 +303,11 @@ fn image_box_style(width: u32, height: u32, sticker: bool) -> String {
     let (max_w, max_h) = if sticker { (150.0, 150.0) } else { (f64::INFINITY, 420.0) };
     let scale = (max_w / width as f64).min(max_h / height as f64).min(1.0);
     let shown = (width as f64 * scale).round();
-    format!("width: {shown}px; aspect-ratio: {width} / {height}")
+    // min() rather than leaning on the stylesheet's max-width: 100%. A
+    // percentage max-width on a flex item is where engines have disagreed,
+    // and a wide photo is the one thing on this screen with a fixed width
+    // larger than a phone.
+    format!("width: min({shown}px, 100%); aspect-ratio: {width} / {height}")
 }
 
 /// Put the cursor back in the composer. Tapping a suggestion moves focus to

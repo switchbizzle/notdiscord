@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.34",
+    "date": "2026-09-13",
+    "changes": [
+      "📱 The app fits an iPhone. Tapping the message box made Safari zoom the whole page in — it does that for any text field with small type — which pushed the send button off the edge of the screen, tucked the header under the status bar, and left every screen looking too wide until you pinched back out. Text fields are Safari’s preferred size on iPhones now, so nothing zooms. Android and desktop are unchanged",
+      "Wide photos can never be wider than the message they sit in, whatever the browser"
+    ]
+  },
+  {
     "version": "0.94.33",
     "date": "2026-09-13",
     "changes": [

@@ -53,6 +53,22 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
+/* iPhone. Safari zooms the whole page in the moment you focus a text field
+ * whose font is under 16px, and it does not zoom back out when you move
+ * around inside an app like this one — so tapping the message box pushed
+ * the send button off the right edge and the header up under the status
+ * bar, and the home screen stayed "overflowing" afterwards (switchb's new
+ * friend, the first iPhone on the server). Every field here was 13.5–15px.
+ * 16px on iOS only: -webkit-touch-callout is supported by iOS WebKit and
+ * nothing else, so Android and desktop browsers keep the sizes they had.
+ * !important because the field rules are more specific than a tag rule.
+ * maximum-scale=1 would also stop the zoom, but it stops pinch-zoom on
+ * Android too, and that is not ours to take away. */
+@supports (-webkit-touch-callout: none) {
+    input, textarea, select { font-size: 16px !important; }
+}
+/* And no text inflation when the phone turns sideways. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
     background: var(--bg);
     color: var(--text);
