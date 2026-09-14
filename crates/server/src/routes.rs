@@ -1807,6 +1807,7 @@ pub async fn server_info(State(state): State<SharedState>) -> ApiResult<Json<Ser
         // So a client minting a message link can prefer the address other
         // people can actually open over the one it happens to be using.
         public_url: crate::bot::public_url(),
+        upload_max_mb: upload_max_mb(&state).await,
     }))
 }
 
@@ -1934,6 +1935,7 @@ pub async fn rename_server(
         // Renaming means someone is logged in, so setup is long done.
         needs_setup: false,
         public_url: crate::bot::public_url(),
+        upload_max_mb: upload_max_mb(&state).await,
     }))
 }
 

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.94.33",
+    "date": "2026-09-13",
+    "changes": [
+      "📎 The desktop app honours the upload limit an admin sets. It had its own idea — a flat 50 MB, written into the app — and turned files away before the server was even asked, so raising the limit in Settings → Storage appeared to save and then did nothing. The app now asks the server what its limit is, and if a file looks too big it checks again before saying no, so a limit raised while the app is open counts straight away",
+      "When a file is over the limit, the message says what the limit on this server actually is"
+    ]
+  },
+  {
     "version": "0.94.32",
     "date": "2026-09-11",
     "changes": [

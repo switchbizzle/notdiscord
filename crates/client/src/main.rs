@@ -254,6 +254,22 @@ impl ConfirmAction {
 /// second. That is exactly what happened — the React button set the jump
 /// target, so it scrolled to the message instead of opening the palette, and
 /// the palette never opened at all (Jon, #feature-requests).
+/// Is a file of `bytes` within the server's upload limit? The number this
+/// app holds can be stale — an admin can raise the limit while it is open,
+/// and nothing announces that — so before refusing, ask the server again
+/// and go by its answer. A stale number costs one request, on the refusal
+/// path only; without the re-check, raising the limit would need everyone to
+/// restart before it meant anything.
+async fn within_upload_limit(bytes: u64, session: Signal<api::Session>, mut limit_mb: Signal<i64>) -> bool {
+    if !shared::over_upload_limit(bytes, limit_mb()) {
+        return true;
+    }
+    if let Ok(info) = api::server_info(&session().base_url).await {
+        limit_mb.set(info.upload_max_mb);
+    }
+    !shared::over_upload_limit(bytes, limit_mb())
+}
+
 /// See MainView: bumped when the local date changes.
 #[derive(Clone, Copy)]
 pub struct DayTick(pub Signal<u32>);
@@ -1146,6 +1162,10 @@ fn MainView(session: api::Session) -> Element {
     // rather than the one this client happens to be connected on.
     let public_url = use_signal(|| None::<String>);
     use_context_provider(|| PublicUrl(public_url));
+    // The server's largest accepted upload, from /api/server/info. 64 until it
+    // answers, which is what every server enforced before the limit became a
+    // setting.
+    let mut upload_limit_mb = use_signal(|| 64i64);
     // A permalink that changed channels leaves its message id here. The jump
     // has to wait for the switch's own fetch to land: started any earlier,
     // the two race and you end up looking at whichever finished last.
@@ -1738,6 +1758,7 @@ fn MainView(session: api::Session) -> Element {
         let mut public_url = public_url;
         if let Ok(info) = api::server_info(&session().base_url).await {
             public_url.set(info.public_url.filter(|u| !u.trim().is_empty()));
+            upload_limit_mb.set(info.upload_max_mb);
         }
     });
 
@@ -2337,8 +2358,8 @@ fn MainView(session: api::Session) -> Element {
     let upload_files = move |files: Vec<dioxus::html::FileData>| {
         spawn(async move {
             for file in files.into_iter().take(5) {
-                if file.size() > 50 * 1024 * 1024 {
-                    status.set("file too large (max 50 MB)".into());
+                if !within_upload_limit(file.size(), session, upload_limit_mb).await {
+                    status.set(format!("that file is over this server's {} MB limit", upload_limit_mb()));
                     continue;
                 }
                 let Ok(bytes) = file.read_bytes().await else {
@@ -4188,7 +4209,10 @@ fn MainView(session: api::Session) -> Element {
                                                                         let Ok(mb) = e.value().parse::<i64>() else { return };
                                                                         spawn(async move {
                                                                             match api::set_upload_limit(&session(), mb).await {
-                                                                                Ok(updated) => storage_info.set(Some(updated)),
+                                                                                Ok(updated) => {
+                                                                                    upload_limit_mb.set(updated.upload_max_mb);
+                                                                                    storage_info.set(Some(updated));
+                                                                                }
                                                                                 Err(e) => status.set(e),
                                                                             }
                                                                         });
@@ -5988,11 +6012,15 @@ fn MainView(session: api::Session) -> Element {
                                     return;
                                 };
                                 let name = file.file_name();
-                                let bytes = file.read().await;
-                                if bytes.len() > 50 * 1024 * 1024 {
-                                    status.set("file too large (max 50 MB)".into());
+                                // Checked before reading: a file over the limit
+                                // should not be pulled into memory just to be
+                                // turned away.
+                                let size = std::fs::metadata(file.path()).map(|m| m.len()).unwrap_or(0);
+                                if !within_upload_limit(size, session, upload_limit_mb).await {
+                                    status.set(format!("that file is over this server's {} MB limit", upload_limit_mb()));
                                     return;
                                 }
+                                let bytes = file.read().await;
                                 pending_files.write().push(make_pending(name, bytes));
                             });
                         },

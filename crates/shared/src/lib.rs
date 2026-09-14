@@ -620,6 +620,21 @@ pub struct ServerInfo {
     /// links, they just point at whatever address the client is using.
     #[serde(default)]
     pub public_url: Option<String>,
+    /// The largest single upload this server accepts, in MB. Public so every
+    /// client can check a file before sending it: the admin-only storage
+    /// endpoint was the only place it was readable, so the desktop app
+    /// hardcoded 50 MB instead and refused files the server would have
+    /// taken (Jon, trying to share a Lightify build under a 124 MB limit).
+    /// Absent from older servers, which enforced 64.
+    #[serde(default = "default_upload_max_mb")]
+    pub upload_max_mb: i64,
+}
+
+/// Would a file of `bytes` be over a limit of `limit_mb`? Exactly at the limit
+/// is allowed, matching the server, which reads up to and including it.
+pub fn over_upload_limit(bytes: u64, limit_mb: i64) -> bool {
+    let limit = (limit_mb.max(0) as u64).saturating_mul(1024 * 1024);
+    bytes > limit
 }
 
 /// POST /api/setup — only accepted while a server has no people on it.
@@ -1170,6 +1185,18 @@ mod tests {
         // A message stamped later than "now" is a clock that is off, not
         // something from tomorrow.
         assert_eq!(day_words(-1).as_deref(), Some("Today"));
+    }
+
+    #[test]
+    fn the_upload_limit_is_inclusive_and_in_mebibytes() {
+        let mb = 1024 * 1024;
+        assert!(!over_upload_limit(124 * mb, 124), "exactly at the limit is allowed");
+        assert!(over_upload_limit(124 * mb + 1, 124));
+        // The case that was refused: 60 MB under a 124 MB limit.
+        assert!(!over_upload_limit(60 * mb, 124));
+        // A nonsense limit refuses everything rather than wrapping around.
+        assert!(over_upload_limit(1, 0));
+        assert!(over_upload_limit(1, -5));
     }
 
     #[test]
