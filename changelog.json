@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.94.35",
+    "date": "2026-09-13",
+    "changes": [
+      "📱 More iPhone fixes. Tapping twice quickly — a send button, a reaction — no longer zooms the page in, and dragging past the top or bottom of a screen no longer pulls the whole app around with it. Pinch-to-zoom and scrolling work as before"
+    ]
+  },
+  {
     "version": "0.94.34",
     "date": "2026-09-13",
     "changes": [

@@ -69,6 +69,14 @@ html, body { height: 100%; }
 }
 /* And no text inflation when the phone turns sideways. */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Two more for iPhone (Chris: "still wonky with the zooming and sliding").
+ * touch-action: manipulation turns off double-tap-to-zoom — easy to set off
+ * tapping a send button or a reaction twice — while pinch-zoom and scrolling
+ * work as before. And the no-bounce rule has to be on html as well as body:
+ * on iOS the root is what rubber-bands when you drag past the top or bottom,
+ * so the whole app could be pulled around. Neither stops anything scrolling;
+ * the lightbox keeps its own touch-action: none for swiping. */
+html { touch-action: manipulation; overscroll-behavior: none; }
 body {
     background: var(--bg);
     color: var(--text);
