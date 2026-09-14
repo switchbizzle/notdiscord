@@ -1104,6 +1104,7 @@ fn MainView(session: api::Session) -> Element {
     let mut draft = use_signal(String::new);
     let mut new_channel = use_signal(String::new);
     let mut new_channel_voice = use_signal(|| false);
+    let mut new_channel_private = use_signal(|| false);
     let mut uploading = use_signal(|| false);
     let mut pending_files = use_signal(Vec::<PendingFile>::new);
     let mut drag_over = use_signal(|| false);
@@ -1479,6 +1480,9 @@ fn MainView(session: api::Session) -> Element {
     let mut srv_pane = use_signal(|| "channel");
     // Which channel row is being renamed, and to what.
     let mut renaming_channel = use_signal(|| None::<(i64, String)>);
+    // The access editor in Settings → Channels: which channel, and the
+    // draft of who's in it, until Save.
+    let mut access_editing = use_signal(|| None::<(i64, shared::ChannelAccess)>);
 
     // Commit the in-progress channel rename, if it says anything new.
     let mut save_channel_rename = move || {
@@ -2176,6 +2180,26 @@ fn MainView(session: api::Session) -> Element {
                                 api::update_saved_server(&s);
                                 session.set(s);
                                 servers_file.set(api::load_servers());
+                            }
+                            // Someone was let in or out of a private channel,
+                            // or one was made. Locked is per person, so fetch
+                            // our own view; if the channel on screen just
+                            // locked, close it, and leave its voice room.
+                            ServerEvent::ChannelsChanged => {
+                                spawn(async move {
+                                    if let Ok(chs) = api::channels(&session()).await {
+                                        let locked: Vec<i64> = chs.iter().filter(|c| c.locked).map(|c| c.id).collect();
+                                        channels.set(chs);
+                                        if selected().is_some_and(|c| locked.contains(&c.id)) {
+                                            selected.set(None);
+                                            messages.set(Vec::new());
+                                            status.set("that channel is private now".into());
+                                        }
+                                        if voice_status().channel_id.is_some_and(|id| locked.contains(&id)) {
+                                            voice.send(voice::VoiceCmd::Leave);
+                                        }
+                                    }
+                                });
                             }
                             ServerEvent::CategoriesChanged => {
                                 // Coarse by design: an admin was editing
@@ -3358,6 +3382,10 @@ fn MainView(session: api::Session) -> Element {
                                                     let chan_icon: &'static str =
                                                         if channel.kind == "voice" { "volume" } else { "tag" };
                                                     let current = selected().map(|c| c.id) == Some(id);
+                                                    // A private channel is managed by the owner, or an
+                                                    // admin who's in it; a public one by any admin.
+                                                    let manage = if channel.private { channel.can_manage } else { is_admin };
+                                                    let private = channel.private;
                                                     let editing_this = renaming_channel().is_some_and(|(cid, _)| cid == id);
                                                     let draft = renaming_channel()
                                                         .filter(|(cid, _)| *cid == id)
@@ -3394,6 +3422,9 @@ fn MainView(session: api::Session) -> Element {
                                                                 }
                                                             } else {
                                                                 span { class: "srv-row-name", "{name}" }
+                                                                if private {
+                                                                    span { class: "srv-chip", Icon { name: "lock", size: 10 } " private" }
+                                                                }
                                                                 if current {
                                                                     span { class: "srv-chip", "you're here" }
                                                                 }
@@ -3427,7 +3458,25 @@ fn MainView(session: api::Session) -> Element {
                                                                         }
                                                                     }
                                                                 }
-                                                                if is_admin {
+                                                                if manage {
+                                                                    button {
+                                                                        class: if access_editing().is_some_and(|(cid, _)| cid == id) { "srv-btn primary" } else { "srv-btn" },
+                                                                        title: "Who can open this channel",
+                                                                        onclick: move |_| {
+                                                                            if access_editing().is_some_and(|(cid, _)| cid == id) {
+                                                                                access_editing.set(None);
+                                                                                return;
+                                                                            }
+                                                                            spawn(async move {
+                                                                                match api::channel_access(&session(), id).await {
+                                                                                    Ok(access) => access_editing.set(Some((id, access))),
+                                                                                    Err(e) => status.set(e),
+                                                                                }
+                                                                            });
+                                                                        },
+                                                                        Icon { name: "lock", size: 13 }
+                                                                        "Access"
+                                                                    }
                                                                     button {
                                                                         class: "srv-btn",
                                                                         onclick: {
@@ -3448,6 +3497,83 @@ fn MainView(session: api::Session) -> Element {
                                                                         },
                                                                         Icon { name: "trash", size: 13 }
                                                                         "Delete"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        if let Some((_, access)) = access_editing().filter(|(cid, _)| *cid == id) {
+                                                            div { key: "access{id}", class: "srv-access",
+                                                                label { class: "srv-access-toggle",
+                                                                    input {
+                                                                        r#type: "checkbox",
+                                                                        checked: access.private,
+                                                                        onchange: move |e| {
+                                                                            let on = e.checked();
+                                                                            if let Some((cid, mut draft)) = access_editing() {
+                                                                                draft.private = on;
+                                                                                access_editing.set(Some((cid, draft)));
+                                                                            }
+                                                                        },
+                                                                    }
+                                                                    "Private — only the people ticked below can open it or join its call"
+                                                                }
+                                                                if access.private {
+                                                                    div { class: "srv-hint",
+                                                                        "Everyone still sees it in the list, with a lock. The owner is always in; admins aren't unless they're ticked."
+                                                                    }
+                                                                    div { class: "srv-access-list",
+                                                                        for person in members().into_iter().filter(|m| !m.banned) {
+                                                                            {
+                                                                                let uid = person.user.id;
+                                                                                let ticked = access.members.contains(&uid);
+                                                                                rsx! {
+                                                                                    label { key: "m{uid}", class: "srv-access-person",
+                                                                                        input {
+                                                                                            r#type: "checkbox",
+                                                                                            checked: ticked,
+                                                                                            onchange: move |e| {
+                                                                                                let on = e.checked();
+                                                                                                if let Some((cid, mut draft)) = access_editing() {
+                                                                                                    draft.members.retain(|m| *m != uid);
+                                                                                                    if on {
+                                                                                                        draft.members.push(uid);
+                                                                                                    }
+                                                                                                    access_editing.set(Some((cid, draft)));
+                                                                                                }
+                                                                                            },
+                                                                                        }
+                                                                                        UserAvatar { user: person.user.clone(), class: "chip-avatar" }
+                                                                                        span { class: "srv-row-name", "{person.user.username}" }
+                                                                                        if person.user.role == "admin" {
+                                                                                            span { class: "srv-chip", "admin" }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                div { class: "srv-inline",
+                                                                    button {
+                                                                        class: "srv-btn primary",
+                                                                        onclick: move |_| {
+                                                                            let Some((cid, draft)) = access_editing() else { return };
+                                                                            spawn(async move {
+                                                                                match api::set_channel_access(&session(), cid, &draft).await {
+                                                                                    Ok(_) => {
+                                                                                        access_editing.set(None);
+                                                                                        status.set("access saved".into());
+                                                                                    }
+                                                                                    Err(e) => status.set(e),
+                                                                                }
+                                                                            });
+                                                                        },
+                                                                        "Save"
+                                                                    }
+                                                                    button {
+                                                                        class: "srv-btn",
+                                                                        onclick: move |_| access_editing.set(None),
+                                                                        "Cancel"
                                                                     }
                                                                 }
                                                             }
@@ -3475,6 +3601,13 @@ fn MainView(session: api::Session) -> Element {
                                                         "Voice"
                                                     }
                                                     button {
+                                                        class: if new_channel_private() { "srv-btn primary" } else { "srv-btn" },
+                                                        title: "Only you, the owner, and whoever you add can open it",
+                                                        onclick: move |_| new_channel_private.toggle(),
+                                                        Icon { name: "lock", size: 13 }
+                                                        "Private"
+                                                    }
+                                                    button {
                                                         class: "srv-btn",
                                                         disabled: new_channel().trim().is_empty(),
                                                         onclick: move |_| {
@@ -3483,9 +3616,10 @@ fn MainView(session: api::Session) -> Element {
                                                                 return;
                                                             }
                                                             let kind = if new_channel_voice() { "voice" } else { "text" };
+                                                            let private = new_channel_private();
                                                             new_channel.set(String::new());
                                                             spawn(async move {
-                                                                if let Err(e) = api::create_channel(&session(), name, kind).await {
+                                                                if let Err(e) = api::create_channel(&session(), name, kind, private).await {
                                                                     status.set(e);
                                                                 }
                                                             });
@@ -4742,6 +4876,8 @@ fn MainView(session: api::Session) -> Element {
                             // badge below goes grey.
                             class: if selected_id == Some(channel.id) {
                                 "channel active"
+                            } else if channel.locked {
+                                "channel locked"
                             } else if muted().contains(&channel.id) {
                                 "channel muted"
                             } else if unread().contains_key(&channel.id) {
@@ -4751,9 +4887,18 @@ fn MainView(session: api::Session) -> Element {
                             },
                             onclick: {
                                 let channel = channel.clone();
-                                move |_| open_channel(channel.clone())
+                                move |_| {
+                                    // Locked: say so, rather than opening a
+                                    // channel whose history the server refuses.
+                                    if channel.locked {
+                                        status.set(format!("#{} is private — ask the owner to add you", channel.name));
+                                        return;
+                                    }
+                                    open_channel(channel.clone())
+                                }
                             },
                             oncontextmenu: {
+                                let manage = if channel.private { channel.can_manage } else { session().user.role == "admin" };
                                 let (id, name) = (channel.id, channel.name.clone());
                                 move |e: Event<MouseData>| {
                                     let mut items = Vec::new();
@@ -4790,7 +4935,7 @@ fn MainView(session: api::Session) -> Element {
                                             }
                                         });
                                     }));
-                                    if session().user.role == "admin" {
+                                    if manage {
                                         let name = name.clone();
                                         items.push(menu::danger("Delete channel", "trash", move || {
                                             let mut confirm = confirm;
@@ -4804,6 +4949,13 @@ fn MainView(session: api::Session) -> Element {
                                 }
                             },
                             span { class: "chan-name", "# {channel.name}" }
+                            if channel.private {
+                                span {
+                                    class: "chan-lock",
+                                    title: if channel.locked { "Private — you haven't been added" } else { "Private" },
+                                    Icon { name: "lock", size: 12 }
+                                }
+                            }
                             if muted().contains(&channel.id) {
                                 span { class: "chan-muted", title: "Muted", Icon { name: "ban", size: 12 } }
                             }
@@ -4824,7 +4976,7 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                 }
                             }
-                            if session().user.role == "admin" {
+                            if (channel.private && channel.can_manage) || (!channel.private && session().user.role == "admin") {
                                 span {
                                     class: "chan-del",
                                     title: "Delete channel",
@@ -4861,12 +5013,26 @@ fn MainView(session: api::Session) -> Element {
                         {
                             let ch_id = channel.id;
                             let ch_name = channel.name.clone();
+                            let ch_private = channel.private;
+                            let ch_manage = if channel.private { channel.can_manage } else { session().user.role == "admin" };
                             rsx! {
                         button {
                             key: "v{channel.id}",
-                            class: if voice_status().channel_id == Some(channel.id) { "channel voice active" } else { "channel voice" },
+                            class: if voice_status().channel_id == Some(channel.id) {
+                                "channel voice active"
+                            } else if channel.locked {
+                                "channel voice locked"
+                            } else {
+                                "channel voice"
+                            },
                             onclick: move |_| {
                                 let channel = channel.clone();
+                                // A private room you aren't in: you can see who's
+                                // there, and that's all.
+                                if channel.locked {
+                                    status.set(format!("{} is private — ask the owner to add you", channel.name));
+                                    return;
+                                }
                                 spawn(async move {
                                     match api::voice_token(&session(), channel.id).await {
                                         Ok(grant) => voice.send(voice::VoiceCmd::Join {
@@ -4889,7 +5055,7 @@ fn MainView(session: api::Session) -> Element {
                                             voice.send(voice::VoiceCmd::Leave);
                                         }));
                                     }
-                                    if session().user.role == "admin" {
+                                    if ch_manage {
                                         let name = name.clone();
                                         items.push(menu::danger("Delete channel", "trash", move || {
                                             let mut confirm = confirm;
@@ -4904,6 +5070,9 @@ fn MainView(session: api::Session) -> Element {
                             },
                             Icon { name: "volume", size: 15 }
                             span { class: "voice-channel-name chan-name", "{channel.name}" }
+                            if ch_private {
+                                span { class: "chan-lock", title: "Private", Icon { name: "lock", size: 12 } }
+                            }
                             // Occupancy as stacked chips on the row itself
                             // (Jon's dedup): who's in there at a glance, names
                             // on hover — the full roster with sliders lives in
@@ -4927,7 +5096,7 @@ fn MainView(session: api::Session) -> Element {
                                     span { class: "live-pill", "LIVE" }
                                 }
                             }
-                            if session().user.role == "admin" {
+                            if ch_manage {
                                 span {
                                     class: "chan-del",
                                     title: "Delete voice channel",

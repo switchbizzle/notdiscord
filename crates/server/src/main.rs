@@ -98,6 +98,60 @@ pub async fn dm_recipients(db: &SqlitePool, channel_id: i64) -> Result<Option<Ve
     Ok(Some(rows.into_iter().map(|r| r.get(0)).collect()))
 }
 
+/// The server's owner: the first person to have an account. Not the bot,
+/// which a fresh server creates at boot, before anyone has signed up — so
+/// "lowest id" on its own would crown NotBot.
+pub async fn owner_id(db: &SqlitePool) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT MIN(id) FROM users WHERE id NOT IN \
+         (SELECT CAST(value AS INTEGER) FROM server_meta WHERE key = 'bot_user_id')",
+    )
+    .fetch_one(db)
+    .await
+}
+
+/// Who may see a channel's CONTENTS: the audience for its message events,
+/// and the allow-list for reading, posting, reacting, notifications and
+/// voice tokens. A DM: its two participants. A private channel: its members
+/// plus the owner, who can never be locked out. None means everyone.
+///
+/// Voice PRESENCE deliberately stays on dm_recipients: a locked voice room
+/// still shows who is inside, the way Discord does. What an outsider can't
+/// do is join it or hear it.
+pub async fn channel_audience(db: &SqlitePool, channel_id: i64) -> Result<Option<Vec<i64>>, sqlx::Error> {
+    use sqlx::Row;
+    let Some(row) = sqlx::query("SELECT kind, private FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_optional(db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let kind: String = row.get(0);
+    let private: i64 = row.get(1);
+    if kind == "dm" {
+        return dm_recipients(db, channel_id).await;
+    }
+    if private == 0 {
+        return Ok(None);
+    }
+    let mut ids: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM channel_members WHERE channel_id = ?")
+        .bind(channel_id)
+        .fetch_all(db)
+        .await?;
+    if let Some(owner) = owner_id(db).await? {
+        if !ids.contains(&owner) {
+            ids.push(owner);
+        }
+    }
+    Ok(Some(ids))
+}
+
+/// Can this person get into this channel?
+pub async fn can_access(db: &SqlitePool, channel_id: i64, user_id: i64) -> Result<bool, sqlx::Error> {
+    Ok(channel_audience(db, channel_id).await?.is_none_or(|ids| ids.contains(&user_id)))
+}
+
 pub type SharedState = Arc<AppState>;
 
 pub fn uploads_dir() -> std::path::PathBuf {
@@ -293,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/profile", post(routes::update_profile))
         .route("/api/channels", get(routes::list_channels).post(routes::create_channel))
+        .route("/api/channels/{id}/access", get(routes::get_channel_access).put(routes::set_channel_access))
         .route("/api/channels/{id}/messages", get(routes::channel_messages))
         .route("/api/channels/{id}/pins", get(routes::channel_pins))
         .route("/api/channels/{id}/files", get(routes::channel_files))

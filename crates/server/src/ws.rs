@@ -7,7 +7,7 @@ use sqlx::Row;
 use shared::{ClientEvent, Message, ServerEvent, User, VoiceStateEntry};
 
 use crate::auth::AuthUser;
-use crate::{dm_recipients, now_ms, SharedState};
+use crate::{channel_audience, dm_recipients, now_ms, SharedState};
 
 /// Is this person hiding? Read per connect/disconnect rather than cached:
 /// it changes rarely and being wrong means outing somebody.
@@ -24,7 +24,7 @@ async fn presence_hidden(state: &SharedState, user_id: i64) -> bool {
 /// Broadcast to a DM's participants when `recipients` is Some, else to all.
 /// Fan a new message out to subscribed devices whose owner isn't connected.
 /// Runs detached: a slow push service must never hold up chat.
-fn push_notify(state: SharedState, message: Message, dm_members: Option<Vec<i64>>) {
+fn push_notify(state: SharedState, message: Message, audience: Option<Vec<i64>>, is_dm: bool) {
     tokio::spawn(async move {
         // Who this message pings, by the same rule the clients use.
         let lower = message.content.to_lowercase();
@@ -42,7 +42,7 @@ fn push_notify(state: SharedState, message: Message, dm_members: Option<Vec<i64>
             Err(_) => Vec::new(),
         };
 
-        let targets = match crate::push::recipients(&state, &message, &mentioned, dm_members.as_deref()).await {
+        let targets = match crate::push::recipients(&state, &message, &mentioned, audience.as_deref(), is_dm).await {
             Ok(targets) if !targets.is_empty() => targets,
             _ => return,
         };
@@ -55,10 +55,9 @@ fn push_notify(state: SharedState, message: Message, dm_members: Option<Vec<i64>
             .await
             .ok()
             .flatten();
-        let title = match (&dm_members, place) {
-            (Some(_), _) => message.author.username.clone(),
-            (None, Some(channel)) => format!("{} · #{channel}", message.author.username),
-            (None, None) => message.author.username.clone(),
+        let title = match place {
+            Some(channel) if !is_dm => format!("{} · #{channel}", message.author.username),
+            _ => message.author.username.clone(),
         };
         let body: String = message.content.chars().take(140).collect();
         let subject = std::env::var("NOTDISCORD_MAIL_FROM")
@@ -280,6 +279,20 @@ async fn handle_socket(socket: WebSocket, state: SharedState, mut user: User, to
                         }
                         // Voice presence is connection-scoped state, handled here.
                         Ok(ClientEvent::VoiceState { channel_id, sharing, camera }) => {
+                            // Nobody gets to say they're in a private room they
+                            // can't enter. The token route already refuses them;
+                            // this keeps the roster from believing it either.
+                            if let Some(ch) = channel_id {
+                                let allowed = crate::can_access(&state.db, ch, user.id).await.unwrap_or(false);
+                                if !allowed {
+                                    let refusal = serde_json::to_string(&ServerEvent::Error {
+                                        message: "that voice channel is private".into(),
+                                    })
+                                    .expect("serialize");
+                                    let _ = sink.send(WsMessage::text(refusal)).await;
+                                    continue;
+                                }
+                            }
                             {
                                 let mut voice = state.voice.lock().unwrap();
                                 match channel_id {
@@ -395,10 +408,11 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             if content.is_empty() || content.len() > 4000 {
                 return Ok(());
             }
-            let recipients = dm_recipients(&state.db, channel_id).await?;
+            let recipients = channel_audience(&state.db, channel_id).await?;
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
                 return Ok(());
             }
+            let is_dm = recipients.is_some() && dm_recipients(&state.db, channel_id).await?.is_some();
 
             // Resolve the reply target (same channel only) and its preview.
             let mut reply_preview = None;
@@ -461,7 +475,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             send_scoped(state, &recipients, ServerEvent::MessageCreated { message: message.clone() });
 
             // Phones that aren't connected get a push notification instead.
-            push_notify(state.clone(), message, recipients.clone());
+            push_notify(state.clone(), message, recipients.clone(), is_dm);
 
             // Summoned? Music commands are deterministic and free; questions
             // (and /ask, /image) go to the LLM. Both run in the background.
@@ -498,7 +512,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
         // Handled at the connection level in handle_socket.
         ClientEvent::VoiceState { .. } | ClientEvent::MusicControl { .. } => {}
         ClientEvent::Typing { channel_id } => {
-            let recipients = dm_recipients(&state.db, channel_id).await?;
+            let recipients = channel_audience(&state.db, channel_id).await?;
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
                 return Ok(());
             }
@@ -529,7 +543,7 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 return Ok(());
             };
             let channel_id: i64 = row.get(0);
-            let recipients = dm_recipients(&state.db, channel_id).await?;
+            let recipients = channel_audience(&state.db, channel_id).await?;
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
                 return Ok(());
             }
@@ -584,13 +598,18 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
                 return Ok(());
             };
             let channel_id: i64 = row.get(0);
+            // Someone taken out of a private channel can't go on editing what
+            // they left behind in it.
+            let recipients = channel_audience(&state.db, channel_id).await?;
+            if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
+                return Ok(());
+            }
             sqlx::query("UPDATE messages SET content = ?, edited_at = ? WHERE id = ?")
                 .bind(&content)
                 .bind(edited_at)
                 .bind(message_id)
                 .execute(&state.db)
                 .await?;
-            let recipients = dm_recipients(&state.db, channel_id).await?;
             send_scoped(state, &recipients, ServerEvent::MessageEdited { channel_id, message_id, content, edited_at });
         }
         ClientEvent::DeleteMessage { message_id } => {
@@ -607,11 +626,15 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
             };
             let channel_id: i64 = row.get(0);
             let content: String = row.get(1);
+            // Admin rights don't reach into a private channel they aren't in.
+            let recipients = channel_audience(&state.db, channel_id).await?;
+            if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {
+                return Ok(());
+            }
             sqlx::query("DELETE FROM messages WHERE id = ?")
                 .bind(message_id)
                 .execute(&state.db)
                 .await?;
-            let recipients = dm_recipients(&state.db, channel_id).await?;
             send_scoped(state, &recipients, ServerEvent::MessageDeleted { channel_id, message_id });
             // Take the attachments with it, unless something else — another
             // message, an avatar, a sticker, an emoji — still points at them.

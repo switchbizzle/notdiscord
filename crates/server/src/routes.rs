@@ -595,10 +595,10 @@ pub async fn assign_tag(
 }
 
 async fn owner_id(state: &SharedState) -> ApiResult<i64> {
-    sqlx::query_scalar("SELECT MIN(id) FROM users")
-        .fetch_one(&state.db)
+    crate::owner_id(&state.db)
         .await
-        .map_err(internal)
+        .map_err(internal)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "this server has no owner yet"))
 }
 
 async fn load_user(state: &SharedState, user_id: i64) -> ApiResult<User> {
@@ -679,9 +679,7 @@ pub async fn delete_channel(
     AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if user.role != "admin" {
-        return Err(err(StatusCode::FORBIDDEN, "admins only"));
-    }
+    require_manage(&state, &user, channel_id).await?;
     let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
         .bind(channel_id)
         .fetch_optional(&state.db)
@@ -694,6 +692,11 @@ pub async fn delete_channel(
     }
     // Reactions cascade from message deletion.
     sqlx::query("DELETE FROM messages WHERE channel_id = ?")
+        .bind(channel_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    sqlx::query("DELETE FROM channel_members WHERE channel_id = ?")
         .bind(channel_id)
         .execute(&state.db)
         .await
@@ -785,10 +788,10 @@ pub async fn list_channels(
     // last_at rides along so the client can order DMs by recency without a
     // second round trip per conversation.
     let rows = sqlx::query(
-        "SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id), c.category_id \
+        "SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id), c.category_id, c.private \
          FROM channels c WHERE c.kind != 'dm' \
          UNION ALL \
-         SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id), c.category_id \
+         SELECT c.id, c.name, c.kind, (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id), c.category_id, c.private \
          FROM channels c \
          JOIN dm_members d ON d.channel_id = c.id \
          WHERE c.kind = 'dm' AND d.user_id = ? \
@@ -808,11 +811,32 @@ pub async fn list_channels(
             dm_members: Vec::new(),
             last_at: r.get(3),
             category_id: r.get(4),
+            private: r.get::<i64, _>(5) != 0,
+            locked: false,
+            can_manage: false,
         })
         .collect();
 
     for channel in channels.iter_mut().filter(|c| c.kind == "dm") {
         channel.dm_members = dm_member_users(&state, channel.id).await?;
+    }
+
+    // This viewer's side of it: which private channels they can open, and
+    // which they may manage.
+    let is_owner = crate::owner_id(&state.db).await.map_err(internal)? == Some(user.id);
+    let member_of: std::collections::HashSet<i64> =
+        sqlx::query_scalar("SELECT channel_id FROM channel_members WHERE user_id = ?")
+            .bind(user.id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .collect();
+    let admin = user.role == "admin";
+    for channel in channels.iter_mut().filter(|c| c.kind != "dm") {
+        let inside = is_owner || member_of.contains(&channel.id);
+        channel.locked = channel.private && !inside;
+        channel.can_manage = if channel.private { is_owner || (admin && inside) } else { admin };
     }
     Ok(Json(channels))
 }
@@ -900,6 +924,11 @@ pub async fn create_dm(
         last_at,
         // A DM is never filed under a category.
         category_id: None,
+        // A DM is private to its two people by nature; these flags are
+        // about channels an admin locks, so they don't apply.
+        private: false,
+        locked: false,
+        can_manage: false,
     };
     if existing.is_none() {
         state.broadcast_only(vec![user.id, req.user_id], ServerEvent::ChannelCreated { channel: channel.clone() });
@@ -953,7 +982,13 @@ pub async fn voice_token(
         .await
         .map_err(internal)?;
     match row.map(|r| r.get::<String, _>(0)) {
-        Some(kind) if kind == "voice" => {}
+        Some(kind) if kind == "voice" => {
+            // A private room hands no tokens to anyone outside it — without
+            // one, LiveKit won't let them in to listen either.
+            if !crate::can_access(&state.db, q.channel_id, user.id).await.map_err(internal)? {
+                return Err(err(StatusCode::FORBIDDEN, "that voice channel is private"));
+            }
+        }
         // Private calls: a DM doubles as a voice room for its two members.
         Some(kind) if kind == "dm" => {
             let members = crate::dm_recipients(&state.db, q.channel_id).await.map_err(internal)?;
@@ -990,6 +1025,38 @@ pub async fn voice_token(
     Ok(Json(VoiceTokenResponse { url, token, room }))
 }
 
+/// Who may rename, delete, or change who's in a channel. A public channel:
+/// any admin, as before. A private one: the owner, or an admin who has been
+/// let in. An admin outside it can't manage what they can't open — switchb:
+/// Jon and spacegoat are admins, and shouldn't get in unless added.
+async fn require_manage(state: &SharedState, user: &User, channel_id: i64) -> ApiResult<()> {
+    let private: i64 = sqlx::query_scalar("SELECT private FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such channel"))?;
+    if private == 0 {
+        return if user.role == "admin" { Ok(()) } else { Err(err(StatusCode::FORBIDDEN, "admins only")) };
+    }
+    let is_owner = crate::owner_id(&state.db).await.map_err(internal)? == Some(user.id);
+    let member: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND user_id = ?")
+            .bind(channel_id)
+            .bind(user.id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(internal)?;
+    if is_owner || (user.role == "admin" && member > 0) {
+        Ok(())
+    } else {
+        Err(err(
+            StatusCode::FORBIDDEN,
+            "only the owner, or an admin who's been added, can manage a private channel",
+        ))
+    }
+}
+
 /// Rename a text or voice channel. DMs are named after their members, so
 /// they're left alone.
 pub async fn rename_channel(
@@ -998,9 +1065,7 @@ pub async fn rename_channel(
     Path(channel_id): Path<i64>,
     Json(req): Json<shared::RenameChannelRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if user.role != "admin" {
-        return Err(err(StatusCode::FORBIDDEN, "admins only"));
-    }
+    require_manage(&state, &user, channel_id).await?;
     let name = req.name.trim().trim_start_matches('#').to_lowercase();
     if name.is_empty() || name.len() > 32 {
         return Err(err(StatusCode::BAD_REQUEST, "channel name must be 1-32 characters"));
@@ -1034,9 +1099,14 @@ pub async fn rename_channel(
 
 pub async fn create_channel(
     State(state): State<SharedState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Json(req): Json<CreateChannelRequest>,
 ) -> ApiResult<Json<Channel>> {
+    // Admins only, as the Permissions pane has always said. The check was
+    // missing — harmless-ish until a member could have made a private room.
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
     let name = req.name.trim().trim_start_matches('#').to_lowercase();
     if name.is_empty() || name.len() > 32 {
         return Err(err(StatusCode::BAD_REQUEST, "channel name must be 1-32 characters"));
@@ -1046,10 +1116,11 @@ pub async fn create_channel(
         _ => "text",
     };
 
-    let result = sqlx::query("INSERT INTO channels (name, kind, created_at) VALUES (?, ?, ?)")
+    let result = sqlx::query("INSERT INTO channels (name, kind, created_at, private) VALUES (?, ?, ?, ?)")
         .bind(&name)
         .bind(kind)
         .bind(now_ms())
+        .bind(req.private as i64)
         .execute(&state.db)
         .await;
 
@@ -1061,6 +1132,17 @@ pub async fn create_channel(
         Err(e) => return Err(internal(e)),
     };
 
+    if req.private {
+        // Whoever made it is in it. The owner is in every private channel
+        // without needing a row.
+        sqlx::query("INSERT OR IGNORE INTO channel_members (channel_id, user_id) VALUES (?, ?)")
+            .bind(id)
+            .bind(user.id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+    }
+
     // Brand new, so nothing has been said in it yet.
     let channel = Channel {
         id,
@@ -1069,9 +1151,104 @@ pub async fn create_channel(
         dm_members: Vec::new(),
         last_at: None,
         category_id: None,
+        private: req.private,
+        locked: false,
+        can_manage: req.private,
     };
-    state.broadcast(ServerEvent::ChannelCreated { channel: channel.clone() });
+    if req.private {
+        // Locked for most people and open for a few, which no single event
+        // can say to everyone: each client refetches its own view.
+        state.broadcast(ServerEvent::ChannelsChanged);
+    } else {
+        state.broadcast(ServerEvent::ChannelCreated { channel: channel.clone() });
+    }
     Ok(Json(channel))
+}
+
+/// Whether a channel is private, and who is in it. For whoever may manage it.
+pub async fn get_channel_access(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+) -> ApiResult<Json<shared::ChannelAccess>> {
+    require_manage(&state, &user, channel_id).await?;
+    let private: i64 = sqlx::query_scalar("SELECT private FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let members: Vec<i64> =
+        sqlx::query_scalar("SELECT user_id FROM channel_members WHERE channel_id = ? ORDER BY user_id")
+            .bind(channel_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(internal)?;
+    Ok(Json(shared::ChannelAccess { private: private != 0, members }))
+}
+
+/// Make a channel private or public, and set who is in it. Replaces the
+/// member list wholesale, which is what a checklist in a settings pane
+/// naturally sends.
+pub async fn set_channel_access(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<shared::ChannelAccess>,
+) -> ApiResult<Json<shared::ChannelAccess>> {
+    require_manage(&state, &user, channel_id).await?;
+    let kind: String = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
+        .bind(channel_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    if kind == "dm" {
+        return Err(err(StatusCode::BAD_REQUEST, "a DM is already just the two of you"));
+    }
+    // Real people only: a stale id, or the bot, has no business on the list.
+    let bot = state.bot_user().id;
+    let mut members: Vec<i64> = Vec::new();
+    for id in req.members {
+        if id == bot || members.contains(&id) {
+            continue;
+        }
+        let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal)?;
+        if exists.is_some() {
+            members.push(id);
+        }
+    }
+    // Whoever is doing this stays in, so nobody makes a channel private and
+    // finds themselves locked out of it a moment later.
+    if req.private && !members.contains(&user.id) {
+        members.push(user.id);
+    }
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    sqlx::query("UPDATE channels SET private = ? WHERE id = ?")
+        .bind(req.private as i64)
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    sqlx::query("DELETE FROM channel_members WHERE channel_id = ?")
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    for id in &members {
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id) VALUES (?, ?)")
+            .bind(channel_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
+    state.broadcast(ServerEvent::ChannelsChanged);
+    members.sort();
+    Ok(Json(shared::ChannelAccess { private: req.private, members }))
 }
 
 /// Uploads keep their own name (inside a random directory, so two people's
@@ -2326,7 +2503,7 @@ pub async fn set_mute(
 ) -> ApiResult<StatusCode> {
     // Muting a DM is allowed — it's your notification, not a permission — but
     // only for a channel you can actually see.
-    if let Some(members) = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)? {
+    if let Some(members) = crate::channel_audience(&state.db, channel_id).await.map_err(internal)? {
         if !members.contains(&user.id) {
             return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
         }
@@ -2366,6 +2543,7 @@ pub async fn unread(
     AuthUser(user): AuthUser,
 ) -> ApiResult<Json<Vec<shared::UnreadInfo>>> {
     let mention = format!("%@{}%", user.username.to_lowercase());
+    let is_owner = crate::owner_id(&state.db).await.map_err(internal)? == Some(user.id);
     let rows = sqlx::query(
         "SELECT c.id, \
                 COUNT(m.id) AS unread, \
@@ -2383,11 +2561,15 @@ pub async fn unread(
          WHERE c.kind != 'voice' \
            AND (c.kind != 'dm' OR EXISTS ( \
                  SELECT 1 FROM dm_members d WHERE d.channel_id = c.id AND d.user_id = ?)) \
+           AND (c.private = 0 OR ? = 1 OR EXISTS ( \
+                 SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = ?)) \
          GROUP BY c.id",
     )
     .bind(&mention)
     .bind(user.id)
     .bind(user.id)
+    .bind(user.id)
+    .bind(is_owner as i64)
     .bind(user.id)
     .fetch_all(&state.db)
     .await
@@ -2411,6 +2593,9 @@ pub async fn mark_read(
     AuthUser(user): AuthUser,
     Json(req): Json<shared::MarkReadRequest>,
 ) -> ApiResult<StatusCode> {
+    if !crate::can_access(&state.db, req.channel_id, user.id).await.map_err(internal)? {
+        return Err(err(StatusCode::FORBIDDEN, "you don't have access to this channel"));
+    }
     sqlx::query(
         "INSERT INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?) \
          ON CONFLICT(user_id, channel_id) \
@@ -2529,13 +2714,15 @@ pub async fn set_bot_settings(
     if let Some(channel) = req.announce_channel {
         // 0 means "don't announce"; anything else must be a real text channel.
         if channel != 0 {
-            let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM channels WHERE id = ?")
-                .bind(channel)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(internal)?;
+            // Release notes are for everyone, so not a private channel.
+            let kind: Option<String> =
+                sqlx::query_scalar("SELECT kind FROM channels WHERE id = ? AND private = 0")
+                    .bind(channel)
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(internal)?;
             if kind.as_deref() != Some("text") {
-                return Err(err(StatusCode::BAD_REQUEST, "pick a text channel"));
+                return Err(err(StatusCode::BAD_REQUEST, "pick a public text channel"));
             }
         }
         sqlx::query(
@@ -2722,6 +2909,7 @@ pub async fn search(
     if fts.is_empty() {
         return Ok(Json(Vec::new()));
     }
+    let is_owner = crate::owner_id(&state.db).await.map_err(internal)? == Some(user.id);
 
     let rows = sqlx::query(
         "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
@@ -2733,9 +2921,13 @@ pub async fn search(
          WHERE messages_fts MATCH ? \
            AND (c.kind != 'dm' OR EXISTS ( \
                 SELECT 1 FROM dm_members dm WHERE dm.channel_id = c.id AND dm.user_id = ?)) \
+           AND (c.private = 0 OR ? = 1 OR EXISTS ( \
+                SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = ?)) \
          ORDER BY m.id DESC LIMIT 30",
     )
     .bind(&fts)
+    .bind(user.id)
+    .bind(is_owner as i64)
     .bind(user.id)
     .fetch_all(&state.db)
     .await
@@ -2835,10 +3027,10 @@ pub async fn channel_messages(
     Path(channel_id): Path<i64>,
     Query(q): Query<MessagesQuery>,
 ) -> ApiResult<Json<Vec<Message>>> {
-    // DM history is participants-only.
-    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    // Participants only, for DMs and private channels.
+    let recipients = crate::channel_audience(&state.db, channel_id).await.map_err(internal)?;
     if recipients.is_some_and(|ids| !ids.contains(&user.id)) {
-        return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+        return Err(err(StatusCode::FORBIDDEN, "you don't have access to this channel"));
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let before = q.before.unwrap_or(i64::MAX);
@@ -3066,9 +3258,9 @@ pub async fn channel_files(
     AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
 ) -> ApiResult<Json<Vec<shared::FileEntry>>> {
-    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    let recipients = crate::channel_audience(&state.db, channel_id).await.map_err(internal)?;
     if recipients.is_some_and(|ids| !ids.contains(&user.id)) {
-        return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+        return Err(err(StatusCode::FORBIDDEN, "you don't have access to this channel"));
     }
     let rows = sqlx::query(
         "SELECT m.id, m.content, m.created_at, u.username \
@@ -3138,9 +3330,13 @@ async fn pin_target(
         .await
         .map_err(internal)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such message"))?;
-    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    let recipients = crate::channel_audience(&state.db, channel_id).await.map_err(internal)?;
+    let is_dm = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?.is_some();
+    // A DM has no admin, so either participant pins. A private channel keeps
+    // the usual rule — admins pin — but only admins who are in it.
     let allowed = match &recipients {
-        Some(ids) => ids.contains(&user.id),
+        Some(ids) if is_dm => ids.contains(&user.id),
+        Some(ids) => ids.contains(&user.id) && user.role == "admin",
         None => user.role == "admin",
     };
     if !allowed {
@@ -3195,9 +3391,9 @@ pub async fn channel_pins(
     AuthUser(user): AuthUser,
     Path(channel_id): Path<i64>,
 ) -> ApiResult<Json<Vec<Message>>> {
-    let recipients = crate::dm_recipients(&state.db, channel_id).await.map_err(internal)?;
+    let recipients = crate::channel_audience(&state.db, channel_id).await.map_err(internal)?;
     if recipients.is_some_and(|ids| !ids.contains(&user.id)) {
-        return Err(err(StatusCode::FORBIDDEN, "not your conversation"));
+        return Err(err(StatusCode::FORBIDDEN, "you don't have access to this channel"));
     }
     let rows = sqlx::query(
         "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
@@ -3334,5 +3530,166 @@ mod unread_tests {
 
         read_all(&state, &alice, general, last).await;
         assert_eq!(counts(&state, &alice, general).await, (0, 0), "read is read");
+    }
+}
+
+#[cfg(test)]
+mod private_channel_tests {
+    use super::setup_tests::fresh_server;
+    use super::*;
+
+    /// The server as production has it: NotBot recorded as the bot, so the
+    /// first human is the owner rather than the bot that booted first.
+    async fn server() -> SharedState {
+        let state = fresh_server().await;
+        sqlx::query("INSERT OR REPLACE INTO server_meta (key, value) VALUES ('bot_user_id', '1')")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        state
+    }
+
+    async fn person(state: &SharedState, name: &str, role: &str) -> User {
+        let id = sqlx::query("INSERT INTO users (username, password_hash, created_at, role) VALUES (?, '!x', 0, ?)")
+            .bind(name)
+            .bind(role)
+            .execute(&state.db)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+        User { id, username: name.into(), avatar: None, role: role.into() }
+    }
+
+    async fn private_room(state: &SharedState, owner: &User, members: Vec<i64>) -> i64 {
+        let Json(created) = create_channel(
+            State(state.clone()),
+            AuthUser(owner.clone()),
+            Json(CreateChannelRequest { name: "secret".into(), kind: None, private: true }),
+        )
+        .await
+        .expect("owner creates it");
+        let _ = set_channel_access(
+            State(state.clone()),
+            AuthUser(owner.clone()),
+            Path(created.id),
+            Json(shared::ChannelAccess { private: true, members }),
+        )
+        .await
+        .expect("owner sets who's in");
+        created.id
+    }
+
+    fn history(state: &SharedState, who: &User, id: i64) -> impl std::future::Future<Output = ApiResult<Json<Vec<Message>>>> {
+        channel_messages(
+            State(state.clone()),
+            AuthUser(who.clone()),
+            Path(id),
+            Query(MessagesQuery { before: None, limit: None }),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_owner_is_the_first_person_not_the_bot() {
+        let state = server().await;
+        let owner = person(&state, "switchb", "admin").await;
+        person(&state, "later", "admin").await;
+        assert_eq!(crate::owner_id(&state.db).await.unwrap(), Some(owner.id));
+    }
+
+    /// switchb's exact case: Jon is an admin and still can't get in, or let
+    /// himself in, until he's added.
+    #[tokio::test]
+    async fn locked_to_everyone_but_its_members_and_the_owner_admins_included() {
+        let state = server().await;
+        let owner = person(&state, "switchb", "admin").await;
+        let jon = person(&state, "jon", "admin").await;
+        let chris = person(&state, "chris", "member").await;
+        let mara = person(&state, "mara", "member").await;
+        let id = private_room(&state, &owner, vec![chris.id]).await;
+
+        for (who, locked) in [(&owner, false), (&chris, false), (&jon, true), (&mara, true)] {
+            let Json(list) = list_channels(State(state.clone()), AuthUser(who.clone())).await.unwrap();
+            let channel = list.iter().find(|c| c.id == id).expect("everyone can see it exists");
+            assert!(channel.private);
+            assert_eq!(channel.locked, locked, "{} locked", who.username);
+        }
+
+        let refused = history(&state, &jon, id).await;
+        assert_eq!(refused.err().expect("an admin outside is refused").0, StatusCode::FORBIDDEN);
+        let self_serve = set_channel_access(
+            State(state.clone()),
+            AuthUser(jon.clone()),
+            Path(id),
+            Json(shared::ChannelAccess { private: true, members: vec![jon.id] }),
+        )
+        .await;
+        assert_eq!(self_serve.err().expect("can't let himself in").0, StatusCode::FORBIDDEN);
+        assert!(history(&state, &chris, id).await.is_ok(), "a member reads it");
+        assert!(history(&state, &owner, id).await.is_ok(), "the owner reads it without a row");
+
+        // Added, an admin is in — and may now manage it.
+        let _ = set_channel_access(
+            State(state.clone()),
+            AuthUser(owner.clone()),
+            Path(id),
+            Json(shared::ChannelAccess { private: true, members: vec![chris.id, jon.id] }),
+        )
+        .await
+        .unwrap();
+        let Json(list) = list_channels(State(state.clone()), AuthUser(jon.clone())).await.unwrap();
+        let channel = list.iter().find(|c| c.id == id).unwrap();
+        assert!(!channel.locked && channel.can_manage);
+        // A member who isn't an admin can read but not manage.
+        let Json(list) = list_channels(State(state.clone()), AuthUser(chris.clone())).await.unwrap();
+        assert!(!list.iter().find(|c| c.id == id).unwrap().can_manage);
+    }
+
+    #[tokio::test]
+    async fn outsiders_get_no_counts_no_mentions_and_are_not_in_the_audience() {
+        let state = server().await;
+        let owner = person(&state, "switchb", "admin").await;
+        let chris = person(&state, "chris", "member").await;
+        let mara = person(&state, "mara", "member").await;
+        let id = private_room(&state, &owner, vec![chris.id]).await;
+        sqlx::query("INSERT INTO messages (channel_id, author_id, content, created_at) VALUES (?, ?, 'psst @mara', 0)")
+            .bind(id)
+            .bind(chris.id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let Json(for_mara) = unread(State(state.clone()), AuthUser(mara.clone())).await.unwrap();
+        assert!(!for_mara.iter().any(|u| u.channel_id == id), "no count, no mention, not even the id");
+        let Json(for_owner) = unread(State(state.clone()), AuthUser(owner.clone())).await.unwrap();
+        assert_eq!(for_owner.iter().find(|u| u.channel_id == id).map(|u| u.count), Some(1));
+
+        let audience = crate::channel_audience(&state.db, id).await.unwrap().expect("scoped");
+        assert!(audience.contains(&chris.id) && audience.contains(&owner.id));
+        assert!(!audience.contains(&mara.id), "@mara in the text does not make her an audience");
+
+        // Made public again, it's everyone's.
+        let _ = set_channel_access(
+            State(state.clone()),
+            AuthUser(owner.clone()),
+            Path(id),
+            Json(shared::ChannelAccess { private: false, members: vec![] }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(crate::channel_audience(&state.db, id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn only_admins_create_channels() {
+        let state = server().await;
+        person(&state, "switchb", "admin").await;
+        let mara = person(&state, "mara", "member").await;
+        let attempt = create_channel(
+            State(state.clone()),
+            AuthUser(mara),
+            Json(CreateChannelRequest { name: "mine".into(), kind: None, private: true }),
+        )
+        .await;
+        assert_eq!(attempt.err().expect("members can't create channels").0, StatusCode::FORBIDDEN);
     }
 }

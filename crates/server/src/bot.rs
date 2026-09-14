@@ -7,7 +7,7 @@ use sqlx::Row;
 
 use shared::{Message, ServerEvent, User};
 
-use crate::{dm_recipients, now_ms, SharedState};
+use crate::{channel_audience, now_ms, SharedState};
 
 pub const BOT_NAME: &str = "NotBot";
 const ANNOUNCE_POLL_SECS: u64 = 60;
@@ -166,7 +166,7 @@ pub async fn ensure_bot_user(db: &sqlx::SqlitePool) -> anyhow::Result<User> {
 /// Post one message as the bot and return its id (no chunking — used for
 /// messages the server edits later, like the music player card).
 pub async fn post_and_get_id(state: &SharedState, channel_id: i64, content: &str) -> anyhow::Result<i64> {
-    let recipients = dm_recipients(&state.db, channel_id).await?;
+    let recipients = channel_audience(&state.db, channel_id).await?;
     let bot = state.bot_user();
     let created_at = now_ms();
     let result = sqlx::query(
@@ -202,7 +202,7 @@ pub async fn post_and_get_id(state: &SharedState, channel_id: i64, content: &str
 }
 
 pub async fn post_message(state: &SharedState, channel_id: i64, content: &str) -> anyhow::Result<()> {
-    let recipients = dm_recipients(&state.db, channel_id).await?;
+    let recipients = channel_audience(&state.db, channel_id).await?;
     let bot = state.bot_user();
     for chunk in split_chunks(content.trim(), 4000) {
         let created_at = now_ms();
@@ -326,7 +326,7 @@ async fn published_version() -> Option<String> {
 }
 
 async fn first_text_channel(state: &SharedState) -> Option<i64> {
-    sqlx::query_scalar("SELECT id FROM channels WHERE kind = 'text' ORDER BY id LIMIT 1")
+    sqlx::query_scalar("SELECT id FROM channels WHERE kind = 'text' AND private = 0 ORDER BY id LIMIT 1")
         .fetch_optional(&state.db)
         .await
         .ok()
@@ -347,7 +347,7 @@ pub async fn announce_channel(state: &SharedState) -> Option<i64> {
         Some(0) => None,
         Some(id) => {
             let exists: Option<i64> =
-                sqlx::query_scalar("SELECT id FROM channels WHERE id = ? AND kind = 'text'")
+                sqlx::query_scalar("SELECT id FROM channels WHERE id = ? AND kind = 'text' AND private = 0")
                     .bind(id)
                     .fetch_optional(&state.db)
                     .await

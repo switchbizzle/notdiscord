@@ -166,7 +166,8 @@ pub async fn recipients(
     state: &SharedState,
     message: &shared::Message,
     mentioned: &[i64],
-    dm_members: Option<&[i64]>,
+    audience: Option<&[i64]>,
+    is_dm: bool,
 ) -> anyhow::Result<Vec<(i64, Subscription)>> {
     let rows = sqlx::query(
         "SELECT s.user_id, s.endpoint, s.p256dh, s.auth, COALESCE(u.notify_level, 'mentions'), \
@@ -210,12 +211,16 @@ pub async fn recipients(
         if shared::presence_silences_alerts(&mode) {
             continue;
         }
-        // A DM only notifies its participants, whatever their level says.
-        if let Some(members) = dm_members {
+        // A DM or a private channel only ever notifies the people in it —
+        // an @mention of someone outside doesn't reach their phone.
+        if let Some(members) = audience {
             if !members.contains(&user_id) {
                 continue;
             }
-        } else if level == "mentions" && !mentioned.contains(&user_id) {
+        }
+        // A DM notifies its participants whatever their level says; anywhere
+        // else, private or not, the level decides.
+        if !is_dm && level == "mentions" && !mentioned.contains(&user_id) {
             continue;
         }
         let (endpoint, p256dh, auth): (String, String, String) = (row.get(1), row.get(2), row.get(3));
@@ -314,7 +319,7 @@ mod tests {
         // sits in the tray all day (switchb's phone, silent since v0.63.0).
         state.presence.lock().unwrap().insert(2, 1);
 
-        let got = recipients(&state, &message_from(1, "anyone about?"), &[], None).await.unwrap();
+        let got = recipients(&state, &message_from(1, "anyone about?"), &[], None, false).await.unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
 
         assert!(ids.contains(&2), "a phone must still buzz while the desktop is open");
@@ -326,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn do_not_disturb_silences_push_but_invisible_does_not() {
         let state = state_with_people().await;
-        let got = recipients(&state, &message_from(1, "anyone about?"), &[], None).await.unwrap();
+        let got = recipients(&state, &message_from(1, "anyone about?"), &[], None, false).await.unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
 
         assert!(!ids.contains(&5), "do not disturb is exactly this");
@@ -341,7 +346,7 @@ mod tests {
     async fn do_not_disturb_outranks_a_direct_mention() {
         let state = state_with_people().await;
         // A DM, which normally reaches its participants whatever their level.
-        let got = recipients(&state, &message_from(1, "you there?"), &[5], Some(&[1, 5]))
+        let got = recipients(&state, &message_from(1, "you there?"), &[5], Some(&[1, 5]), true)
             .await
             .unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
@@ -360,7 +365,7 @@ mod tests {
 
         // Even a direct mention stays quiet: silencing a channel is the whole
         // point, and a mention is exactly what would otherwise get through.
-        let got = recipients(&state, &message_from(1, "oi @atdesk"), &[2, 3], None).await.unwrap();
+        let got = recipients(&state, &message_from(1, "oi @atdesk"), &[2, 3], None, false).await.unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
         assert!(!ids.contains(&2), "a muted channel still pushed");
         assert!(ids.contains(&3), "and it silenced somebody who didn't mute it");
@@ -370,16 +375,16 @@ mod tests {
     async fn level_and_dm_membership_still_decide() {
         let state = state_with_people().await;
         // A mention reaches the mentions-only account.
-        let got = recipients(&state, &message_from(1, "oi @mentions_only"), &[3], None).await.unwrap();
+        let got = recipients(&state, &message_from(1, "oi @mentions_only"), &[3], None, false).await.unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
         assert!(ids.contains(&3) && ids.contains(&2));
         assert!(!ids.contains(&4), "\"nothing\" outranks being mentioned");
 
         // A DM reaches its participants and nobody else, whatever their level.
-        let got = recipients(&state, &message_from(1, "just us"), &[], Some(&[1, 4])).await.unwrap();
+        let got = recipients(&state, &message_from(1, "just us"), &[], Some(&[1, 4]), true).await.unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, Vec::<i64>::new(), "4 asked for no notifications at all");
-        let got = recipients(&state, &message_from(1, "just us"), &[], Some(&[1, 3])).await.unwrap();
+        let got = recipients(&state, &message_from(1, "just us"), &[], Some(&[1, 3]), true).await.unwrap();
         let ids: Vec<i64> = got.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec![3], "a DM pings its participant regardless of level");
     }

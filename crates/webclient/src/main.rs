@@ -1687,6 +1687,27 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     categories.set(api::categories(&sess()).await);
                                 });
                             }
+                            // Someone was let in or out of a private channel, or
+                            // one was made: which channels are locked differs per
+                            // person, so fetch our own view. If the channel on
+                            // screen just locked, step back out of it.
+                            ServerEvent::ChannelsChanged => {
+                                spawn(async move {
+                                    if let Ok(list) = api::channels(&sess()).await {
+                                        let open = selected.peek().as_ref().map(|c| c.id);
+                                        let now_locked = open
+                                            .and_then(|id| list.iter().find(|c| c.id == id))
+                                            .is_some_and(|c| c.locked);
+                                        channels.set(list);
+                                        if now_locked {
+                                            overlay.set(None);
+                                            selected.set(None);
+                                            messages.set(Vec::new());
+                                            status.set("that channel is private now".into());
+                                        }
+                                    }
+                                });
+                            }
                             ServerEvent::EmojisChanged => {
                                 spawn(async move {
                                     if let Ok(list) = api::emojis(&sess()).await {
@@ -2177,13 +2198,30 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         }) {
                                             button {
                                                 key: "{channel.id}",
-                                                class: if unread().get(&channel.id).is_some_and(|(n, _, _)| *n > 0) { "chan-row unread" } else { "chan-row" },
+                                                class: if channel.locked {
+                                                    "chan-row locked"
+                                                } else if unread().get(&channel.id).is_some_and(|(n, _, _)| *n > 0) {
+                                                    "chan-row unread"
+                                                } else {
+                                                    "chan-row"
+                                                },
                                                 onclick: {
                                                     let channel = channel.clone();
-                                                    move |_| open_channel(channel.clone())
+                                                    move |_| {
+                                                        // Locked: say why nothing opens, rather than
+                                                        // opening a channel the server won't show.
+                                                        if channel.locked {
+                                                            status.set(format!("#{} is private — ask the owner to add you", channel.name));
+                                                            return;
+                                                        }
+                                                        open_channel(channel.clone())
+                                                    }
                                                 },
                                                 span { class: "chan-hash", "#" }
                                                 span { class: "chan-name ellipsis", "{channel.name}" }
+                                                if channel.private {
+                                                    span { class: "chan-lock", Icon { name: "lock", size: 13 } }
+                                                }
                                                 if let Some((n, m)) = unread().get(&channel.id).map(|(n, m, _)| (*n, *m)).filter(|(n, _)| *n > 0) {
                                                     span { class: if m > 0 { "badge mention" } else { "badge" }, "{n}" }
                                                 }
@@ -2288,6 +2326,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                             button {
                                                 class: "voice-card-head",
                                                 onclick: move |_| {
+                                                    // A private room you aren't in: you can see who's
+                                                    // there, not join them.
+                                                    if for_join.locked {
+                                                        status.set(format!("{} is private — ask the owner to add you", for_join.name));
+                                                        return;
+                                                    }
                                                     if voice_conn.peek().as_ref().map(|(id, _)| *id) == Some(for_join.id) {
                                                         // Already in it: show the call rather
                                                         // than reconnecting on top of yourself.
@@ -2298,6 +2342,9 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 },
                                                 span { class: "voice-card-icon", Icon { name: "volume", size: 18 } }
                                                 span { class: "voice-card-name ellipsis", "{channel.name}" }
+                                                if channel.private {
+                                                    span { class: "chan-lock", Icon { name: "lock", size: 13 } }
+                                                }
                                                 span { class: "voice-card-count", "{count}" }
                                             }
                                             if !people.is_empty() {

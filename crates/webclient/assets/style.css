@@ -247,6 +247,10 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .chan-hash { color: var(--n-600); font-size: 16px; width: 14px; flex: 0 0 auto; }
 .chan-name { flex: 1; min-width: 0; font-size: 15px; color: var(--n-400); }
 .chan-row.unread .chan-name { color: var(--text); }
+/* A private channel you can't open: still listed, dimmed, and the lock says
+ * why nothing happens. The lock also marks private channels you CAN open. */
+.chan-row.locked .chan-name, .chan-row.locked .chan-hash { color: var(--n-700); }
+.chan-lock { display: flex; align-items: center; color: var(--n-600); flex: 0 0 auto; }
 .dm-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 8px; border-radius: var(--r-md); }
 .dm-row:active { background: var(--n-900); }
 .dm-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }

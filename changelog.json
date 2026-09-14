@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.95.0",
+    "date": "2026-09-13",
+    "changes": [
+      "🔒 Private channels. A text or voice channel can be made private, and then only the people added to it can open it, post in it, or join its call. Everyone else still sees it in the list with a lock, the way Discord shows a channel you can't get into. The server's owner is always in; admins aren't, unless they're added",
+      "Set it up in Server settings → Channels: tick Private when you create a channel, or press Access on an existing one and tick who's in. The owner, and any admin who's been added, can manage it",
+      "Private means private everywhere, not just in the list: its messages don't show up in search, unread counts, notifications or the bot's replies for anyone outside it, and its voice room won't let them connect",
+      "Only admins can create channels now. The Permissions page always said so; the server didn't check"
+    ]
+  },
+  {
     "version": "0.94.35",
     "date": "2026-09-13",
     "changes": [

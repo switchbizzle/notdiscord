@@ -97,6 +97,10 @@ pub async fn play_endpoint(
     if !is_link(&url) {
         return StatusCode::BAD_REQUEST;
     }
+    // The bot answers in this channel, so it has to be one you can post in.
+    if !crate::can_access(&state.db, req.channel_id, user.id).await.unwrap_or(false) {
+        return StatusCode::FORBIDDEN;
+    }
     handle_command(state, user, req.channel_id, MusicCmd::Play(url));
     StatusCode::ACCEPTED
 }
@@ -243,12 +247,19 @@ async fn paint_player(state: &SharedState, channel_id: i64, content: &str) -> an
                 .bind(message_id)
                 .execute(&state.db)
                 .await?;
-            state.broadcast(ServerEvent::MessageEdited {
+            // Scoped like any other edit. This went to everyone, which already
+            // leaked the card's text out of a DM before private channels
+            // existed.
+            let event = ServerEvent::MessageEdited {
                 channel_id,
                 message_id,
                 content: content.to_owned(),
                 edited_at,
-            });
+            };
+            match crate::channel_audience(&state.db, channel_id).await? {
+                Some(ids) => state.broadcast_only(ids, event),
+                None => state.broadcast(event),
+            }
         }
         _ => {
             let id = crate::bot::post_and_get_id(state, channel_id, content).await?;

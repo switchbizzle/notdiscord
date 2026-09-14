@@ -1011,11 +1011,34 @@ pub async fn upload(session: &Session, filename: &str, bytes: Vec<u8>) -> Result
     Ok(format!("{}{}", session.base_url, uploaded.url))
 }
 
-pub async fn create_channel(session: &Session, name: String, kind: &str) -> Result<Channel, String> {
+pub async fn create_channel(session: &Session, name: String, kind: &str, private: bool) -> Result<Channel, String> {
     let resp = send_retry(http()
         .post(format!("{}/api/channels", session.base_url))
         .bearer_auth(&session.token)
-        .json(&CreateChannelRequest { name, kind: Some(kind.into()) }))
+        .json(&CreateChannelRequest { name, kind: Some(kind.into()), private }))
+        .await?;
+    handle(resp).await
+}
+
+/// Whether a channel is private, and who's in it. For the owner, or an admin
+/// who has been let in.
+pub async fn channel_access(session: &Session, channel_id: i64) -> Result<shared::ChannelAccess, String> {
+    let resp = send_retry(http()
+        .get(format!("{}/api/channels/{channel_id}/access", session.base_url))
+        .bearer_auth(&session.token))
+        .await?;
+    handle(resp).await
+}
+
+pub async fn set_channel_access(
+    session: &Session,
+    channel_id: i64,
+    access: &shared::ChannelAccess,
+) -> Result<shared::ChannelAccess, String> {
+    let resp = send_retry(http()
+        .put(format!("{}/api/channels/{channel_id}/access", session.base_url))
+        .bearer_auth(&session.token)
+        .json(access))
         .await?;
     handle(resp).await
 }

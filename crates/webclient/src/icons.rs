@@ -38,6 +38,7 @@ pub fn icon_svg(name: &str) -> &'static str {
         "pin" => include_str!("../../client/assets/icons/pin.svg"),
         "camera" => include_str!("../../client/assets/icons/camera.svg"),
         "image" => include_str!("../../client/assets/icons/image.svg"),
+        "lock" => include_str!("../../client/assets/icons/lock.svg"),
         "screen" => include_str!("../../client/assets/icons/screen.svg"),
         "chevron-up" => include_str!("../../client/assets/icons/chevron-up.svg"),
         "chevron-down" => include_str!("../../client/assets/icons/chevron-down.svg"),

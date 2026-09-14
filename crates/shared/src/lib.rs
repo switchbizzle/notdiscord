@@ -119,6 +119,20 @@ pub struct Channel {
     /// The sidebar group this sits in, if an admin has filed it.
     #[serde(default)]
     pub category_id: Option<i64>,
+    /// Only its members and the server's owner can read it, post in it, or
+    /// join its voice room. Everyone still sees it in the list, locked — the
+    /// way Discord shows a channel you can't open.
+    #[serde(default)]
+    pub private: bool,
+    /// True when the person this list was fetched for can't get in. Per
+    /// viewer: only right in a channel list that viewer fetched.
+    #[serde(default)]
+    pub locked: bool,
+    /// Whether this viewer may rename, delete, or change who's in a PRIVATE
+    /// channel: the owner, or an admin who is a member. Per viewer, and only
+    /// meaningful for private channels — for public ones clients go by role.
+    #[serde(default)]
+    pub can_manage: bool,
 }
 
 /// A collapsible group in the channel list.
@@ -546,6 +560,18 @@ pub struct CreateChannelRequest {
     /// "text" (default) or "voice".
     #[serde(default)]
     pub kind: Option<String>,
+    /// Start it private, with only its creator (and the owner) inside.
+    #[serde(default)]
+    pub private: bool,
+}
+
+/// GET/PUT /api/channels/{id}/access: whether a channel is private, and who
+/// can get into it. The server's owner always can and is never listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelAccess {
+    pub private: bool,
+    #[serde(default)]
+    pub members: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1049,6 +1075,11 @@ pub enum ServerEvent {
     /// Coarse on purpose — it happens while an admin edits settings, never
     /// on the hot path.
     CategoriesChanged,
+    /// A channel became private or public, someone was let in or out, or a
+    /// private channel was created. Which channels are locked is different
+    /// for every viewer, so no single payload fits: clients refetch
+    /// /api/channels for their own view.
+    ChannelsChanged,
     ServerRenamed { name: String },
     ServerIconChanged { icon: String },
     /// Tags or assignments changed; clients refetch /api/tags and /api/users.
