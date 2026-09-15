@@ -439,6 +439,18 @@ fn is_wide() -> bool {
         .unwrap_or(false)
 }
 
+/// A mouse-and-keyboard machine, however narrow its window: what Enter-sends
+/// keys off. It was is_wide() at first, and Jon's browser window — narrower
+/// than 900px — kept making newlines while a maximized one sent. How wide
+/// the window is says nothing about whether there's a keyboard in front of
+/// it; the pointer does. Same query that shows the hover strip.
+fn has_mouse() -> bool {
+    web_sys::window()
+        .and_then(|w| w.match_media("(hover: hover) and (pointer: fine)").ok().flatten())
+        .map(|m| m.matches())
+        .unwrap_or(false)
+}
+
 /// Put a video full screen — how you actually watch somebody's share.
 /// Best-effort: a browser that refuses just keeps the inline stage.
 fn fullscreen_el(id: &str) {
@@ -3182,11 +3194,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 },
                                 onkeydown: move |e| {
                                     let mods = e.modifiers();
-                                    // On a wide screen there's a real keyboard:
-                                    // Enter sends and Shift+Enter breaks the
-                                    // line, the way the desktop app works. On
-                                    // a phone Enter stays a newline.
-                                    let plain_send = is_wide() && !mods.contains(Modifiers::SHIFT);
+                                    // A mouse means a real keyboard: Enter
+                                    // sends and Shift+Enter breaks the line,
+                                    // the way the desktop app works. On a
+                                    // phone Enter stays a newline.
+                                    let plain_send = has_mouse() && !mods.contains(Modifiers::SHIFT);
                                     if e.key() == Key::Enter
                                         && (mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META) || plain_send)
                                     {
@@ -4856,7 +4868,7 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                             if e.key() == Key::Escape {
                                 editing.set(None);
                             } else if e.key() == Key::Enter
-                                && is_wide()
+                                && has_mouse()
                                 && !e.modifiers().contains(Modifiers::SHIFT)
                             {
                                 // A real keyboard: Enter saves, like sending.

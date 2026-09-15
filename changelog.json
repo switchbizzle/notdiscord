@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.2",
+    "date": "2026-09-15",
+    "changes": [
+      "⌨️ Enter sends from any browser window with a mouse behind it, however narrow the window — it used to check how wide your window was instead of whether you had a keyboard, so a half-screen window made newlines while a maximized one sent (Jon). Phones keep Enter as a new line"
+    ]
+  },
+  {
     "version": "0.97.1",
     "date": "2026-09-15",
     "changes": [
