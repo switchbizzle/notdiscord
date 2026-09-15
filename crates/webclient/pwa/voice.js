@@ -18,6 +18,58 @@ window.ndVoice = (() => {
   };
   const audioEls = new Map();
 
+  // Mic processing prefs, per device like every other browser-side setting.
+  // These are the browser's own DSP (the same suppression Meet runs) — the
+  // desktop app carries RNNoise instead.
+  const PREFS_KEY = "nd_voice_prefs";
+  function micPrefs() {
+    const d = { suppress: true, echo: true, gain: true, mic: "" };
+    try {
+      return Object.assign(d, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"));
+    } catch (e) {
+      return d;
+    }
+  }
+  function captureOpts() {
+    const p = micPrefs();
+    const o = { noiseSuppression: p.suppress, echoCancellation: p.echo, autoGainControl: p.gain };
+    if (p.mic) o.deviceId = p.mic;
+    return o;
+  }
+  function getMicPrefs() {
+    return JSON.stringify(micPrefs());
+  }
+  async function setMicPrefs(json) {
+    try {
+      localStorage.setItem(PREFS_KEY, json);
+    } catch (e) {}
+    // Mid-call, restart the mic so the new processing applies now, not next
+    // call. Muted stays muted: nobody's mute button gets undone by a toggle.
+    if (room && !state.muted) {
+      try {
+        await room.localParticipant.setMicrophoneEnabled(false);
+        await room.localParticipant.setMicrophoneEnabled(true, captureOpts());
+      } catch (e) {
+        state.error = "mic settings didn't take: " + (e && e.message ? e.message : e);
+      }
+    }
+  }
+  // Input devices for the picker. Labels are blank until the browser has
+  // granted the mic once — the caller renders what it gets.
+  async function listMics() {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      let n = 0;
+      return JSON.stringify(
+        all
+          .filter((d) => d.kind === "audioinput")
+          .map((d) => ({ id: d.deviceId, label: d.label || "Microphone " + ++n })),
+      );
+    } catch (e) {
+      return "[]";
+    }
+  }
+
   function refresh() {
     if (!room) {
       state.participants = [];
@@ -128,7 +180,7 @@ window.ndVoice = (() => {
       state.connected = true;
       // Publish the mic; without permission we stay connected listen-only.
       try {
-        await r.localParticipant.setMicrophoneEnabled(true);
+        await r.localParticipant.setMicrophoneEnabled(true, captureOpts());
         state.muted = false;
       } catch (e) {
         state.muted = true;
@@ -168,7 +220,7 @@ window.ndVoice = (() => {
   async function setMuted(m) {
     if (!room) return;
     try {
-      await room.localParticipant.setMicrophoneEnabled(!m);
+      await room.localParticipant.setMicrophoneEnabled(!m, m ? undefined : captureOpts());
       state.muted = m;
     } catch (e) {
       state.error = "mic toggle failed: " + (e && e.message ? e.message : e);
@@ -240,6 +292,9 @@ window.ndVoice = (() => {
     setShare,
     setVolume,
     attachVideos,
+    getMicPrefs,
+    setMicPrefs,
+    listMics,
     getState,
     _room: () => room,
   };

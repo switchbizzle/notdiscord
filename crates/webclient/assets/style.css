@@ -84,7 +84,10 @@ body {
     overscroll-behavior: none;
 }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
+input, textarea, select { font: inherit; color: inherit; border: 0; outline: none; }
+/* The one dropdown (mic picker). Options inherit the OS sheet; the box
+ * matches the text fields. */
+select.text-input { appearance: none; background: var(--n-900); }
 
 /* Every scrolling region in the app. The scrollbar is hidden because a phone
  * doesn't have one and a desktop browser drawing one inside a 428px frame

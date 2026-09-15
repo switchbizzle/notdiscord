@@ -38,6 +38,12 @@ extern "C" {
     fn voice_set_share_js(on: bool) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
     #[wasm_bindgen(catch, js_name = attachVideos)]
     fn voice_attach_videos_js() -> Result<(), wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch, js_name = getMicPrefs)]
+    fn voice_get_mic_prefs_js() -> Result<String, wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch, js_name = setMicPrefs)]
+    fn voice_set_mic_prefs_js(json: &str) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch, js_name = listMics)]
+    fn voice_list_mics_js() -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
     #[wasm_bindgen(js_name = setVolume)]
     fn voice_set_volume_js(identity: &str, volume: f64);
     #[wasm_bindgen(js_name = getState)]
@@ -168,6 +174,29 @@ impl From<PushSub> for shared::PushSubscribeRequest {
     fn from(s: PushSub) -> Self {
         Self { endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }
     }
+}
+
+/// Mic processing prefs, mirrored from voice.js's localStorage copy — the
+/// browser's own suppression/echo/gain DSP plus which input to use.
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
+struct MicPrefs {
+    suppress: bool,
+    echo: bool,
+    gain: bool,
+    mic: String,
+}
+
+impl Default for MicPrefs {
+    fn default() -> Self {
+        Self { suppress: true, echo: true, gain: true, mic: String::new() }
+    }
+}
+
+/// One input device for the picker: (id, label).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct MicDevice {
+    id: String,
+    label: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -1131,6 +1160,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut push_glue = use_signal(PushGlue::default);
     let mut install_glue = use_signal(InstallGlue::default);
     let mut notify_msg = use_signal(String::new);
+    // Mic processing (suppression/echo/gain) and the input picker, read
+    // from voice.js's per-device store when Settings opens.
+    let mut mic_prefs = use_signal(MicPrefs::default);
+    let mut mic_list = use_signal(Vec::<MicDevice>::new);
     // Wide enough for the desktop layout: the sidebar stays up next to the
     // open channel instead of being replaced by it. Re-checked by the poll
     // below, so dragging the window across the line re-lays the app out.
@@ -1145,6 +1178,27 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         if let Ok(state) = serde_json::from_str::<PushGlue>(&push_state_js()) {
             push_glue.set(state);
         }
+        // Voice settings ride along: prefs synchronously, the device list
+        // when the browser answers. Both best-effort — a cached page from
+        // before this deploy has neither function, and Settings still opens.
+        if let Some(prefs) = voice_get_mic_prefs_js()
+            .ok()
+            .and_then(|json| serde_json::from_str::<MicPrefs>(&json).ok())
+        {
+            mic_prefs.set(prefs);
+        }
+        spawn(async move {
+            let Ok(promise) = voice_list_mics_js() else { return };
+            if let Some(json) = wasm_bindgen_futures::JsFuture::from(promise)
+                .await
+                .ok()
+                .and_then(|v| v.as_string())
+            {
+                if let Ok(list) = serde_json::from_str::<Vec<MicDevice>>(&json) {
+                    mic_list.set(list);
+                }
+            }
+        });
         if let Ok(state) = serde_json::from_str::<InstallGlue>(&install_state_js()) {
             install_glue.set(state);
         }
@@ -1166,6 +1220,21 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
         });
     };
+    // Save a mic pref and apply it to the live call in one motion. Copyable
+    // into every toggle's handler: its captures are all signals.
+    let mut apply_mic_prefs = move |prefs: MicPrefs| {
+        mic_prefs.set(prefs.clone());
+        let Ok(json) = serde_json::to_string(&prefs) else { return };
+        match voice_set_mic_prefs_js(&json) {
+            Ok(promise) => {
+                spawn(async move {
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                });
+            }
+            Err(_) => status.set("voice settings need the app reloaded".into()),
+        }
+    };
+
     // channel_id -> unread count, for the channel-list and tab badges.
     // channel_id -> (unread count, id of the newest message you had read).
     // Every channel is kept, not just the noisy ones: the second number is
@@ -3484,6 +3553,65 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         if inst.outcome == "dismissed" {
                                             div { class: "note good", "maybe next time" }
                                         }
+                                    }
+                                }
+                            }
+
+                            div { class: "section-label", style: "padding: 18px 2px 8px", "Voice" }
+                            {
+                                let prefs = mic_prefs();
+                                let toggles: [(&'static str, &'static str, bool, fn(&mut MicPrefs)); 3] = [
+                                    ("Noise suppression", "the browser filters fans, keyboards and chatter out of your mic", prefs.suppress, |p| p.suppress = !p.suppress),
+                                    ("Echo cancellation", "keeps your speakers out of your own mic — leave on unless everyone's on headphones", prefs.echo, |p| p.echo = !p.echo),
+                                    ("Automatic mic volume", "levels you out when you lean toward or away from the mic", prefs.gain, |p| p.gain = !p.gain),
+                                ];
+                                rsx! {
+                                    div { class: "row-stack",
+                                        for (label, hint, on, flip) in toggles {
+                                            button {
+                                                key: "{label}",
+                                                class: if on { "row-card picked" } else { "row-card" },
+                                                onclick: move |_| {
+                                                    let mut p = mic_prefs.peek().clone();
+                                                    flip(&mut p);
+                                                    apply_mic_prefs(p);
+                                                },
+                                                span { class: "row-col",
+                                                    span { style: "font-size: 14px", "{label}" }
+                                                    span { class: "row-hint", "{hint}" }
+                                                }
+                                                if on {
+                                                    span { style: "color: var(--accent); display: flex",
+                                                        Icon { name: "check", size: 15 }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !mic_list().is_empty() {
+                                        div { class: "field", style: "margin-top: 10px",
+                                            label { "Microphone" }
+                                            select {
+                                                class: "text-input",
+                                                onchange: move |e| {
+                                                    let mut p = mic_prefs.peek().clone();
+                                                    p.mic = e.value();
+                                                    apply_mic_prefs(p);
+                                                },
+                                                option { value: "", selected: prefs.mic.is_empty(), "Default" }
+                                                for device in mic_list().into_iter().filter(|d| !d.id.is_empty() && d.id != "default") {
+                                                    option {
+                                                        key: "{device.id}",
+                                                        value: "{device.id}",
+                                                        selected: prefs.mic == device.id,
+                                                        "{device.label}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "note",
+                                        "Applies mid-call and remembers per device. This is the browser's own audio processing; the desktop app runs its own noise filter and adds push-to-talk, which browsers can't do while you're in a game."
                                     }
                                 }
                             }

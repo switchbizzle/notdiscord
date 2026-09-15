@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.4",
+    "date": "2026-09-15",
+    "changes": [
+      "🎙️ Voice settings in the web app. Settings grew a Voice section: noise suppression (the browser filters fans, keyboards and chatter out of your mic), echo cancellation, automatic mic volume, and a microphone picker. All three start on, changes apply mid-call, and each device remembers its own"
+    ]
+  },
+  {
     "version": "0.97.3",
     "date": "2026-09-15",
     "changes": [
