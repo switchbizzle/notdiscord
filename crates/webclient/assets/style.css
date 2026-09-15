@@ -458,7 +458,10 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 /* Hold a message for its actions. Selection and the iOS callout are off
  * so the hold reads as a hold and not as "select this word" — "Copy text"
  * lives in the sheet the hold opens. */
-.msg { display: flex; gap: 8px; -webkit-touch-callout: none; user-select: none; }
+.msg { display: flex; gap: 8px; -webkit-touch-callout: none; user-select: none; position: relative; }
+/* The hover strip exists in the DOM everywhere but only a mouse ever sees
+ * it — the block in the (hover: hover) media query below is what shows it. */
+.msg-hover { display: none; }
 .msg.pressing { background: var(--n-900); margin: 0 -12px; padding: 0 12px; border-radius: var(--r-md); }
 .msg.pressing:not(.compact) { margin-top: 9px; }
 /* The message a permalink landed on, so it's obvious which line was meant.
@@ -1027,6 +1030,23 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
  * again, because the long-press guard is a touch problem. */
 @media (hover: hover) and (pointer: fine) {
     .msg { user-select: text; -webkit-touch-callout: default; }
+    /* The desktop app's message strip: float over the row's top-right the
+     * moment the mouse is on it. Half above the row, like every chat app,
+     * so it never covers the words it acts on. */
+    .msg:hover .msg-hover, .msg-hover:hover { display: flex; }
+    .msg-hover {
+        position: absolute; top: -16px; right: 10px; z-index: 5;
+        gap: 1px; padding: 2px;
+        background: var(--surface); border: 1px solid var(--n-800);
+        border-radius: var(--r-md); box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+    }
+    .msg-hover button {
+        width: 32px; height: 30px; border-radius: var(--r-sm);
+        display: flex; align-items: center; justify-content: center;
+        color: var(--n-400);
+    }
+    .msg-hover button:hover { background: var(--n-900); color: var(--text); }
+    .msg-hover button.danger:hover { color: var(--danger); }
     .hbtn:hover, .cbtn:hover, .minibtn:hover, .mbtn:hover, .chan-row:hover,
     .dm-row:hover, .row-card:hover, .sheet-action:hover, .mention-row:hover,
     .attach-opt:hover, .quick-react:hover, .load-older:hover,

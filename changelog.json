@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.1",
+    "date": "2026-09-15",
+    "changes": [
+      "🖱️ Hover a message in the web app's desktop mode and the actions appear — reply, react, edit, delete — floating at its corner, just like the desktop app. No more right-clicking to ask (switchb). Phones keep the hold-for-actions sheet"
+    ]
+  },
+  {
     "version": "0.97.0",
     "date": "2026-09-15",
     "changes": [

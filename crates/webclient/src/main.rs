@@ -4719,6 +4719,52 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     actions_open.set(true);
                 }
             },
+            // Hover actions, the desktop app's strip: only a mouse ever sees
+            // these (CSS shows them under hover:hover), so the phone pays a
+            // few hidden nodes and nothing else. The sheet stays the long-
+            // press and right-click path; this is the no-click-to-ask one.
+            if !pending && editing().is_none() {
+                {
+                    let hover_reply = msg.clone();
+                    let hover_edit = msg.content.clone();
+                    rsx! {
+                        div { class: "msg-hover",
+                            button {
+                                title: "Reply",
+                                onclick: move |_| replying.set(Some(hover_reply.clone())),
+                                Icon { name: "reply", size: 15 }
+                            }
+                            button {
+                                title: "React…",
+                                onclick: move |_| actions_open.set(true),
+                                Icon { name: "smile", size: 15 }
+                            }
+                            if mine {
+                                button {
+                                    title: "Edit",
+                                    onclick: move |_| {
+                                        confirming_delete.set(false);
+                                        editing.set(Some(hover_edit.clone()));
+                                        focus_editor(msg_id);
+                                    },
+                                    Icon { name: "edit", size: 15 }
+                                }
+                            }
+                            if mine || me_admin {
+                                button {
+                                    class: "danger",
+                                    title: "Delete",
+                                    onclick: move |_| {
+                                        editing.set(None);
+                                        confirming_delete.set(true);
+                                    },
+                                    Icon { name: "trash", size: 15 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // The gutter holds the avatar on the first message of a block and
             // stays empty (but present) on the rest, so every line in a block
             // shares one left edge.
