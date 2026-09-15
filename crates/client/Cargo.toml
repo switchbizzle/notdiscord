@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.95.4"
+version = "0.96.0"
 edition = "2021"
 
 [dependencies]
@@ -34,7 +34,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 fontdue = "0.9.4"
 
 [target.'cfg(windows)'.dependencies]
+mslnk = "0.1"
 winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase", "dwmapi"] }
+winreg = "0.56"
 
 [target.'cfg(windows)'.build-dependencies]
 # Stamps assets/app.ico into the exe, which is what Explorer, the taskbar and

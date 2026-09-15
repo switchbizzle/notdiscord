@@ -1383,6 +1383,9 @@ ul.md-list { list-style-type: disc; }
 .confirm-title { color: #fff; font-size: 17px; font-weight: 700; }
 .confirm-body { color: #dbdee1; font-size: 14px; line-height: 1.5; }
 .confirm-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.install-modal { width: 420px; }
+.install-modal .ns-toggle-row { color: #dbdee1; font-size: 13px; }
+.install-error { color: #f23f43; font-size: 13px; }
 
 .member-dot {
     width: 8px;

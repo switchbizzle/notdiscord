@@ -34,14 +34,29 @@ fn main() {
     std::fs::write(format!("{out_dir}/icons_gen.rs"), code).unwrap();
 }
 
-/// Give the executable its icon. Windows reads this from the binary's
-/// resource table, not from anything at runtime — without it the taskbar and
-/// Explorer fall back to the generic "unknown application" page.
+/// Give the executable its icon and its name. Windows reads both from the
+/// binary's resource table: without the icon the taskbar and Explorer show
+/// the generic "unknown application" page, and without the strings the
+/// Properties → Details tab said ProductName "client", CompanyName "" —
+/// which is what an unsigned 45 MB exe that captures the screen and
+/// replaces itself looks like to Defender's heuristics, right before it
+/// quarantines it. Named binaries score better; signed ones better still.
 #[cfg(windows)]
 fn embed_exe_icon() {
+    let mut res = winresource::WindowsResource::new();
     if std::path::Path::new("assets/app.ico").exists() {
-        let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/app.ico");
+    }
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    res.set("ProductName", "NotDiscord");
+    res.set("FileDescription", "NotDiscord — chat, voice and video for your crew");
+    res.set("CompanyName", "NotDiscord");
+    res.set("LegalCopyright", "Copyright (c) 2026 switchb and the NotDiscord contributors. MIT licence.");
+    res.set("OriginalFilename", "NotDiscord.exe");
+    res.set("InternalName", "NotDiscord");
+    res.set("ProductVersion", &version);
+    res.set("FileVersion", &version);
+    {
         if let Err(e) = res.compile() {
             // Not fatal: an iconless build still runs, and failing here would
             // block every build on a machine without the resource compiler.

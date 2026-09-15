@@ -1,0 +1,55 @@
+# Builds the Windows desktop client on GitHub's runners, so the exe people
+# download can be traced to a commit — which is what a code-signing service
+# (SignPath) verifies before it will sign it. The same flags as
+# scripts/release-client.ps1, so this exe and a local one are alike.
+name: client
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client
+
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p client
+
+      - name: Test
+        run: cargo test --release -p client
+
+      - name: Name the exe
+        run: Copy-Item target\release\client.exe NotDiscord.exe
+
+      - name: Show what was built
+        run: |
+          $v = (Get-Item NotDiscord.exe).VersionInfo
+          "ProductName: $($v.ProductName)  FileVersion: $($v.FileVersion)  Size: $([math]::Round((Get-Item NotDiscord.exe).Length / 1MB, 1)) MB"
+          Get-FileHash NotDiscord.exe -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NotDiscord-windows
+          path: NotDiscord.exe
+          if-no-files-found: error
+
+  # Once SignPath has approved the project, the signing step goes here: a
+  # job that needs `build`, submits the NotDiscord-windows artifact with
+  # signpath/github-action-submit-signing-request, and downloads the signed
+  # exe. Until then the artifact above is unsigned.

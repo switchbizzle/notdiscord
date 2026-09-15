@@ -4,6 +4,7 @@ mod api;
 mod emoji;
 mod frames;
 mod icons;
+mod install;
 mod md;
 mod menu;
 mod camera;
@@ -99,11 +100,27 @@ fn main() {
         default_panic(info);
     }));
 
+    // Apps & features runs us with --uninstall; that process never opens a
+    // window. And a download started while an installed copy exists opens
+    // the installed one rather than becoming a second NotDiscord — before
+    // the mutex below, or the copy we start would find it held.
+    match install::launch_mode() {
+        install::Launch::Uninstall => install::uninstall_interactive(),
+        install::Launch::UninstallCleanup(dir) => install::uninstall_cleanup(&dir),
+        _ => {}
+    }
+    if install::hand_off_to_installed() {
+        return;
+    }
+
     // A second instance is how updates break: the extra process keeps the
     // old exe locked ("could not stage update: Access is denied"). Close-to-
     // tray makes accidental double launches easy, so reveal the existing
     // window and bow out instead.
     ensure_single_instance();
+    // The installed copy keeps its Apps & features entry at the version it
+    // actually is, since self-updates don't go through the installer.
+    install::refresh_registration();
 
     // Claim the tray/menu event slots before dioxus can (write-once OnceCells,
     // first setter wins) — otherwise tray menu clicks go nowhere.
@@ -367,12 +384,22 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+/// The install prompt's switch, shared so Settings → App can raise it.
+#[derive(Clone, Copy)]
+struct InstallPrompt(Signal<bool>);
+
 #[component]
 fn App() -> Element {
     let mut servers = use_context_provider(|| Signal::new(api::load_servers()));
     let mut adding = use_signal(|| false);
     let mut restoring = use_signal(|| true);
     let window = use_window();
+    // "Install NotDiscord?" — asked once per download when running from
+    // wherever it was saved, and from Settings → App any time after.
+    let mut install_prompt = use_signal(install::should_offer);
+    use_context_provider(|| InstallPrompt(install_prompt));
+    let mut install_desktop = use_signal(|| true);
+    let mut install_error = use_signal(String::new);
 
     // The title bar is the OS's, so it has to be told our colours.
     use_hook(|| {
@@ -527,6 +554,66 @@ fn App() -> Element {
 
     rsx! {
         style { dangerous_inner_html: include_str!("../assets/style.css") }
+        if install_prompt() {
+            {
+                let updating = install::would_update();
+                let from = install::running_from();
+                rsx! {
+                    div { class: "settings-overlay confirm-overlay",
+                        div {
+                            class: "confirm-modal install-modal",
+                            onclick: move |e| e.stop_propagation(),
+                            div { class: "confirm-title",
+                                if updating.is_some() { "Update the installed NotDiscord?" } else { "Install NotDiscord?" }
+                            }
+                            div { class: "confirm-body",
+                                if let Some(old) = updating.clone() {
+                                    "This is v{env!(\"CARGO_PKG_VERSION\")} and the installed copy is v{old}. Installing replaces it, and this file can be deleted afterwards."
+                                } else {
+                                    "You're running NotDiscord straight from {from}. Installing puts it in its own folder with a Start Menu shortcut and an entry in Apps & features — one copy to find, and updates go there. Your login and settings carry over."
+                                }
+                            }
+                            label { class: "ns-toggle-row",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: install_desktop(),
+                                    onchange: move |e| install_desktop.set(e.checked()),
+                                }
+                                " Also put a shortcut on the desktop"
+                            }
+                            if !install_error().is_empty() {
+                                div { class: "install-error", "{install_error}" }
+                            }
+                            div { class: "confirm-buttons",
+                                button {
+                                    class: "profile-btn",
+                                    onclick: move |_| {
+                                        install::decline();
+                                        install_prompt.set(false);
+                                    },
+                                    "Not now"
+                                }
+                                button {
+                                    class: "profile-btn primary",
+                                    onclick: move |_| match install::install(install_desktop()) {
+                                        Ok(exe) => {
+                                            // Same dance as a self-update: let go of
+                                            // the mutex, start the installed copy,
+                                            // and get out of its way.
+                                            release_single_instance();
+                                            let _ = std::process::Command::new(&exe).spawn();
+                                            std::process::exit(0);
+                                        }
+                                        Err(e) => install_error.set(e),
+                                    },
+                                    if updating.is_some() { "Update" } else { "Install" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if restoring() {
             div { class: "login-wrap",
                 div { class: "splash-box",
@@ -1043,6 +1130,7 @@ fn MainView(session: api::Session) -> Element {
     use_context_provider(|| session);
     let mut servers_file = use_context::<Signal<api::ServersFile>>();
     let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
+    let mut install_prompt = use_context::<InstallPrompt>();
     // What the viewer's Copy button last did, and to which picture — so
     // "Copied" doesn't linger on the next one.
     let mut copy_note = use_signal(|| None::<(String, &'static str)>);
@@ -3175,6 +3263,23 @@ fn MainView(session: api::Session) -> Element {
                                         "X keeps NotDiscord running in the tray. Quit from the tray icon, or turn this off to make X exit."
                                     } else {
                                         "X quits NotDiscord. The ⌄ button next to Log out still hides it to the tray."
+                                    }
+                                }
+                                if install::running_installed() {
+                                    div { class: "settings-hint",
+                                        "Installed in {install::install_dir().map(|d| d.display().to_string()).unwrap_or_default()} — remove it from Windows' Apps & features."
+                                    }
+                                } else if cfg!(windows) {
+                                    div { class: "settings-hint",
+                                        "Running standalone from {install::running_from()}. Installing gives it a Start Menu shortcut and one place to live."
+                                    }
+                                    button {
+                                        class: "profile-btn",
+                                        onclick: move |_| {
+                                            settings_open.set(false);
+                                            install_prompt.0.set(true);
+                                        },
+                                        "Install NotDiscord"
                                     }
                                 }
                                 button {

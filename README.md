@@ -17,6 +17,42 @@ with a monitor picker, webcam video, in-app auto-updates with a changelog
 screen, and a system tray. Built rapidly by a crew that wanted their own
 Discord — see [TODO.md](TODO.md) for where it's headed.
 
+## Get the app
+
+**Windows:** download `NotDiscord.exe` from your server's `/download` page
+(the crew's is [notdiscord.switchbhost.com/download](https://notdiscord.switchbhost.com/download)).
+It's a single exe. Run it and it offers to install itself — a copy in
+`%LOCALAPPDATA%\Programs\NotDiscord`, a Start Menu shortcut, and an entry in
+Apps & features, which is also how you uninstall it. Say *Not now* and it
+runs standalone from wherever you saved it; `NotDiscord.exe --portable` never
+asks. Updates arrive in-app either way. Login and settings live in
+`%APPDATA%\NotDiscord` and survive both installing and uninstalling.
+
+**Phone:** open `/app` on your server in the phone's browser and add it to the
+home screen. It's a PWA with push notifications, voice, uploads and the
+lot; the desktop app is the full experience.
+
+### Code signing
+
+Releases are not yet signed, so on first run Windows SmartScreen shows
+"Windows protected your PC" (More info → Run anyway), and Defender's
+heuristics occasionally quarantine the exe outright. The project has been
+opened up under the MIT licence and builds on GitHub Actions
+(`.github/workflows/client.yml`) so that releases can be signed for free
+through [SignPath Foundation](https://signpath.org); that application is in
+progress. If Defender quarantines a copy, report it as a false positive at
+<https://www.microsoft.com/en-us/wdsi/filesubmission> — it usually clears in
+a day or two.
+
+### Privacy
+
+The desktop client connects only to the NotDiscord server you sign in to
+and to the voice server that server hands it. It sends nothing to anyone
+else and phones home to no one; the update check asks your own server.
+This program will not transfer any information to other networked systems
+unless specifically requested by the user or the person installing or
+operating it.
+
 ## Run your own server
 
 See **[deploy/README.md](deploy/README.md)** — a Docker Compose stack

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.96.0",
+    "date": "2026-09-15",
+    "changes": [
+      "📦 NotDiscord can install itself. Run the download and it offers to install: its own folder, a Start Menu shortcut, an entry in Apps & features, and updates go there from then on. Your login and settings carry over, and running the download again later just opens the installed copy — no more collecting copies in Downloads. Not now keeps it standalone, and Settings → App can install it later",
+      "🪪 The exe now says what it is. Right-click → Properties → Details reads NotDiscord, with a description, version and copyright, instead of \"client\" — part of getting it past Defender, along with code signing that's in progress"
+    ]
+  },
+  {
     "version": "0.95.4",
     "date": "2026-09-15",
     "changes": [

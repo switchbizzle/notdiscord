@@ -402,6 +402,10 @@ pub struct Settings {
     /// and the chevron button mean neither choice traps you.
     #[serde(default = "yes")]
     pub close_to_tray: bool,
+    /// The exe path "Not now" was answered for, in the install prompt. A
+    /// different download asks again; Settings → App always offers.
+    #[serde(default)]
+    pub install_declined_for: Option<String>,
     /// Last client version whose changelog the user has seen.
     #[serde(default)]
     pub last_seen_version: Option<String>,
