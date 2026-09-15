@@ -9,13 +9,20 @@ window.ndVoice = (() => {
     error: "",
     muted: false,
     deafened: false,
-    participants: [], // {identity, name, speaking, local}
+    // Publishing our own picture, and whether this browser can even offer a
+    // screen (phones can't: getDisplayMedia is desktop-only).
+    camera_on: false,
+    sharing_on: false,
+    can_share: !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia),
+    participants: [], // {identity, name, speaking, local, camera, sharing}
   };
   const audioEls = new Map();
 
   function refresh() {
     if (!room) {
       state.participants = [];
+      state.camera_on = false;
+      state.sharing_on = false;
       return;
     }
     const parts = [];
@@ -25,10 +32,52 @@ window.ndVoice = (() => {
         name: p.name || p.identity,
         speaking: !!p.isSpeaking,
         local,
+        camera: !!p.isCameraEnabled,
+        sharing: !!p.isScreenShareEnabled,
       });
     add(room.localParticipant, true);
     room.remoteParticipants.forEach((p) => add(p, false));
     state.participants = parts;
+    // Read back from the room rather than remembered: the browser's own
+    // "Stop sharing" button ends a share without asking us, and the state
+    // has to follow it or the app's button lies.
+    state.camera_on = !!room.localParticipant.isCameraEnabled;
+    state.sharing_on = !!room.localParticipant.isScreenShareEnabled;
+  }
+
+  // Wire every <video data-nd-vid="identity|source"> the app has rendered to
+  // the matching live track. Called on the app's poll: declarative and
+  // self-healing, so a tile that rendered before its track arrived (or a
+  // track that arrived before its tile) meets its partner within a beat.
+  function attachVideos() {
+    if (!room) return;
+    document.querySelectorAll("video[data-nd-vid]").forEach((el) => {
+      const at = el.dataset.ndVid.lastIndexOf("|");
+      const identity = el.dataset.ndVid.slice(0, at);
+      const source = el.dataset.ndVid.slice(at + 1);
+      const p =
+        room.localParticipant.identity === identity
+          ? room.localParticipant
+          : room.remoteParticipants.get(identity);
+      if (!p) return;
+      let pub = null;
+      p.videoTrackPublications.forEach((tp) => {
+        if (tp.source === source) pub = tp;
+      });
+      const track = pub && pub.track;
+      if (!track) {
+        if (el.dataset.ndSid) {
+          el.srcObject = null;
+          delete el.dataset.ndSid;
+        }
+        return;
+      }
+      if (el.dataset.ndSid === pub.trackSid) return;
+      track.attach(el);
+      // Sound rides the separate audio elements; the picture stays silent.
+      el.muted = true;
+      el.dataset.ndSid = pub.trackSid;
+    });
   }
 
   async function join(url, token) {
@@ -57,6 +106,8 @@ window.ndVoice = (() => {
           const v = volumes[participant.identity];
           if (v !== undefined && track.setVolume) track.setVolume(v);
         }
+        // Video tracks wait in the room; attachVideos() pairs them with
+        // whatever elements the app renders.
       });
       r.on("trackUnsubscribed", (track, pub) => {
         const el = audioEls.get(pub.trackSid);
@@ -108,6 +159,8 @@ window.ndVoice = (() => {
     audioEls.clear();
     state.connected = false;
     state.deafened = false;
+    state.camera_on = false;
+    state.sharing_on = false;
     state.participants = [];
     state.error = "";
   }
@@ -130,6 +183,35 @@ window.ndVoice = (() => {
     if (d && !state.muted) await setMuted(true);
   }
 
+  async function setCamera(on) {
+    if (!room) return;
+    try {
+      await room.localParticipant.setCameraEnabled(on);
+    } catch (e) {
+      state.error = on
+        ? "camera unavailable — is it allowed for this site?"
+        : "camera wouldn't stop: " + (e && e.message ? e.message : e);
+    }
+    refresh();
+  }
+
+  // Returns "ok", "cancelled" (the person closed the browser's picker —
+  // their decision, not an error) or "failed".
+  async function setShare(on) {
+    if (!room) return "failed";
+    try {
+      // Tab/system audio goes with the picture where the browser offers it.
+      await room.localParticipant.setScreenShareEnabled(on, { audio: true });
+    } catch (e) {
+      refresh();
+      if (e && e.name === "NotAllowedError") return "cancelled";
+      state.error = "screen share failed: " + (e && e.message ? e.message : e);
+      return "failed";
+    }
+    refresh();
+    return "ok";
+  }
+
   // Per-friend volume, 0..2 (>1 boosts via the track's own gain).
   function setVolume(identity, v) {
     if (!room) return;
@@ -149,5 +231,16 @@ window.ndVoice = (() => {
 
   // _room is for diagnostics (dev tooling publishes synthetic tracks
   // through it); not part of the app's API.
-  return { join, leave, setMuted, setDeafened, setVolume, getState, _room: () => room };
+  return {
+    join,
+    leave,
+    setMuted,
+    setDeafened,
+    setCamera,
+    setShare,
+    setVolume,
+    attachVideos,
+    getState,
+    _room: () => room,
+  };
 })();

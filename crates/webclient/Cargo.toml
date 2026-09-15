@@ -36,4 +36,6 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     # Editing a message in place: focus it with the cursor at the end.
     "HtmlTextAreaElement",
+    # The 900px desktop-layout check, shared with the stylesheet's query.
+    "MediaQueryList",
 ] }

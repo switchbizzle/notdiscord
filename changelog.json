@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.97.0",
+    "date": "2026-09-15",
+    "changes": [
+      "🖥️ The web app grew a desktop mode. Open it in a browser window wider than a phone and it lays itself out like the real thing: tabs down the left, your channels and DMs in a sidebar that stays put, and the conversation beside them. Hover works, text is selectable, Enter sends (Shift+Enter for a new line), and right-click opens a message's actions",
+      "📹 Video calls in the browser. The call screen has a camera button now — phone and desktop both — and everyone in the call sees you in your tile",
+      "🖱️ Share your screen from the browser. In a call on a desktop browser there's a share button; the browser asks which window or screen, and everyone sees it above the faces — tap it to go full screen. Phones can watch a share, they just can't offer one (no browser allows it)",
+      "📐 Install the web app on a PC too: Edge and Chrome's Install button gives it its own window, Start Menu entry and taskbar icon — no download, no Defender, always current"
+    ]
+  },
+  {
     "version": "0.96.0",
     "date": "2026-09-15",
     "changes": [

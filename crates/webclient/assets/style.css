@@ -383,6 +383,22 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .callbtn.active { border-color: var(--accent-700); background: var(--accent-900); color: var(--accent-300); }
 .callbtn.leave { width: 64px; border-color: var(--accent-700); background: var(--accent-900); color: var(--accent-200); }
 
+/* ---------- video in a call ---------- */
+/* Somebody's screen, above the faces. contain, not cover: a screen is
+ * something you read, and cropping its edges off would crop the point. */
+.share-stage { margin-bottom: 12px; }
+.share-video {
+    display: block; width: 100%; max-height: 42vh;
+    background: #000; border-radius: var(--r-md);
+    object-fit: contain; cursor: zoom-in;
+}
+.share-label { font-size: 11px; color: var(--n-600); margin-top: 5px; text-align: center; }
+/* A camera in a tile takes the avatar's place, bigger. */
+.tile-video {
+    width: 100%; max-width: 240px; aspect-ratio: 4 / 3;
+    object-fit: cover; border-radius: var(--r-md); background: #000;
+}
+
 /* ---------- somebody is calling ---------- */
 /* Above sheets and the call screen both: whatever you were doing, a ring is
  * the thing to look at. The halo is two rings breathing on the design's own
@@ -949,9 +965,83 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 /* On a phone the swipe is the control; the arrows would sit under a thumb. */
 @media (max-width: 560px) { .lightbox-arrow { display: none; } }
 
-/* Big screens: this is the phone client, so keep the phone layout and just
- * stop the columns from getting comically wide. The desktop app is the real
- * desktop client. */
+/* ---------- the desktop layout ---------- */
+/* Wide screens: the phone shell becomes a desktop app. The tab bar stands
+ * up as a left icon rail, the open tab stays put as a sidebar, and the
+ * channel — or settings, search, files — fills the pane beside it. The
+ * Rust side keeps both rendered past the same 900px line (is_wide), so
+ * this block only has to lay out what is already there. */
 @media (min-width: 900px) {
-    .app { max-width: 480px; margin: 0 auto; box-shadow: var(--shadow-md); }
+    .app { flex-direction: row; }
+    /* The rail: the same four buttons, stood on end, moved to the front
+     * of the row. */
+    .tabbar {
+        order: -1; display: flex; flex-direction: column; justify-content: flex-start;
+        gap: 10px; width: 70px; flex: 0 0 70px;
+        padding: 14px 6px 10px;
+        border-top: 0; border-right: 1px solid var(--n-900);
+    }
+    .app-body { flex-direction: row; }
+    .screen { flex: 0 0 330px; border-right: 1px solid var(--n-900); animation: none; }
+    /* No notch to duck under on a desk. */
+    .screen-head.tight { padding-top: 14px; }
+    .overlay { position: static; flex: 1 1 auto; min-width: 0; animation: none; }
+    .overlay-head { padding-top: 10px; }
+    .empty-stage {
+        flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px;
+        align-items: center; justify-content: center;
+        color: var(--n-700); font-size: 14px;
+    }
+    /* The mini call bar floats over the sidebar's bottom corner rather
+     * than becoming a sliver-thin column in the row. */
+    .callbar {
+        position: absolute; left: 82px; bottom: 14px; width: 330px; z-index: 25;
+        border: 1px solid var(--accent-800); border-radius: var(--r-md);
+    }
+    .callbar.floor { padding-bottom: 9px; }
+    /* Sheets become centred panels; a strip across a 1600px window is not
+     * a sheet. Centred by margins, not transform — sheetdrag.js owns
+     * transform while a (touch) drag is live. */
+    .sheet {
+        left: 0; right: 0; margin: 0 auto; max-width: 480px;
+        bottom: 26px; border-radius: var(--r-lg);
+    }
+    .toast { left: 0; right: 0; margin: 0 auto; max-width: 420px; }
+    .messages { padding: 14px 22px 8px; }
+    .composer { padding: 9px 16px 12px; }
+    .composer.floor { padding-bottom: 12px; }
+    /* Face-sized tiles, not quarters of a 27-inch screen; the shared
+     * screen may have the room. */
+    .call-grid {
+        grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        max-width: 900px; margin: 0 auto; width: 100%;
+    }
+    .share-stage { max-width: 1100px; margin: 0 auto 12px; }
+    .share-video { max-height: 64vh; }
+    .call-head { padding-top: 10px; }
+    .ring-screen { padding-top: 76px; }
+}
+
+/* A mouse points; fingers press. Hover states only where hover exists, so
+ * a phone never keeps a stuck highlight — and words become selectable
+ * again, because the long-press guard is a touch problem. */
+@media (hover: hover) and (pointer: fine) {
+    .msg { user-select: text; -webkit-touch-callout: default; }
+    .hbtn:hover, .cbtn:hover, .minibtn:hover, .mbtn:hover, .chan-row:hover,
+    .dm-row:hover, .row-card:hover, .sheet-action:hover, .mention-row:hover,
+    .attach-opt:hover, .quick-react:hover, .load-older:hover,
+    .logout-btn:hover, .queue-shuffle:hover, .btn-quiet:hover { background: var(--n-900); }
+    .row-card.picked:hover { background: color-mix(in srgb, var(--accent) 16%, var(--n-900)); }
+    .search-hit:hover { background: var(--n-800); }
+    .tabbtn:hover .tabpill { background: var(--n-900); }
+    .tabbtn.on:hover .tabpill { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+    .btn-primary:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+    .callbtn:hover { border-color: var(--n-600); }
+    .group-btn:hover { opacity: 0.75; }
+    /* A desktop shows its scrollbars, thinly. */
+    .scroll, .messages { scrollbar-width: thin; scrollbar-color: var(--n-800) transparent; }
+    .scroll::-webkit-scrollbar, .messages::-webkit-scrollbar { width: 8px; }
+    .scroll::-webkit-scrollbar-thumb, .messages::-webkit-scrollbar-thumb {
+        background: var(--n-800); border-radius: 4px;
+    }
 }

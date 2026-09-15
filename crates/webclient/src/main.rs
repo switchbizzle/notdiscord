@@ -1,6 +1,7 @@
-//! NotDiscord in the browser — the phone client. Milestone 1: text, images,
-//! DMs, live updates. Voice/video need the browser's WebRTC path and come
-//! later. Served by the server itself at /app, installable as a PWA.
+//! NotDiscord in the browser — the web client. Text, images, DMs, voice,
+//! video and screen share, live updates. One responsive app: a phone gets
+//! the four-tab layout, a wide window gets rail + sidebar + channel side by
+//! side. Served by the server itself at /app, installable as a PWA.
 
 mod api;
 mod icons;
@@ -28,6 +29,15 @@ extern "C" {
     fn voice_set_muted_js(muted: bool) -> js_sys::Promise;
     #[wasm_bindgen(js_name = setDeafened)]
     fn voice_set_deafened_js(deafened: bool) -> js_sys::Promise;
+    // `catch`, like ndClip: these three are new to voice.js, and a page
+    // still running the script it cached before this deploy — or booting
+    // faster than the script tag loads — must toast, not crash the app.
+    #[wasm_bindgen(catch, js_name = setCamera)]
+    fn voice_set_camera_js(on: bool) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch, js_name = setShare)]
+    fn voice_set_share_js(on: bool) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch, js_name = attachVideos)]
+    fn voice_attach_videos_js() -> Result<(), wasm_bindgen::JsValue>;
     #[wasm_bindgen(js_name = setVolume)]
     fn voice_set_volume_js(identity: &str, volume: f64);
     #[wasm_bindgen(js_name = getState)]
@@ -166,6 +176,13 @@ struct VoicePeer {
     name: String,
     speaking: bool,
     local: bool,
+    /// Their picture and their screen, as LiveKit reports them — the same
+    /// truth the video elements attach to, so a tile and its video can't
+    /// disagree.
+    #[serde(default)]
+    camera: bool,
+    #[serde(default)]
+    sharing: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -176,6 +193,14 @@ struct VoiceGlue {
     muted: bool,
     #[serde(default)]
     deafened: bool,
+    #[serde(default)]
+    camera_on: bool,
+    #[serde(default)]
+    sharing_on: bool,
+    /// Whether this browser can offer a screen at all: getDisplayMedia is a
+    /// desktop-browser API, so on a phone the share button never renders.
+    #[serde(default)]
+    can_share: bool,
     participants: Vec<VoicePeer>,
 }
 
@@ -402,6 +427,27 @@ fn haptic(ms: u32) {
 
 fn host_name() -> String {
     web_sys::window().map(|w| w.location().host().unwrap_or_default()).unwrap_or_default()
+}
+
+/// A screen wide enough for the desktop layout: rail, sidebar and channel
+/// side by side. The same 900px line the stylesheet's media query draws, so
+/// what the Rust renders and what the CSS lays out can't disagree.
+fn is_wide() -> bool {
+    web_sys::window()
+        .and_then(|w| w.match_media("(min-width: 900px)").ok().flatten())
+        .map(|m| m.matches())
+        .unwrap_or(false)
+}
+
+/// Put a video full screen — how you actually watch somebody's share.
+/// Best-effort: a browser that refuses just keeps the inline stage.
+fn fullscreen_el(id: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        let _ = el.request_fullscreen();
+    }
 }
 
 /// The address this page was served from, and the fallback a message link is
@@ -866,7 +912,7 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
                 if registering() {
                     p { class: "login-sub", "make yourself an account" }
                 } else {
-                    p { class: "login-sub", "the phone-sized version" }
+                    p { class: "login-sub", "the app, in your browser" }
                 }
                 div { class: "login-fields",
                     div { class: "field",
@@ -1055,6 +1101,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     let mut push_glue = use_signal(PushGlue::default);
     let mut install_glue = use_signal(InstallGlue::default);
     let mut notify_msg = use_signal(String::new);
+    // Wide enough for the desktop layout: the sidebar stays up next to the
+    // open channel instead of being replaced by it. Re-checked by the poll
+    // below, so dragging the window across the line re-lays the app out.
+    let mut desktop = use_signal(is_wide);
 
     // Load prefs when the sheet opens: the browser's current subscription
     // decides whether this device shows as on.
@@ -1410,6 +1460,11 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 resync();
             }
             was_hidden = hidden;
+            // The window crossed the 900px line, one way or the other.
+            let wide = is_wide();
+            if wide != *desktop.peek() {
+                desktop.set(wide);
+            }
             // The date turned over — at midnight, or a phone waking up on
             // another day. Checked, not scheduled, for the second reason.
             let date = local_day(now_ms());
@@ -1504,12 +1559,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             // the first frame arrives, below.
             let (mut sink, stream) = socket.split();
             // A reconnect wiped our server-side voice presence (it's
-            // connection-scoped) — re-announce if we're still in a call.
+            // connection-scoped) — re-announce if we're still in a call,
+            // picture and screen included, or the pills reset on a blip.
             if let Some((id, _)) = voice_conn.peek().clone() {
+                let live = voice_glue.peek().clone();
                 if let Ok(text) = serde_json::to_string(&ClientEvent::VoiceState {
                     channel_id: Some(id),
-                    sharing: false,
-                    camera: false,
+                    sharing: live.sharing_on,
+                    camera: live.camera_on,
                 }) {
                     let _ = sink.send(gloo_net::websocket::Message::Text(text)).await;
                 }
@@ -1797,18 +1854,34 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // Poll the JS glue while in a call: speaking rings, errors, and dropped
     // connections all surface here.
     use_future(move || async move {
+        // What the server was last told about our picture and our screen,
+        // so everyone else's pills follow the truth without an event per
+        // toggle path (the browser's own Stop-sharing button included).
+        let mut announced = (false, false);
         loop {
             gloo_timers::future::TimeoutFuture::new(700).await;
-            if voice_conn.peek().is_none() {
+            let Some((chan_id, _)) = voice_conn.peek().clone() else {
+                announced = (false, false);
                 continue;
-            }
+            };
             let Ok(state) = serde_json::from_str::<VoiceGlue>(&voice_get_state_js()) else {
                 continue;
             };
             let dropped = !state.connected && !state.connecting;
+            let now_pub = (state.sharing_on, state.camera_on);
+            if now_pub != announced && !dropped {
+                announced = now_pub;
+                ws.send(ClientEvent::VoiceState {
+                    channel_id: Some(chan_id),
+                    sharing: now_pub.0,
+                    camera: now_pub.1,
+                });
+            }
             if *voice_glue.peek() != state {
                 voice_glue.set(state);
             }
+            // Pair every rendered tile and stage with its live track.
+            let _ = voice_attach_videos_js();
             // One re-render a second, and only while there is a call.
             let since = *call_since.peek();
             if since > 0 {
@@ -1823,6 +1896,17 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 status.set("voice disconnected".into());
                 ws.send(ClientEvent::VoiceState { channel_id: None, sharing: false, camera: false });
             }
+        }
+    });
+
+    // After every render the glue drives, pair any video element that just
+    // appeared with its track. Effects run once the DOM is updated — the
+    // poll alone would leave a fresh tile black until its next beat. Gated
+    // on there being a call at all: at boot this fires before the script
+    // tags have even loaded voice.js.
+    use_effect(move || {
+        if !voice_glue().participants.is_empty() {
+            let _ = voice_attach_videos_js();
         }
     });
 
@@ -2194,7 +2278,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             div { class: "app-body",
 
                 // ---------------- Chats ----------------
-                if tab() == "chats" && over.is_none() {
+                if tab() == "chats" && (over.is_none() || desktop()) {
                     div { class: "screen",
                         div { class: "screen-head tight",
                             div { class: "grow",
@@ -2354,7 +2438,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
 
                 // ---------------- Voice ----------------
-                if tab() == "voice" && over.is_none() {
+                if tab() == "voice" && (over.is_none() || desktop()) {
                     div { class: "screen",
                         div { class: "screen-head tight",
                             div { class: "grow",
@@ -2451,14 +2535,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 }
                             }
                             div { class: "empty-note",
-                                "Screen share and webcam are desktop-only for now. On the phone you get voice, and you can watch someone else's share."
+                                "Cameras work everywhere, and everyone can watch a share. Offering your own screen needs a desktop browser — phones don't allow it."
                             }
                         }
                     }
                 }
 
                 // ---------------- Music ----------------
-                if tab() == "music" && over.is_none() {
+                if tab() == "music" && (over.is_none() || desktop()) {
                     div { class: "screen",
                         div { class: "screen-head tight",
                             div { class: "grow",
@@ -2644,7 +2728,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                 }
 
                 // ---------------- You ----------------
-                if tab() == "you" && over.is_none() {
+                if tab() == "you" && (over.is_none() || desktop()) {
                     div { class: "screen",
                         div { class: "scroll grow", style: "padding: 18px 16px 14px; padding-top: calc(18px + var(--safe-top))",
                             div { class: "you-head",
@@ -3098,8 +3182,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 },
                                 onkeydown: move |e| {
                                     let mods = e.modifiers();
+                                    // On a wide screen there's a real keyboard:
+                                    // Enter sends and Shift+Enter breaks the
+                                    // line, the way the desktop app works. On
+                                    // a phone Enter stays a newline.
+                                    let plain_send = is_wide() && !mods.contains(Modifiers::SHIFT);
                                     if e.key() == Key::Enter
-                                        && (mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META))
+                                        && (mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META) || plain_send)
                                     {
                                         e.prevent_default();
                                         send(());
@@ -3683,6 +3772,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         }
                     }
                 }
+                // Wide layout, nothing open: the pane a channel would fill
+                // says how to fill it, instead of standing blank.
+                if desktop() && over.is_none() {
+                    div { class: "empty-stage",
+                        Icon { name: "message", size: 34 }
+                        div { "Pick a channel, or someone to talk to." }
+                    }
+                }
             }
 
             // ---------------- the call, minimised ----------------
@@ -3718,7 +3815,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
 
             // ---------------- tabs ----------------
-            if over.is_none() && !call_open() {
+            if (over.is_none() || desktop()) && !call_open() {
                 nav { class: "tabbar",
                     button {
                         class: if tab() == "chats" { "tabbtn on" } else { "tabbtn" },
@@ -3771,16 +3868,44 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                         }
                     }
                     div { class: "scroll grow", style: "padding: 8px 14px",
+                        // Anyone's screen, above the faces: the reason the
+                        // call went full screen in the first place.
+                        for peer in voice_glue().participants.into_iter().filter(|p| p.sharing) {
+                            {
+                                let vid_id = format!("stage-{}", peer.identity);
+                                let for_click = vid_id.clone();
+                                let label = if peer.local {
+                                    "your screen — everyone can see this".to_string()
+                                } else {
+                                    format!("{}'s screen — tap for full screen", peer.name)
+                                };
+                                rsx! {
+                                    div { key: "stage-{peer.identity}", class: "share-stage",
+                                        video {
+                                            id: "{vid_id}",
+                                            class: "share-video",
+                                            "data-nd-vid": "{peer.identity}|screen_share",
+                                            onclick: move |_| fullscreen_el(&for_click),
+                                        }
+                                        div { class: "share-label", "{label}" }
+                                    }
+                                }
+                            }
+                        }
                         div { class: "call-grid",
                             for peer in voice_glue().participants {
                                 {
-                                    let state_label = if peer.local {
+                                    let mut state_label = if peer.local {
                                         if voice_glue().muted { "you · muted" } else { "you · open mic" }
                                     } else if peer.speaking {
                                         "speaking"
                                     } else {
                                         "quiet"
-                                    };
+                                    }
+                                    .to_string();
+                                    if peer.sharing {
+                                        state_label.push_str(" · sharing");
+                                    }
                                     // The roster has the avatar and the tag
                                     // colour; the voice glue only has a name.
                                     let member = members()
@@ -3794,7 +3919,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         div {
                                             key: "{peer.identity}",
                                             class: if peer.speaking { "call-tile speaking" } else { "call-tile" },
-                                            if let Some(member) = member.clone() {
+                                            if peer.camera {
+                                                video {
+                                                    class: "tile-video",
+                                                    "data-nd-vid": "{peer.identity}|camera",
+                                                }
+                                            } else if let Some(member) = member.clone() {
                                                 Avatar { user: member.user.clone(), variant: "tile" }
                                             }
                                             span {
@@ -3862,6 +3992,61 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 });
                             },
                             Icon { name: deafen_icon, size: 21 }
+                        }
+                        button {
+                            class: if voice_glue().camera_on { "callbtn active" } else { "callbtn" },
+                            aria_label: "Camera",
+                            onclick: move |_| {
+                                let on = !voice_glue.peek().camera_on;
+                                spawn(async move {
+                                    let Ok(promise) = voice_set_camera_js(on) else {
+                                        status.set("the camera needs the app reloaded".into());
+                                        return;
+                                    };
+                                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                                    // Read the outcome back now, not at the
+                                    // next poll: the tile should appear the
+                                    // moment the camera light does.
+                                    if let Ok(state) = serde_json::from_str::<VoiceGlue>(&voice_get_state_js()) {
+                                        if !state.error.is_empty() {
+                                            status.set(state.error.clone());
+                                        }
+                                        voice_glue.set(state);
+                                    }
+                                });
+                            },
+                            Icon { name: "camera", size: 21 }
+                        }
+                        // No screen to offer on a phone; the button would
+                        // only ever apologise.
+                        if voice_glue().can_share {
+                            button {
+                                class: if voice_glue().sharing_on { "callbtn active" } else { "callbtn" },
+                                aria_label: "Share your screen",
+                                onclick: move |_| {
+                                    let on = !voice_glue.peek().sharing_on;
+                                    spawn(async move {
+                                        let Ok(promise) = voice_set_share_js(on) else {
+                                            status.set("screen share needs the app reloaded".into());
+                                            return;
+                                        };
+                                        let outcome = wasm_bindgen_futures::JsFuture::from(promise)
+                                            .await
+                                            .ok()
+                                            .and_then(|v| v.as_string())
+                                            .unwrap_or_default();
+                                        // "cancelled" is the person closing
+                                        // the picker — their answer, not news.
+                                        if outcome == "failed" {
+                                            status.set("couldn't share the screen".into());
+                                        }
+                                        if let Ok(state) = serde_json::from_str::<VoiceGlue>(&voice_get_state_js()) {
+                                            voice_glue.set(state);
+                                        }
+                                    });
+                                },
+                                Icon { name: "screen", size: 21 }
+                            }
                         }
                         button {
                             class: "callbtn leave",
@@ -4623,6 +4808,18 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                         oninput: move |e| editing.set(Some(e.value())),
                         onkeydown: move |e| {
                             if e.key() == Key::Escape {
+                                editing.set(None);
+                            } else if e.key() == Key::Enter
+                                && is_wide()
+                                && !e.modifiers().contains(Modifiers::SHIFT)
+                            {
+                                // A real keyboard: Enter saves, like sending.
+                                e.prevent_default();
+                                let text =
+                                    editing.peek().clone().unwrap_or_default().trim().to_string();
+                                if !text.is_empty() {
+                                    ws.send(ClientEvent::EditMessage { message_id: msg_id, content: text });
+                                }
                                 editing.set(None);
                             }
                         },
