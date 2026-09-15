@@ -33,26 +33,40 @@ asks. Updates arrive in-app either way. Login and settings live in
 home screen. It's a PWA with push notifications, voice, uploads and the
 lot; the desktop app is the full experience.
 
-### Code signing
+### Code signing policy
 
-Releases are not yet signed, so on first run Windows SmartScreen shows
-"Windows protected your PC" (More info → Run anyway), and Defender's
-heuristics occasionally quarantine the exe outright. The project has been
-opened up under the MIT licence and builds on GitHub Actions
-(`.github/workflows/client.yml`) so that releases can be signed for free
-through [SignPath Foundation](https://signpath.org); that application is in
-progress. If Defender quarantines a copy, report it as a false positive at
-<https://www.microsoft.com/en-us/wdsi/filesubmission> — it usually clears in
-a day or two.
+Free code signing provided by [SignPath.io](https://signpath.io), certificate
+by [SignPath Foundation](https://signpath.org).
 
-### Privacy
+Windows releases are built by GitHub Actions
+(`.github/workflows/client.yml`) from a tagged commit of this repository and
+submitted to SignPath, which verifies that the binary came from that build
+before signing it. Every release is approved by hand.
 
-The desktop client connects only to the NotDiscord server you sign in to
-and to the voice server that server hands it. It sends nothing to anyone
-else and phones home to no one; the update check asks your own server.
+**Team**
+
+| Role | Who |
+|---|---|
+| Author, Reviewer, Approver | [switchbizzle](https://github.com/switchbizzle) (switchb) |
+
+Signed releases begin once the SignPath application is approved; builds
+before that are unsigned, so Windows SmartScreen shows "Windows protected
+your PC" on first run (More info → Run anyway), and Defender's heuristics
+can occasionally quarantine the exe. If that happens, report it as a false
+positive at <https://www.microsoft.com/en-us/wdsi/filesubmission>.
+
+### Privacy policy
+
 This program will not transfer any information to other networked systems
 unless specifically requested by the user or the person installing or
 operating it.
+
+In practice: the desktop client connects only to the NotDiscord server you
+sign in to and to the voice server that server hands it. Nothing is sent
+anywhere else, there is no telemetry, and the update check asks your own
+server. Uninstall from Windows' Apps & features, or run
+`NotDiscord.exe --uninstall`; your settings in `%APPDATA%\NotDiscord` are
+left for you to delete.
 
 ## Run your own server
 
