@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.95.3",
+    "date": "2026-09-15",
+    "changes": [
+      "✏️ Editing a message on the phone happens in the message itself. Tap Edit and the words become the box, right where they were — no second copy above them — with the cursor at the end and the box brought up above the keyboard, Cancel and Save beside it",
+      "🐛 Holding a finger in the text you're editing to move the cursor no longer opens the reactions sheet over it",
+      "👇 The pop-up sheets on the phone can finally be dragged: pull one down by its grip, its heading, or a list that's at the top, and let go to close it"
+    ]
+  },
+  {
     "version": "0.95.2",
     "date": "2026-09-14",
     "changes": [

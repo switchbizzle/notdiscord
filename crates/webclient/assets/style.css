@@ -716,7 +716,11 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
     display: flex; flex-direction: column;
     animation: nd-sheet 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.sheet-grip { width: 34px; height: 4px; border-radius: 2px; background: var(--n-800); margin: 2px auto 12px; flex: 0 0 auto; }
+.sheet-grip { width: 34px; height: 4px; border-radius: 2px; background: var(--n-800); margin: 2px auto 12px; flex: 0 0 auto; position: relative; }
+/* A grip is a thumb target, not a 4px line (pwa/sheetdrag.js drags it). */
+.sheet-grip::before { content: ""; position: absolute; inset: -14px -70px; }
+.sheet.dragging { animation: none; }
+.sheet.settling { animation: none; transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .sheet-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .sheet-title { flex: 1; font-size: 15px; font-weight: 500; }
 .sheet-note { font-size: 11.5px; color: var(--n-600); }
@@ -895,7 +899,8 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
     width: 100%; background: var(--n-900); border: 1px solid var(--n-800);
     border-radius: var(--r-md); padding: 8px 10px; resize: vertical;
 }
-.msg-edit-actions { display: flex; gap: 8px; }
+.msg-edit-actions { display: flex; gap: 8px; align-items: center; }
+.msg-edit-hint { font-size: 11.5px; color: var(--accent-300); }
 .msg-confirm-yes, .msg-confirm-no {
     border-radius: var(--r-sm); padding: 10px 16px; min-height: 40px;
     font-size: 13px; font-weight: 600;

@@ -34,4 +34,6 @@ web-sys = { version = "0.3", features = [
     "ScrollLogicalPosition",
     # Handing focus back to the composer after a mention is tapped.
     "HtmlElement",
+    # Editing a message in place: focus it with the cursor at the end.
+    "HtmlTextAreaElement",
 ] }

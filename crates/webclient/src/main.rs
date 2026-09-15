@@ -324,6 +324,33 @@ fn focus_composer() {
     }
 }
 
+/// Put the cursor at the end of a message being edited, and bring the box up
+/// where the keyboard won't cover it. The scroll waits: focusing is what
+/// raises the keyboard, and "in view" only means something once the keyboard
+/// has taken its half of the screen (Jon couldn't see what he was editing,
+/// nor reach Cancel).
+fn focus_editor(message_id: i64) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let find = move || {
+            web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id(&format!("edit-{message_id}")))
+        };
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        if let Some(area) = find().and_then(|el| el.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) {
+            let _ = area.focus();
+            let end = area.value().encode_utf16().count() as u32;
+            let _ = area.set_selection_range(end, end);
+        }
+        gloo_timers::future::TimeoutFuture::new(350).await;
+        if let Some(el) = find() {
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Center);
+            el.scroll_into_view_with_scroll_into_view_options(&options);
+        }
+    });
+}
+
 /// A short vibration, the phone-native way of saying "look at me" — and
 /// unlike a ringtone it needs no user gesture to be allowed. Best-effort: a
 /// browser without the API just doesn't buzz.
@@ -634,6 +661,8 @@ fn App() -> Element {
         document::Script { src: "/app/push.js" }
         document::Script { src: "/app/install.js" }
         document::Script { src: "/app/upload.js" }
+        // Drag a bottom sheet down to close it — the grip used to be a drawing.
+        document::Script { src: "/app/sheetdrag.js" }
         // Notices when a newer build is on the server and reloads, because an
         // installed app otherwise runs whatever it booted with forever.
         document::Script { src: "/app/freshen.js" }
@@ -4409,7 +4438,10 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
             // reacted to, or deleted from the phone at all.
             ontouchstart: move |e: Event<TouchData>| {
                 // Nothing to do to a message the server hasn't confirmed yet.
-                if pending {
+                // Nor to one being edited: holding a finger in the text to
+                // move the cursor is a long-press, and it opened the actions
+                // sheet over the words Jon was editing.
+                if pending || editing.peek().is_some() {
                     return;
                 }
                 // Bound first: touches() is a fresh Vec, and a let-else
@@ -4445,6 +4477,11 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
             // A right-click in a desktop browser is the same gesture; and on
             // Android the native long-press menu must not fight the sheet.
             oncontextmenu: move |e: Event<MouseData>| {
+                // While editing, the phone's own select/paste menu is the one
+                // that's wanted.
+                if editing.peek().is_some() {
+                    return;
+                }
                 e.prevent_default();
                 if !pending {
                     actions_open.set(true);
@@ -4509,15 +4546,43 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     }
                 }
             }
+            if let Some(preview) = msg.reply_preview.clone() {
+                div { class: "reply-ref", "↩ {preview.author}: {preview.content.chars().take(60).collect::<String>()}" }
+            }
+            // Pinning is still a desktop action, but the phone should show
+            // which messages someone thought were worth keeping — including
+            // on a compact message, which has no header to hang it off.
+            if msg.pinned {
+                div { class: "reply-ref",
+                    Icon { name: "pin", size: 11 }
+                    "pinned"
+                }
+            }
+            // Editing turns the message itself into the box, where it was:
+            // it used to open a second copy above the words (Jon: "the
+            // message itself should become editable").
             if let Some(draft) = editing() {
-                div { class: "msg-edit",
+                div {
+                    class: "msg-edit",
+                    // The row's hold-for-actions must not start in here.
+                    ontouchstart: move |e| e.stop_propagation(),
                     textarea {
+                        id: "edit-{msg_id}",
                         class: "msg-edit-box",
-                        rows: "3",
+                        // Tall enough for what's there, so the words aren't
+                        // scrolled away inside a three-line box.
+                        rows: "{(draft.lines().count() + draft.chars().count() / 34).clamp(2, 8)}",
                         value: "{draft}",
                         oninput: move |e| editing.set(Some(e.value())),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Escape {
+                                editing.set(None);
+                            }
+                        },
                     }
                     div { class: "msg-edit-actions",
+                        span { class: "msg-edit-hint grow", "Editing" }
+                        button { class: "msg-confirm-no", onclick: move |_| editing.set(None), "Cancel" }
                         button {
                             class: "msg-confirm-yes",
                             onclick: move |_| {
@@ -4531,23 +4596,9 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                             },
                             "Save"
                         }
-                        button { class: "msg-confirm-no", onclick: move |_| editing.set(None), "Cancel" }
                     }
                 }
-            }
-            if let Some(preview) = msg.reply_preview.clone() {
-                div { class: "reply-ref", "↩ {preview.author}: {preview.content.chars().take(60).collect::<String>()}" }
-            }
-            // Pinning is still a desktop action, but the phone should show
-            // which messages someone thought were worth keeping — including
-            // on a compact message, which has no header to hang it off.
-            if msg.pinned {
-                div { class: "reply-ref",
-                    Icon { name: "pin", size: 11 }
-                    "pinned"
-                }
-            }
-            if !text.is_empty() {
+            } else if !text.is_empty() {
                 div { class: "msg-body",
                     md::Md { nodes: md::parse_markdown(&text) }
                 }
@@ -4721,6 +4772,7 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                                         actions_open.set(false);
                                         confirming_delete.set(false);
                                         editing.set(Some(original.clone()));
+                                        focus_editor(msg_id);
                                     },
                                     Icon { name: "edit", size: 18 }
                                     span { class: "grow", "Edit" }
