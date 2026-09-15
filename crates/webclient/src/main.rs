@@ -361,9 +361,87 @@ fn apply_accent(hue: Option<i32>) {
     el.set_text_content(Some(&accent_css(h)));
 }
 
+/// The background this device picked (Jon again: "a background color and
+/// accent color"). Stored by preset name; the default means no override.
+const BG_KEY: &str = "nd_bg";
+const BG_DEFAULT: &str = "Midnight";
+/// (name, hue, saturation multiplier). The multiplier is what makes
+/// Charcoal a true grey: same ladder, no tint at all.
+const BG_CHOICES: &[(&'static str, i32, f32)] = &[
+    ("Midnight", 232, 1.0),
+    ("Charcoal", 232, 0.0),
+    ("Slate", 210, 1.0),
+    ("Abyss", 190, 1.0),
+    ("Forest", 150, 0.9),
+    ("Plum", 290, 0.9),
+    ("Wine", 345, 0.9),
+    ("Espresso", 25, 0.9),
+];
+
+fn stored_bg() -> Option<String> {
+    gloo_storage::LocalStorage::get::<String>(BG_KEY).ok()
+}
+
+/// The neutral ramp — bg, surface, text and the nine greys — rebuilt from
+/// one hue on the exact lightness ladder Nocturne's indigo climbs, so a
+/// re-tinted theme keeps every contrast step. Saturation grows toward the
+/// extremes the way the original palette's does.
+fn bg_css(h: i32, m: f32) -> String {
+    let s = |base: f32| (base * m).round() as i32;
+    format!(
+        ":root:root {{ --bg: hsl({h}, {}%, 12%); --surface: hsl({h}, {}%, 17%); --text: hsl({h}, {}%, 92%); \
+         --n-100: hsl({h}, {}%, 98%); --n-200: hsl({h}, {}%, 93%); --n-300: hsl({h}, {}%, 86%); \
+         --n-400: hsl({h}, {}%, 74%); --n-500: hsl({h}, {}%, 62%); --n-600: hsl({h}, {}%, 50%); \
+         --n-700: hsl({h}, {}%, 39%); --n-800: hsl({h}, {}%, 27%); --n-900: hsl({h}, {}%, 18%); }}",
+        s(27.0), s(18.0), s(10.0),
+        s(84.0), s(46.0), s(30.0),
+        s(18.0), s(12.0), s(9.0),
+        s(10.0), s(10.0), s(9.0),
+    )
+}
+
+/// Same shape as apply_accent: one <style> in the head, present only when
+/// something other than the default is picked. Also keeps the PWA's
+/// title-bar colour (the theme-color meta) matched to the ground.
+fn apply_bg(name: Option<&str>) {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+    let choice = name
+        .and_then(|n| BG_CHOICES.iter().find(|(c, _, _)| *c == n))
+        .filter(|(c, _, _)| *c != BG_DEFAULT);
+    let existing = document.get_element_by_id("nd-bg");
+    let meta = document.query_selector("meta[name='theme-color']").ok().flatten();
+    let Some((_, h, m)) = choice else {
+        if let Some(el) = existing {
+            el.remove();
+        }
+        if let Some(meta) = meta {
+            let _ = meta.set_attribute("content", "#1e1f22");
+        }
+        return;
+    };
+    let el = match existing {
+        Some(el) => el,
+        None => {
+            let Ok(el) = document.create_element("style") else { return };
+            let _ = el.set_attribute("id", "nd-bg");
+            if let Some(head) = document.head() {
+                let _ = head.append_child(&el);
+            }
+            el
+        }
+    };
+    el.set_text_content(Some(&bg_css(*h, *m)));
+    if let Some(meta) = meta {
+        let _ = meta.set_attribute("content", &format!("hsl({h}, {}%, 12%)", (27.0 * m).round() as i32));
+    }
+}
+
 fn main() {
-    // Before the first render, so a picked colour never flashes blurple.
+    // Before the first render, so a picked colour never flashes the stock
+    // palette. (The theme-color meta doesn't exist yet at this point; the
+    // effect in Main re-runs apply_bg once the head is real.)
     apply_accent(stored_accent());
+    apply_bg(stored_bg().as_deref());
     dioxus::launch(App);
 }
 
@@ -1244,8 +1322,15 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // from voice.js's per-device store when Settings opens.
     let mut mic_prefs = use_signal(MicPrefs::default);
     let mut mic_list = use_signal(Vec::<MicDevice>::new);
-    // The accent hue the swatches draw as picked.
+    // The accent hue and background the swatches draw as picked.
     let mut accent = use_signal(|| stored_accent().unwrap_or(ACCENT_DEFAULT_HUE));
+    let mut bg_theme = use_signal(|| stored_bg().unwrap_or_else(|| BG_DEFAULT.to_string()));
+
+    // Once, after the first render: the theme-color meta exists now, so a
+    // stored background can claim the PWA title bar too.
+    use_effect(move || {
+        apply_bg(Some(bg_theme.peek().as_str()));
+    });
     // Wide enough for the desktop layout: the sidebar stays up next to the
     // open channel instead of being replaced by it. Re-checked by the poll
     // below, so dragging the window across the line re-lays the app out.
@@ -3658,29 +3743,63 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
 
                             div { class: "section-label", style: "padding: 18px 2px 8px", "Appearance" }
-                            div { class: "swatch-row",
-                                for (name, hue) in ACCENT_CHOICES.iter().copied() {
-                                    button {
-                                        key: "{name}",
-                                        class: if accent() == hue { "swatch on" } else { "swatch" },
-                                        style: "background: hsl({hue}, 53%, 68%)",
-                                        aria_label: "{name}",
-                                        title: "{name}",
-                                        onclick: move |_| {
-                                            accent.set(hue);
-                                            if hue == ACCENT_DEFAULT_HUE {
-                                                gloo_storage::LocalStorage::delete(ACCENT_KEY);
-                                                apply_accent(None);
-                                            } else {
-                                                let _ = gloo_storage::LocalStorage::set(ACCENT_KEY, hue);
-                                                apply_accent(Some(hue));
+                            div { class: "field",
+                                label { "Background" }
+                                div { class: "swatch-row",
+                                    for (name, hue, sat_mul) in BG_CHOICES.iter().copied() {
+                                        {
+                                            // Drawn a step lighter than the real
+                                            // ground so a dark swatch reads on a
+                                            // dark screen.
+                                            let sat = (27.0 * sat_mul).round() as i32;
+                                            rsx! {
+                                                button {
+                                                    key: "bg-{name}",
+                                                    class: if bg_theme() == name { "swatch on" } else { "swatch" },
+                                                    style: "background: hsl({hue}, {sat}%, 24%)",
+                                                    aria_label: "{name}",
+                                                    title: "{name}",
+                                                    onclick: move |_| {
+                                                        bg_theme.set(name.to_string());
+                                                        if name == BG_DEFAULT {
+                                                            gloo_storage::LocalStorage::delete(BG_KEY);
+                                                        } else {
+                                                            let _ = gloo_storage::LocalStorage::set(BG_KEY, name);
+                                                        }
+                                                        apply_bg(Some(name));
+                                                    },
+                                                }
                                             }
-                                        },
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "field", style: "margin-top: 12px",
+                                label { "Accent" }
+                                div { class: "swatch-row",
+                                    for (name, hue) in ACCENT_CHOICES.iter().copied() {
+                                        button {
+                                            key: "{name}",
+                                            class: if accent() == hue { "swatch on" } else { "swatch" },
+                                            style: "background: hsl({hue}, 53%, 68%)",
+                                            aria_label: "{name}",
+                                            title: "{name}",
+                                            onclick: move |_| {
+                                                accent.set(hue);
+                                                if hue == ACCENT_DEFAULT_HUE {
+                                                    gloo_storage::LocalStorage::delete(ACCENT_KEY);
+                                                    apply_accent(None);
+                                                } else {
+                                                    let _ = gloo_storage::LocalStorage::set(ACCENT_KEY, hue);
+                                                    apply_accent(Some(hue));
+                                                }
+                                            },
+                                        }
                                     }
                                 }
                             }
                             div { class: "note",
-                                "Your colour, on this device. Everything that reads blurple follows it — buttons, badges, mentions, the call screen."
+                                "Your colours, on this device. The background re-tints the whole ground; the accent turns everything that reads blurple — buttons, badges, mentions, the call screen."
                             }
 
                             div { class: "section-label", style: "padding: 18px 2px 8px", "Voice" }

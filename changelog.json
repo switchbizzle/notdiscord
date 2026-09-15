@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.7",
+    "date": "2026-09-15",
+    "changes": [
+      "🌌 Background colours join the accents (Jon). Settings → Appearance now has two rows: eight backgrounds — Midnight, Charcoal, Slate, Abyss, Forest, Plum, Wine, Espresso — that re-tint the whole ground, panels and greys included, and the eight accents from last release. Mix them however you like; contrast stays as designed. The installed app's title bar follows your background"
+    ]
+  },
+  {
     "version": "0.97.6",
     "date": "2026-09-15",
     "changes": [

@@ -688,8 +688,10 @@ select.text-input { appearance: none; background: var(--n-900); }
 .logout-btn:active { background: var(--n-900); }
 .swatch-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .swatch { width: 34px; height: 34px; border-radius: 17px; border: 2px solid transparent; }
-/* The accent picker's chosen swatch: ringed, with a gap so the ring reads
- * against the swatch's own colour. */
+/* The theme pickers' swatches: a faint edge so a dark background swatch
+ * reads on the dark screen; the chosen one is ringed, with a gap so the
+ * ring reads against the swatch's own colour. */
+.swatch-row .swatch { border-color: var(--n-800); }
 .swatch.on { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--bg); }
 
 /* ---------- presence picker ---------- */
