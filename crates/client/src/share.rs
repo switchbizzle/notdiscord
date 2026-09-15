@@ -413,6 +413,8 @@ pub struct CallState {
     pub deafened: bool,
     pub camera_on: bool,
     pub sharing: bool,
+    /// You've asked not to see your own share (see voice::own_preview_hidden).
+    pub preview_hidden: bool,
     pub started_at: Option<std::time::Instant>,
     /// True while the window is on screen.
     pub open: bool,
@@ -427,6 +429,8 @@ pub enum CallAction {
     Deafen,
     Camera,
     Screen,
+    /// Show or hide your own screen share in your own tiles.
+    Preview,
     Leave,
     /// The capture ended on its own (shared window was closed) — the share
     /// should unpublish rather than stream a frozen last frame.
@@ -1135,7 +1139,7 @@ impl CallWindow {
 
         // ---- footer controls ----
         canvas.rect(0, h - FOOTER_H, w, FOOTER_H, BAR);
-        let controls: [(CallAction, &str, bool, bool); 5] = [
+        let mut controls: Vec<(CallAction, &str, bool, bool)> = vec![
             (CallAction::Mic, if state.muted { "Unmute" } else { "Mute" }, state.muted, false),
             (
                 CallAction::Deafen,
@@ -1157,6 +1161,11 @@ impl CallWindow {
             ),
             (CallAction::Leave, "Leave", true, false),
         ];
+        // Only while sharing: it's about your own share tile (Jon).
+        if state.sharing {
+            let label = if state.preview_hidden { "Show my preview" } else { "Hide my preview" };
+            controls.insert(4, (CallAction::Preview, label, false, false));
+        }
 
         let gap = 10;
         let widths: Vec<i32> = controls

@@ -7001,6 +7001,9 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
         }
     });
     let stamp = tick();
+    // Read every render; the tick above re-renders often enough that a
+    // change from the call window's button shows up here within a frame.
+    let own_preview_hidden = voice::own_preview_hidden();
 
     let snapshot = status();
     let in_call = snapshot.channel_id.is_some();
@@ -7016,7 +7019,11 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
         if person.sharing {
             // Your own share is a copy of the capture, not a subscription —
             // you never receive your own track back.
-            let key = if person.is_me {
+            // Hidden by choice: a placeholder key, which never requests a
+            // frame, so nothing keeps the capture's preview copies going.
+            let key = if person.is_me && own_preview_hidden {
+                "self:screen:off".to_string()
+            } else if person.is_me {
                 "self:screen".to_string()
             } else {
                 format!("{}:screen", person.identity)
@@ -7115,6 +7122,24 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
                                         }
                                     },
                                     match key {
+                                        Some(vkey) if vkey == "self:screen:off" => rsx! {
+                                            div { class: "video-preview-off",
+                                                Icon { name: "screen", size: 24 }
+                                                div { class: "video-preview-off-title", "You're sharing your screen" }
+                                                div { class: "video-preview-off-sub",
+                                                    "Your preview is hidden, so your computer isn't drawing it for you. Everyone else still sees it."
+                                                }
+                                                button {
+                                                    class: "video-self-toggle inline",
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        voice.send(voice::VoiceCmd::SetOwnPreviewHidden(false));
+                                                    },
+                                                    Icon { name: "eye", size: 13 }
+                                                    "Show my preview"
+                                                }
+                                            }
+                                        },
                                         Some(vkey) => rsx! {
                                             img {
                                                 class: "video-frame",
@@ -7123,6 +7148,18 @@ fn VideoTab(status: voice::VoiceStatusSignal, members: Signal<Vec<UserStatus>>) 
                                                 // arrived yet shows nothing rather
                                                 // than a broken-image icon.
                                                 alt: "",
+                                            }
+                                            if vkey == "self:screen" {
+                                                button {
+                                                    class: "video-self-toggle",
+                                                    title: "Stop showing you your own share. Everyone else still sees it.",
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        voice.send(voice::VoiceCmd::SetOwnPreviewHidden(true));
+                                                    },
+                                                    Icon { name: "eye", size: 13 }
+                                                    "Hide my preview"
+                                                }
                                             }
                                         },
                                         None => rsx! {

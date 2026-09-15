@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.95.2",
+    "date": "2026-09-14",
+    "changes": [
+      "👁️ You can hide your own screen share from yourself. While you're sharing, your own tile has a Hide my preview button, in the Video tab and in the pop-out call window. With it hidden, your computer stops drawing a live copy of a screen you're already looking at; everyone else still sees your share exactly as before. The choice is remembered for next time, and Show my preview brings it back"
+    ]
+  },
+  {
     "version": "0.95.1",
     "date": "2026-09-14",
     "changes": [

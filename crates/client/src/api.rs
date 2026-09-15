@@ -412,6 +412,12 @@ pub struct Settings {
     /// which sections you keep open is nobody else's business.
     #[serde(default)]
     pub collapsed_categories: Vec<i64>,
+    /// Don't show me my own screen share. Watching yourself costs a scaled
+    /// copy and a JPEG of every frame for a picture you already have on your
+    /// monitor (Jon). Off by default: most people want to see what they're
+    /// sending, at least at first.
+    #[serde(default)]
+    pub hide_own_share_preview: bool,
 }
 
 fn vad() -> String {

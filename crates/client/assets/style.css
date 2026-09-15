@@ -2818,3 +2818,23 @@ ul.md-list { list-style-type: disc; }
     gap: 6px 12px; max-height: 240px; overflow-y: auto;
 }
 .srv-access-person .chip-avatar { width: 20px; height: 20px; }
+
+/* ---------- your own screen share preview ---------- */
+/* Hide or show the copy of your own share (Jon: watching yourself costs a
+ * JPEG of every frame for a picture already on your monitor). */
+.video-self-toggle {
+    position: absolute; top: 8px; right: 8px; z-index: 4;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border: 0; border-radius: 6px;
+    background: rgba(0, 0, 0, 0.62); color: #dbdee1; font-size: 12px; cursor: pointer;
+}
+.video-self-toggle:hover { background: rgba(0, 0, 0, 0.85); color: #fff; }
+.video-self-toggle.inline { position: static; margin-top: 8px; background: #4e5058; }
+.video-self-toggle.inline:hover { background: #5d6067; }
+.video-preview-off {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px; padding: 14px;
+    text-align: center; color: #b5bac1;
+}
+.video-preview-off-title { font-size: 14px; font-weight: 600; color: #f2f3f5; }
+.video-preview-off-sub { font-size: 12px; color: #949ba4; max-width: 280px; line-height: 1.4; }

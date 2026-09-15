@@ -93,6 +93,18 @@ fn screen_share_bitrate(width: u32, height: u32) -> u64 {
     }
 }
 
+/// Whether you've chosen not to watch your own screen share. A static rather
+/// than part of VoiceStatus: the status resets on every join and leave, and
+/// this is a preference that outlives calls. Both places that show your share
+/// — the Video tab and the call window — read it, and with it on neither asks
+/// for frames, so the capture stops making preview copies altogether. What
+/// everyone else receives is untouched.
+static OWN_PREVIEW_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub fn own_preview_hidden() -> bool {
+    OWN_PREVIEW_HIDDEN.load(Ordering::Relaxed)
+}
+
 pub enum VoiceCmd {
     Join { channel_id: i64, channel_name: String, url: String, token: String },
     Leave,
@@ -118,6 +130,8 @@ pub enum VoiceCmd {
     StopCamera,
     /// Open a viewer window for this participant's webcam.
     WatchCamera { identity: String },
+    /// Stop (true) or start (false) showing you your own screen share.
+    SetOwnPreviewHidden(bool),
 }
 
 pub fn parse_ptt_key(name: &str) -> device_query::Keycode {
@@ -746,15 +760,33 @@ fn rebuild_call_tiles(
         if participant.is_me && snapshot.sharing_self {
             if let Some((slot, _)) = self_share.clone() {
                 has_video = true;
-                // Tells the capturer someone's looking, so it keeps teeing.
-                // Must go through frames so it's stamped on the same clock
-                // the capturer compares against.
-                crate::frames::touch("self:screen");
-                take_or_make(
-                    format!("{} · screen", participant.name),
-                    &participant.identity,
-                    &mut || Some(TileKind::Video(slot.clone())),
-                );
+                if own_preview_hidden() {
+                    // Asked not to watch it: a plain tile, and no touch, so
+                    // the capturer stops copying frames for this window. A
+                    // different label, so the video tile isn't reused.
+                    let initial = participant
+                        .name
+                        .chars()
+                        .next()
+                        .map(|c| c.to_uppercase().to_string())
+                        .unwrap_or_else(|| "?".into());
+                    let color = avatar_color(&participant.identity);
+                    take_or_make(
+                        format!("{} · screen (preview off)", participant.name),
+                        &participant.identity,
+                        &mut || Some(TileKind::Avatar { initial: initial.clone(), color }),
+                    );
+                } else {
+                    // Tells the capturer someone's looking, so it keeps teeing.
+                    // Must go through frames so it's stamped on the same clock
+                    // the capturer compares against.
+                    crate::frames::touch("self:screen");
+                    take_or_make(
+                        format!("{} · screen", participant.name),
+                        &participant.identity,
+                        &mut || Some(TileKind::Video(slot.clone())),
+                    );
+                }
             }
         }
         if participant.is_me && snapshot.camera_self {
@@ -795,6 +827,7 @@ pub async fn voice_task(
     mut mic_level: MicLevelSignal,
 ) {
     let mut call: Option<ActiveCall> = None;
+    OWN_PREVIEW_HIDDEN.store(crate::api::load_settings().hide_own_share_preview, Ordering::Relaxed);
     // Shared with the call window: what it draws, and what its buttons do.
     let call_state: crate::share::SharedCall = Default::default();
     let (action_tx, mut action_rx) =
@@ -817,6 +850,7 @@ pub async fn voice_task(
                     view.deafened = snapshot.deafened;
                     view.camera_on = snapshot.camera_self;
                     view.sharing = snapshot.sharing_self;
+                    view.preview_hidden = own_preview_hidden();
                 }
                 // Everyone in the call gets a tile — video if they have it,
                 // avatar if they don't.
@@ -861,6 +895,7 @@ pub async fn voice_task(
                             }
                         }
                         crate::share::CallAction::ShareEnded => VoiceCmd::StopScreenShare,
+                        crate::share::CallAction::Preview => VoiceCmd::SetOwnPreviewHidden(!own_preview_hidden()),
                         crate::share::CallAction::Leave => VoiceCmd::Leave,
                     }
                 }
@@ -1221,6 +1256,15 @@ pub async fn voice_task(
                 }
                 let mut settings = crate::api::load_settings();
                 settings.auto_gain = enabled;
+                crate::api::save_settings(&settings);
+            }
+            VoiceCmd::SetOwnPreviewHidden(hidden) => {
+                // Takes effect by itself: both viewers read the flag, and once
+                // neither asks, the capturer's interest stamp goes stale and
+                // it stops teeing — no capture restart, nothing sent to anyone.
+                OWN_PREVIEW_HIDDEN.store(hidden, Ordering::Relaxed);
+                let mut settings = crate::api::load_settings();
+                settings.hide_own_share_preview = hidden;
                 crate::api::save_settings(&settings);
             }
             VoiceCmd::SetMicVolume(volume) => {
