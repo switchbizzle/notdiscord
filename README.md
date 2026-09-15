@@ -15,7 +15,8 @@ search, file/image/video uploads with retention, profiles and avatars, roles
 and moderation, voice channels, private DM calls with ringing, screen share
 with a monitor picker, webcam video, in-app auto-updates with a changelog
 screen, and a system tray. Built rapidly by a crew that wanted their own
-Discord — see [TODO.md](TODO.md) for where it's headed.
+Discord — [changelog.json](changelog.json) is the release-by-release story,
+and what the app shows under What's new.
 
 ## Get the app
 
@@ -67,7 +68,7 @@ crates/
 |-- server/    # axum REST + WebSocket server, SQLite storage, auth
 `-- client/    # Dioxus desktop client (voice.rs, share.rs, camera.rs for A/V)
 deploy/        # Self-hosting kit: docker-compose, Caddy, LiveKit config
-scripts/       # Release tooling
+scripts/       # Icon and logo generation
 ```
 
 ## Development

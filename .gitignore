@@ -58,3 +58,16 @@ deploy/client/
 /assets/notdiscord-logo.svg
 /doppelstream/
 /passtheaux/
+
+# Not part of the application. The crew's own working notes, planning docs,
+# landing page and deploy scripts (server addresses, key paths) live in this
+# working copy but are not what a clone needs to build and run NotDiscord —
+# deploy/ is the self-hosting kit. Untracked before the repo went public.
+/TODO.md
+/UX-PLAN.md
+/project-overview.md
+/phases/
+/web/
+/server-setup.sh
+/scripts/release-client.ps1
+/scripts/release-webapp.ps1
