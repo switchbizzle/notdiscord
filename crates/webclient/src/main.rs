@@ -529,6 +529,24 @@ fn scroll_to_message(message_id: i64) -> bool {
     true
 }
 
+/// Snap the message list to the newest message — where a message you just
+/// sent lands. Nothing did this: send while scrolled up (reading, or parked
+/// at the NEW divider) and your own words appeared below the fold while you
+/// kept looking at history (Jon: "it scrolls to the top"). column-reverse
+/// pins the bottom at scrollTop 0, so this is one assignment, delayed a
+/// beat so the new row has rendered first.
+fn scroll_messages_to_latest() {
+    wasm_bindgen_futures::spawn_local(async {
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        if let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.query_selector(".messages").ok().flatten())
+        {
+            el.set_scroll_top(0);
+        }
+    });
+}
+
 /// (year, month, day) on the phone's own clock — the only calendar that
 /// means anything for "was this today".
 fn local_day(ms: i64) -> (u32, u32, u32) {
@@ -2018,6 +2036,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
         });
         pending_at.write().insert(temp_id, now_ms());
         ws.send(ClientEvent::SendMessage { channel_id: channel.id, content, reply_to });
+        scroll_messages_to_latest();
     };
 
     let load_older = move |_| {
@@ -2179,6 +2198,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 content: out.url,
                                 reply_to: None,
                             });
+                            scroll_messages_to_latest();
                             discard_staged();
                             sheet.set(None);
                         }
@@ -4245,6 +4265,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                     content: url.clone(),
                                                     reply_to: None,
                                                 });
+                                                scroll_messages_to_latest();
                                             }
                                             sheet.set(None);
                                         }
@@ -4301,6 +4322,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                     content: url.clone(),
                                                     reply_to: None,
                                                 });
+                                                scroll_messages_to_latest();
                                             }
                                             sheet.set(None);
                                         }

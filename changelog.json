@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.3",
+    "date": "2026-09-15",
+    "changes": [
+      "📬 Sending a message in the web app now brings you to it. If you'd scrolled up — reading back, or parked at the NEW line — your message used to land below the fold while the screen stayed on old history, which read as \"it scrolled to the top\" (Jon). Now every send, sticker, GIF and upload snaps the list to the newest message"
+    ]
+  },
+  {
     "version": "0.97.2",
     "date": "2026-09-15",
     "changes": [
