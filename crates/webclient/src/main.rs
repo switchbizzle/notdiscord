@@ -75,6 +75,10 @@ extern "C" {
     fn upload_progress_js() -> f64;
     #[wasm_bindgen(js_name = discard)]
     fn upload_discard_js();
+    // `catch`: new since v0.97.5 — a page on last deploy's upload.js just
+    // never opens the sheet, rather than dying.
+    #[wasm_bindgen(catch, js_name = stagedInfo)]
+    fn upload_staged_info_js() -> Result<String, wasm_bindgen::JsValue>;
 }
 
 // Picture-copying glue (pwa/copyimage.js). `catch`, because a page that
@@ -3249,6 +3253,24 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
                         }
                         footer { class: if in_call { "composer" } else { "composer floor" },
+                            // Invisible. pwa/upload.js clicks it after staging
+                            // a pasted or dropped file; the handler opens the
+                            // same preview sheet a picked file gets.
+                            button {
+                                id: "nd-staged-hook",
+                                style: "display: none",
+                                onclick: move |_| {
+                                    let Some(file) = upload_staged_info_js()
+                                        .ok()
+                                        .and_then(|json| serde_json::from_str::<StagedFile>(&json).ok())
+                                    else {
+                                        return;
+                                    };
+                                    staged.set(Some(file));
+                                    upload_pct.set(0.0);
+                                    sheet.set(Some("preview"));
+                                },
+                            }
                             button {
                                 class: "cbtn",
                                 aria_label: "Attach",

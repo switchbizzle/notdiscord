@@ -728,9 +728,14 @@ select.text-input { appearance: none; background: var(--n-900); }
 .avatar.sm { width: 24px; height: 24px; font-size: 11px; }
 
 /* ---------- bottom sheets ---------- */
-.scrim { position: absolute; inset: 0; z-index: 70; background: rgba(9, 10, 16, 0.62); }
+/* Fixed, not absolute: a message's actions sheet is rendered INSIDE its
+ * row, and the row became position:relative when it grew the hover strip —
+ * which quietly re-anchored the sheet to the row and drew it as a squashed
+ * scrollable bar in the middle of the chat (Jon: "reaction window just got
+ * regressed"). The viewport is what these were always positioned against. */
+.scrim { position: fixed; inset: 0; z-index: 70; background: rgba(9, 10, 16, 0.62); }
 .sheet {
-    position: absolute; left: 0; right: 0; bottom: 0; z-index: 71;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 71;
     background: var(--surface); border-radius: var(--r-lg) var(--r-lg) 0 0;
     box-shadow: var(--shadow-md);
     padding: 10px 16px 20px; padding-bottom: calc(20px + var(--safe-bottom));

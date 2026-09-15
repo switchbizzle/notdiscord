@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.97.5",
+    "date": "2026-09-15",
+    "changes": [
+      "📋 Paste straight into the web app: a screenshot on the clipboard, or a file copied in Explorer, lands in the send-this preview the moment you hit Ctrl+V in a channel (Jon's ask). Drag and drop works too — drop a file anywhere on an open channel",
+      "🔧 Fixed the message actions sheet drawing as a squashed little bar in the middle of the chat — a side effect of yesterday's hover strip that re-anchored it to the message row (Jon: \"reaction window just got regressed\"). It sits at the bottom of the screen again, quick reactions and all"
+    ]
+  },
+  {
     "version": "0.97.4",
     "date": "2026-09-15",
     "changes": [
