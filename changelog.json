@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.6",
+    "date": "2026-09-15",
+    "changes": [
+      "🎨 Pick your accent colour (Jon's ask). Settings → Appearance in the web app has eight swatches — Blurple, Violet, Rose, Ember, Gold, Forest, Teal, Ocean — and everything that reads blurple follows your pick: buttons, badges, mentions, the call screen. Per device, applies instantly, survives reloads"
+    ]
+  },
+  {
     "version": "0.97.5",
     "date": "2026-09-15",
     "changes": [

@@ -38,4 +38,7 @@ web-sys = { version = "0.3", features = [
     "HtmlTextAreaElement",
     # The 900px desktop-layout check, shared with the stylesheet's query.
     "MediaQueryList",
+    # The accent-colour override: one <style> written into the head.
+    "Node",
+    "HtmlHeadElement",
 ] }

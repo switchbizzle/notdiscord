@@ -688,6 +688,9 @@ select.text-input { appearance: none; background: var(--n-900); }
 .logout-btn:active { background: var(--n-900); }
 .swatch-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .swatch { width: 34px; height: 34px; border-radius: 17px; border: 2px solid transparent; }
+/* The accent picker's chosen swatch: ringed, with a gap so the ring reads
+ * against the swatch's own colour. */
+.swatch.on { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--bg); }
 
 /* ---------- presence picker ---------- */
 .presence-picker {

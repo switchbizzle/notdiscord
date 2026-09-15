@@ -287,7 +287,83 @@ const COMPOSER_MAX_PX: i32 = 132;
 const COLLAPSED_KEY: &str = "notdiscord_collapsed";
 const SESSION_KEY: &str = "nd_session";
 
+/// The accent hue this device picked, if it picked one (Jon: "accent color
+/// on the theme"). Stored like every other per-device preference.
+const ACCENT_KEY: &str = "nd_accent";
+const ACCENT_DEFAULT_HUE: i32 = 249;
+/// The palette on offer: muted enough to sit in Nocturne's register, spread
+/// enough that everyone's pick reads as theirs.
+const ACCENT_CHOICES: &[(&'static str, i32)] = &[
+    ("Blurple", ACCENT_DEFAULT_HUE),
+    ("Violet", 275),
+    ("Rose", 335),
+    ("Ember", 18),
+    ("Gold", 45),
+    ("Forest", 140),
+    ("Teal", 176),
+    ("Ocean", 210),
+];
+
+fn stored_accent() -> Option<i32> {
+    gloo_storage::LocalStorage::get::<i32>(ACCENT_KEY).ok()
+}
+
+/// The whole accent ramp rebuilt from one hue: the same saturation and
+/// lightness ladder the stylesheet's blurple climbs, so every shade keeps
+/// the contrast it was designed with — only the hue turns. --section (the
+/// call screen's gradient top) turns with it.
+fn accent_css(h: i32) -> String {
+    let steps: [(&str, i32, i32); 9] = [
+        ("--accent-100", 100, 98),
+        ("--accent-200", 93, 95),
+        ("--accent-300", 96, 90),
+        ("--accent-400", 93, 83),
+        ("--accent-500", 64, 71),
+        ("--accent-600", 39, 59),
+        ("--accent-700", 29, 45),
+        ("--accent-800", 29, 32),
+        ("--accent-900", 25, 20),
+    ];
+    // :root:root, not :root — at boot this <style> lands BEFORE the app's
+    // stylesheet link, and equal specificity would let the later blurple
+    // win. Doubling the selector outranks it regardless of load order.
+    let mut css = format!(":root:root {{ --accent: hsl({h}, 53%, 68%);");
+    for (name, s, l) in steps {
+        css.push_str(&format!(" {name}: hsl({h}, {s}%, {l}%);"));
+    }
+    css.push_str(&format!(" --section: hsl({h}, 43%, 26%); }}"));
+    css
+}
+
+/// Lay the picked ramp over the stylesheet via one <style> in the head —
+/// present only when a hue is picked, so "Blurple" simply removes it and
+/// the stylesheet's own tokens stand.
+fn apply_accent(hue: Option<i32>) {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+    let existing = document.get_element_by_id("nd-accent");
+    let Some(h) = hue.filter(|h| *h != ACCENT_DEFAULT_HUE) else {
+        if let Some(el) = existing {
+            el.remove();
+        }
+        return;
+    };
+    let el = match existing {
+        Some(el) => el,
+        None => {
+            let Ok(el) = document.create_element("style") else { return };
+            let _ = el.set_attribute("id", "nd-accent");
+            if let Some(head) = document.head() {
+                let _ = head.append_child(&el);
+            }
+            el
+        }
+    };
+    el.set_text_content(Some(&accent_css(h)));
+}
+
 fn main() {
+    // Before the first render, so a picked colour never flashes blurple.
+    apply_accent(stored_accent());
     dioxus::launch(App);
 }
 
@@ -1168,6 +1244,8 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // from voice.js's per-device store when Settings opens.
     let mut mic_prefs = use_signal(MicPrefs::default);
     let mut mic_list = use_signal(Vec::<MicDevice>::new);
+    // The accent hue the swatches draw as picked.
+    let mut accent = use_signal(|| stored_accent().unwrap_or(ACCENT_DEFAULT_HUE));
     // Wide enough for the desktop layout: the sidebar stays up next to the
     // open channel instead of being replaced by it. Re-checked by the poll
     // below, so dragging the window across the line re-lays the app out.
@@ -3577,6 +3655,32 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                         }
                                     }
                                 }
+                            }
+
+                            div { class: "section-label", style: "padding: 18px 2px 8px", "Appearance" }
+                            div { class: "swatch-row",
+                                for (name, hue) in ACCENT_CHOICES.iter().copied() {
+                                    button {
+                                        key: "{name}",
+                                        class: if accent() == hue { "swatch on" } else { "swatch" },
+                                        style: "background: hsl({hue}, 53%, 68%)",
+                                        aria_label: "{name}",
+                                        title: "{name}",
+                                        onclick: move |_| {
+                                            accent.set(hue);
+                                            if hue == ACCENT_DEFAULT_HUE {
+                                                gloo_storage::LocalStorage::delete(ACCENT_KEY);
+                                                apply_accent(None);
+                                            } else {
+                                                let _ = gloo_storage::LocalStorage::set(ACCENT_KEY, hue);
+                                                apply_accent(Some(hue));
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            div { class: "note",
+                                "Your colour, on this device. Everything that reads blurple follows it — buttons, badges, mentions, the call screen."
                             }
 
                             div { class: "section-label", style: "padding: 18px 2px 8px", "Voice" }
