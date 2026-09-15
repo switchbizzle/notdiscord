@@ -1043,6 +1043,9 @@ fn MainView(session: api::Session) -> Element {
     use_context_provider(|| session);
     let mut servers_file = use_context::<Signal<api::ServersFile>>();
     let mut lightbox = use_context_provider(|| Signal::new(None::<Lightbox>));
+    // What the viewer's Copy button last did, and to which picture — so
+    // "Copied" doesn't linger on the next one.
+    let mut copy_note = use_signal(|| None::<(String, &'static str)>);
     let mut react_target = use_signal(|| None::<i64>);
     use_context_provider(|| ReactTarget(react_target));
     let mut channels = use_signal(Vec::<Channel>::new);
@@ -4728,6 +4731,24 @@ fn MainView(session: api::Session) -> Element {
                         view.step(delta);
                         lightbox.set(Some(view));
                     };
+                    let copy_label = match copy_note() {
+                        Some((for_url, note)) if for_url == url => note,
+                        _ => "Copy image",
+                    };
+                    let copy_now = {
+                        let url = url.clone();
+                        move || {
+                            let url = url.clone();
+                            copy_note.set(Some((url.clone(), "Copying…")));
+                            spawn(async move {
+                                let note = match menu::copy_image(url.clone()).await {
+                                    Ok(()) => "Copied",
+                                    Err(_) => "Couldn't copy",
+                                };
+                                copy_note.set(Some((url, note)));
+                            });
+                        }
+                    };
                     rsx! {
                 div {
                     class: "lightbox",
@@ -4736,11 +4757,16 @@ fn MainView(session: api::Session) -> Element {
                     // keys reach it without a click first.
                     tabindex: "0",
                     onclick: move |_| lightbox.set(None),
-                    onkeydown: move |e: Event<KeyboardData>| match e.key() {
-                        Key::Escape => lightbox.set(None),
-                        Key::ArrowLeft => step(-1),
-                        Key::ArrowRight => step(1),
-                        _ => {}
+                    onkeydown: {
+                        let mut copy_now = copy_now.clone();
+                        move |e: Event<KeyboardData>| match e.key() {
+                            Key::Escape => lightbox.set(None),
+                            Key::ArrowLeft => step(-1),
+                            Key::ArrowRight => step(1),
+                            // Ctrl+C copies the picture you're looking at.
+                            Key::Character(ch) if ch.eq_ignore_ascii_case("c") && e.modifiers().ctrl() => copy_now(),
+                            _ => {}
+                        }
                     },
                     if many {
                         button {
@@ -4781,6 +4807,17 @@ fn MainView(session: api::Session) -> Element {
                                 }
                             },
                             "Open in browser"
+                        }
+                        button {
+                            title: "Copy the picture (Ctrl+C)",
+                            onclick: {
+                                let mut copy_now = copy_now.clone();
+                                move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    copy_now();
+                                }
+                            },
+                            "{copy_label}"
                         }
                         button {
                             onclick: {
@@ -7829,6 +7866,15 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                                         move || {
                                             let mut lightbox = lightbox;
                                             lightbox.set(Some(Lightbox::within(src.clone(), gallery())));
+                                        }
+                                    }),
+                                    menu::item("Copy image", "copy", {
+                                        let src = src.clone();
+                                        move || {
+                                            let src = src.clone();
+                                            spawn(async move {
+                                                let _ = menu::copy_image(src).await;
+                                            });
                                         }
                                     }),
                                     menu::item("Save image as…", "download", {

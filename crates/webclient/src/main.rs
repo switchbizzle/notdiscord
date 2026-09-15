@@ -61,6 +61,40 @@ extern "C" {
     fn upload_discard_js();
 }
 
+// Picture-copying glue (pwa/copyimage.js). `catch`, because a page that
+// booted before that script was deployed has no ndClip, and a missing
+// function must be a toast, not a crashed app.
+#[wasm_bindgen(js_namespace = ndClip)]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = copyImage)]
+    fn clip_copy_image_js(url: &str) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
+}
+
+/// Copy a picture to the clipboard from the viewer, and say how it went.
+/// Called straight from the tap: Safari only lets a clipboard write start
+/// inside one.
+fn copy_picture(url: &str, mut status: Signal<String>) {
+    let Ok(promise) = clip_copy_image_js(url) else {
+        status.set("Copying pictures needs the app reloaded".into());
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let outcome = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        status.set(
+            match outcome.as_str() {
+                "ok" => "Picture copied",
+                "unsupported" => "This browser can't copy pictures — hold the picture instead",
+                _ => "Couldn't copy that picture",
+            }
+            .into(),
+        );
+    });
+}
+
 /// What the glue tells us about a picked file: enough to show it and name it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct StagedFile {
@@ -663,6 +697,7 @@ fn App() -> Element {
         document::Script { src: "/app/upload.js" }
         // Drag a bottom sheet down to close it — the grip used to be a drawing.
         document::Script { src: "/app/sheetdrag.js" }
+        document::Script { src: "/app/copyimage.js" }
         // Notices when a newer build is on the server and reloads, because an
         // installed app otherwise runs whatever it booted with forever.
         document::Script { src: "/app/freshen.js" }
@@ -4208,6 +4243,18 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             div { class: "lightbox-bar",
                                 if many {
                                     span { class: "lightbox-count", "{position}" }
+                                }
+                                button {
+                                    class: "lightbox-copy",
+                                    onclick: {
+                                        let url = url.clone();
+                                        move |e: Event<MouseData>| {
+                                            e.stop_propagation();
+                                            copy_picture(&url, status);
+                                        }
+                                    },
+                                    Icon { name: "copy", size: 15 }
+                                    "Copy"
                                 }
                                 a {
                                     class: "lightbox-open",

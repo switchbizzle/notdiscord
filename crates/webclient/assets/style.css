@@ -533,7 +533,7 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
  * or by four seconds. */
 .toast {
     position: absolute; left: 16px; right: 16px; bottom: calc(92px + var(--safe-bottom));
-    z-index: 110; text-align: center;
+    z-index: 310; text-align: center;
     background: var(--surface); color: var(--text);
     font-size: 13px; padding: 10px 14px; border-radius: var(--r-md);
     box-shadow: var(--shadow-md);
@@ -935,6 +935,7 @@ input, textarea { font: inherit; color: inherit; border: 0; outline: none; }
 .lightbox-bar { display: flex; align-items: center; gap: 14px; color: var(--n-500); font-size: 13px; }
 .lightbox-count { font-variant-numeric: tabular-nums; }
 .lightbox-open { color: var(--accent-300); text-decoration: none; }
+.lightbox-copy { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-300); font-size: 13px; padding: 8px 4px; }
 .lightbox-arrow {
     position: absolute; top: 50%; transform: translateY(-50%);
     width: 46px; height: 46px; border-radius: 50%;

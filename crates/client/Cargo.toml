@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.95.3"
+version = "0.95.4"
 edition = "2021"
 
 [dependencies]
@@ -29,7 +29,8 @@ winit = "0.30"
 softbuffer = "0.4"
 arboard = "3"
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# gif and webp: copying a picture to the clipboard decodes whatever was posted.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 fontdue = "0.9.4"
 
 [target.'cfg(windows)'.dependencies]

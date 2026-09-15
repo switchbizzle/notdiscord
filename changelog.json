@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.95.4",
+    "date": "2026-09-15",
+    "changes": [
+      "📋 You can copy a picture, not just download it. In the desktop app the picture viewer has Copy image (or press Ctrl+C), and right-clicking a picture in chat offers Copy image too. On the phone the viewer has a Copy button. What lands on the clipboard is the picture itself, ready to paste into a message or anywhere else"
+    ]
+  },
+  {
     "version": "0.95.3",
     "date": "2026-09-15",
     "changes": [

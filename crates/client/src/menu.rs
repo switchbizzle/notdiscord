@@ -114,6 +114,34 @@ pub fn copy_to_clipboard(text: String) {
     }
 }
 
+/// Put a picture itself on the clipboard, not its address — what pastes into
+/// a message, Paint, or another chat as an image (switchb: "when you view an
+/// image you cant copy it. you can only download it"). A GIF copies its
+/// first frame: the Windows clipboard has no moving pictures.
+pub async fn copy_image(url: String) -> Result<(), String> {
+    let response = reqwest::get(&url).await.map_err(|_| "couldn't fetch the picture".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("couldn't fetch the picture ({})", response.status()));
+    }
+    let bytes = response.bytes().await.map_err(|_| "couldn't fetch the picture".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let img = image::load_from_memory(&bytes)
+            .map_err(|_| "that kind of picture can't be copied".to_string())?
+            .into_rgba8();
+        let (width, height) = img.dimensions();
+        let mut clipboard = arboard::Clipboard::new().map_err(|_| "the clipboard is busy".to_string())?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: std::borrow::Cow::Owned(img.into_raw()),
+            })
+            .map_err(|_| "the clipboard is busy".to_string())
+    })
+    .await
+    .map_err(|_| "copy failed".to_string())?
+}
+
 /// Copy what the user has highlighted, or `fallback` when nothing is.
 /// Right-clicking a message after selecting part of it should copy the part.
 pub fn copy_selection_or(fallback: String) {
