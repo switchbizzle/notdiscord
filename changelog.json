@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.97.9",
+    "date": "2026-09-15",
+    "changes": [
+      "🩸 The web app's messages get room to breathe: more space between people's messages, and a little daylight even between lines from the same person — they could read as one solid wall (switchb)"
+    ]
+  },
+  {
     "version": "0.97.8",
     "date": "2026-09-15",
     "changes": [

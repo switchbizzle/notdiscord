@@ -481,7 +481,7 @@ select.text-input { appearance: none; background: var(--n-900); }
  * it — the block in the (hover: hover) media query below is what shows it. */
 .msg-hover { display: none; }
 .msg.pressing { background: var(--n-900); margin: 0 -12px; padding: 0 12px; border-radius: var(--r-md); }
-.msg.pressing:not(.compact) { margin-top: 9px; }
+.msg.pressing:not(.compact) { margin-top: 14px; }
 /* The message a permalink landed on, so it's obvious which line was meant.
  * Wraps the row rather than restyling it, the way the desktop marks a hit. */
 .hit-wrap {
@@ -489,8 +489,11 @@ select.text-input { appearance: none; background: var(--n-900); }
     border-left: 3px solid var(--accent);
     margin: 0 -12px; padding: 2px 12px 4px 9px;
 }
-.msg:not(.compact) { margin-top: 9px; }
-.msg.compact { margin-top: 1px; }
+/* Air between messages: a new block gets a real gap, and even lines from
+ * the same person get daylight — 9px and 1px read as one solid wall
+ * (switchb: "they can get too close to each other"). */
+.msg:not(.compact) { margin-top: 14px; }
+.msg.compact { margin-top: 3px; }
 .msg.pending { opacity: 0.55; }
 .msg-gutter { width: 34px; flex: 0 0 auto; }
 /* No reserved strip on the right any more: the actions live in a sheet the
