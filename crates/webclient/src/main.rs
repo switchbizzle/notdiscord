@@ -1572,8 +1572,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     use_effect(move || {
         spawn(async move {
             // A dead stored token bounces back to login instead of a
-            // half-broken empty shell.
-            if api::me(&sess()).await.is_err() {
+            // half-broken empty shell — but only a token the server
+            // actually REJECTED. A phone booting in airplane mode on the
+            // cached offline shell just can't reach the server, and
+            // signing it out would demand a password at the worst moment;
+            // stay signed in and let the reconnect fill everything in.
+            if api::me(&sess()).await.is_err() && api::session_died() {
                 save_session(&None);
                 session.set(None);
                 return;

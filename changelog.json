@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.98.0",
+    "date": "2026-09-15",
+    "changes": [
+      "⚡ The web app works offline now (the bot's pick, seconded by switchb). Once you've opened it, the app itself is cached on your device: it opens instantly, boots on hotel wifi or none at all, and your messages load the moment a connection returns. Deploys still land immediately when you're online — nothing you read is ever stale",
+      "🔑 Booting with no signal no longer signs you out. Only the server rejecting your session does that; an unreachable server just means the app waits with you"
+    ]
+  },
+  {
     "version": "0.97.9",
     "date": "2026-09-15",
     "changes": [
