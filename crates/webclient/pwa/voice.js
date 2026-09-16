@@ -235,14 +235,32 @@ window.ndVoice = (() => {
     if (d && !state.muted) await setMuted(true);
   }
 
+  // Which way the phone looks. "user" is the selfie camera; flipCamera
+  // turns it around. Desktops ignore facingMode and use the one webcam.
+  let facing = "user";
+
   async function setCamera(on) {
     if (!room) return;
     try {
-      await room.localParticipant.setCameraEnabled(on);
+      await room.localParticipant.setCameraEnabled(on, on ? { facingMode: facing } : undefined);
     } catch (e) {
       state.error = on
         ? "camera unavailable — is it allowed for this site?"
         : "camera wouldn't stop: " + (e && e.message ? e.message : e);
+    }
+    refresh();
+  }
+
+  // Front to back and back again, live. Restarting the track is the only
+  // way that works across phones; LiveKit republishes under the same sid.
+  async function flipCamera() {
+    if (!room || !room.localParticipant.isCameraEnabled) return;
+    facing = facing === "user" ? "environment" : "user";
+    try {
+      await room.localParticipant.setCameraEnabled(false);
+      await room.localParticipant.setCameraEnabled(true, { facingMode: facing });
+    } catch (e) {
+      state.error = "couldn't switch cameras: " + (e && e.message ? e.message : e);
     }
     refresh();
   }
@@ -289,6 +307,7 @@ window.ndVoice = (() => {
     setMuted,
     setDeafened,
     setCamera,
+    flipCamera,
     setShare,
     setVolume,
     attachVideos,

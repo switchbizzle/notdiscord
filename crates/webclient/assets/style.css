@@ -52,7 +52,13 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+/* The app owns every scrolling region; the page itself never scrolls. This
+ * is the backstop for browsers where the shell's height goes wrong (see
+ * .app): whatever happens inside, no side scrollbar, no pannable page. */
+html, body { height: 100%; overflow: hidden; }
+/* Dioxus's mount point sits between body and .app; it has to carry the
+ * height down or the 100% fallback below resolves against nothing. */
+#main { height: 100%; }
 /* iPhone. Safari zooms the whole page in the moment you focus a text field
  * whose font is under 16px, and it does not zoom back out when you move
  * around inside an app like this one — so tapping the message box pushed
@@ -160,7 +166,8 @@ select.text-input { appearance: none; background: var(--n-900); }
 
 /* ---------- login ---------- */
 .login-wrap {
-    min-height: 100dvh; display: flex; flex-direction: column; justify-content: center;
+    min-height: 100%; min-height: 100dvh;
+    display: flex; flex-direction: column; justify-content: center;
     padding: 28px 24px; background: var(--bg);
 }
 .login-mark {
@@ -190,7 +197,12 @@ select.text-input { appearance: none; background: var(--n-900); }
 
 /* ---------- shell ---------- */
 .app {
-    height: 100dvh; position: relative; overflow: hidden;
+    /* 100% first: a browser that doesn't know dvh (older Samsung Internet
+     * and WebViews — switchb's phone drew the whole page as one scroll)
+     * drops the second line and keeps the first, and the shell still fills
+     * exactly one screen. Engines that know dvh use it, as before. */
+    height: 100%; height: 100dvh;
+    position: relative; overflow: hidden;
     display: flex; flex-direction: column;
     background: var(--bg);
 }
@@ -455,6 +467,9 @@ select.text-input { appearance: none; background: var(--n-900); }
 /* ---------- messages ---------- */
 .messages {
     flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    /* Nothing in chat may widen the page: a stray wide element gets cut,
+     * not a horizontal scrollbar. Code blocks keep their own overflow-x. */
+    overflow-x: hidden;
     display: flex; flex-direction: column-reverse;
     padding: 12px 12px 6px;
 }

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.97.8",
+    "date": "2026-09-15",
+    "changes": [
+      "🔄 Flip the camera on your phone: in a call with your camera on there's a switch button next to it — selfie to rear and back, mid-call",
+      "📜 Fixed the whole page scrolling on some phones (a side scrollbar instead of a fixed chat, switchb's Samsung): browsers that don't know the modern viewport unit lost the app's height. There's a fallback every engine knows now, and the page itself can no longer scroll at all"
+    ]
+  },
+  {
     "version": "0.97.7",
     "date": "2026-09-15",
     "changes": [

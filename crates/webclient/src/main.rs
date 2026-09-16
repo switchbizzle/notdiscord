@@ -34,6 +34,8 @@ extern "C" {
     // faster than the script tag loads — must toast, not crash the app.
     #[wasm_bindgen(catch, js_name = setCamera)]
     fn voice_set_camera_js(on: bool) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch, js_name = flipCamera)]
+    fn voice_flip_camera_js() -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
     #[wasm_bindgen(catch, js_name = setShare)]
     fn voice_set_share_js(on: bool) -> Result<js_sys::Promise, wasm_bindgen::JsValue>;
     #[wasm_bindgen(catch, js_name = attachVideos)]
@@ -4421,6 +4423,32 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 });
                             },
                             Icon { name: "camera", size: 21 }
+                        }
+                        // Front or back — phones only (a desktop has one
+                        // webcam and no share button, which is what
+                        // can_share distinguishes), and only while the
+                        // camera is live.
+                        if voice_glue().camera_on && !voice_glue().can_share {
+                            button {
+                                class: "callbtn",
+                                aria_label: "Switch camera",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let Ok(promise) = voice_flip_camera_js() else {
+                                            status.set("switching cameras needs the app reloaded".into());
+                                            return;
+                                        };
+                                        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                                        if let Ok(state) = serde_json::from_str::<VoiceGlue>(&voice_get_state_js()) {
+                                            if !state.error.is_empty() {
+                                                status.set(state.error.clone());
+                                            }
+                                            voice_glue.set(state);
+                                        }
+                                    });
+                                },
+                                Icon { name: "shuffle", size: 20 }
+                            }
                         }
                         // No screen to offer on a phone; the button would
                         // only ever apologise.
