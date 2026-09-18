@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.98.3"
+version = "0.98.4"
 edition = "2021"
 
 [dependencies]
@@ -35,6 +35,9 @@ fontdue = "0.9.4"
 
 [target.'cfg(windows)'.dependencies]
 mslnk = "0.1"
+# The Windows Spell Checking API: the same engine WebView2 uses for the
+# squiggles, asked directly for corrections in the right-click menu.
+windows = { version = "0.61", features = ["Win32_Globalization", "Win32_System_Com", "Win32_Foundation"] }
 winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase", "dwmapi"] }
 winreg = "0.56"
 

@@ -2843,7 +2843,7 @@ fn MainView(session: api::Session) -> Element {
                                         spellcheck: "false",
                                         value: "{email_input}",
                                         oncontextmenu: move |e: Event<MouseData>| {
-                                            menu::open(ctx_menu, &e, menu::text_field_items())
+                                            menu::open_for_text_field(ctx_menu, &e)
                                         },
                                         oninput: move |e| email_input.set(e.value()),
                                     }
@@ -4177,7 +4177,7 @@ fn MainView(session: api::Session) -> Element {
                                                     value: "{persona_draft}",
                                                     spellcheck: "true",
                                                     oncontextmenu: move |e: Event<MouseData>| {
-                                                        menu::open(ctx_menu, &e, menu::text_field_items())
+                                                        menu::open_for_text_field(ctx_menu, &e)
                                                     },
                                                     oninput: move |e| persona_draft.set(e.value()),
                                                 }
@@ -4244,7 +4244,7 @@ fn MainView(session: api::Session) -> Element {
                                                                     value: "{typed}",
                                                                     placeholder: "{placeholder}",
                                                                     oncontextmenu: move |e: Event<MouseData>| {
-                                                                        menu::open(ctx_menu, &e, menu::text_field_items())
+                                                                        menu::open_for_text_field(ctx_menu, &e)
                                                                     },
                                                                     oninput: move |e| {
                                                                         cred_drafts.write().insert(key.clone(), e.value());
@@ -4541,7 +4541,7 @@ fn MainView(session: api::Session) -> Element {
                                     value: "{status_draft}",
                                     spellcheck: "true",
                                     oncontextmenu: move |e: Event<MouseData>| {
-                                        menu::open(ctx_menu, &e, menu::text_field_items())
+                                        menu::open_for_text_field(ctx_menu, &e)
                                     },
                                     oninput: move |e| status_draft.set(e.value()),
                                     onkeydown: move |e| {
@@ -4571,7 +4571,7 @@ fn MainView(session: api::Session) -> Element {
                                 value: "{bio_draft}",
                                 spellcheck: "true",
                                 oncontextmenu: move |e: Event<MouseData>| {
-                                    menu::open(ctx_menu, &e, menu::text_field_items())
+                                    menu::open_for_text_field(ctx_menu, &e)
                                 },
                                 oninput: move |e| bio_draft.set(e.value()),
                             }
@@ -5613,7 +5613,7 @@ fn MainView(session: api::Session) -> Element {
                         // and slang would be noise.
                         spellcheck: "false",
                         oncontextmenu: move |e: Event<MouseData>| {
-                            menu::open(ctx_menu, &e, menu::text_field_items())
+                            menu::open_for_text_field(ctx_menu, &e)
                         },
                         oninput: move |e| search_query.set(e.value()),
                         onkeydown: move |e| {
@@ -6343,7 +6343,7 @@ fn MainView(session: api::Session) -> Element {
                         // Prose: worth spell-checking.
                         spellcheck: "true",
                         oncontextmenu: move |e: Event<MouseData>| {
-                            menu::open(ctx_menu, &e, menu::text_field_items())
+                            menu::open_for_text_field(ctx_menu, &e)
                         },
                         oninput: move |e| {
                             draft.set(e.value());
@@ -7921,7 +7921,7 @@ fn MessageRow(msg: Message, compact: bool, can_pin: bool) -> Element {
                         value: "{edit_draft}",
                         spellcheck: "true",
                         oncontextmenu: move |e: Event<MouseData>| {
-                            menu::open(ctx_menu, &e, menu::text_field_items())
+                            menu::open_for_text_field(ctx_menu, &e)
                         },
                         oninput: move |e| edit_draft.set(e.value()),
                         onkeydown: move |e| {

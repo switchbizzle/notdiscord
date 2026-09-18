@@ -204,7 +204,197 @@ pub fn save_url_as(url: String) {
     });
 }
 
+// ---------- spelling ----------
+
+/// The Windows spell checker — the same engine WebView2 draws the squiggles
+/// with, so the menu's opinion and the underline can't disagree. One checker
+/// per thread, made lazily; every call degrades to "no opinion" rather than
+/// an error, because a menu that won't open is worse than one without
+/// suggestions.
+#[cfg(windows)]
+mod spell {
+    use std::cell::RefCell;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Globalization::{
+        GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, ISpellingError,
+        SpellCheckerFactory,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+
+    thread_local! {
+        // Outer Option: "have we tried"; inner: "did it work".
+        static CHECKER: RefCell<Option<Option<ISpellChecker>>> = const { RefCell::new(None) };
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn make() -> Option<ISpellChecker> {
+        unsafe {
+            // The webview's thread is already an apartment; joining it again
+            // is a no-op and RPC_E_CHANGED_MODE just means "already one".
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let factory: ISpellCheckerFactory =
+                CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+            // The user's own language first, English as the fallback.
+            let mut buf = [0u16; 85];
+            let len = GetUserDefaultLocaleName(&mut buf);
+            let mut langs: Vec<Vec<u16>> = Vec::new();
+            if len > 1 {
+                langs.push(buf[..len as usize].to_vec());
+            }
+            langs.push(wide("en-US"));
+            for lang in langs {
+                let p = PCWSTR(lang.as_ptr());
+                if factory.IsSupported(p).map(|b| b.as_bool()).unwrap_or(false) {
+                    if let Ok(checker) = factory.CreateSpellChecker(p) {
+                        return Some(checker);
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    fn with<T>(f: impl FnOnce(&ISpellChecker) -> Option<T>) -> Option<T> {
+        CHECKER.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(make());
+            }
+            slot.as_ref().unwrap().as_ref().and_then(f)
+        })
+    }
+
+    pub fn misspelled(word: &str) -> bool {
+        with(|c| unsafe {
+            let w = wide(word);
+            let errors = c.Check(PCWSTR(w.as_ptr())).ok()?;
+            // Any spelling error in a single word means the word is one.
+            let mut first: Option<ISpellingError> = None;
+            let hr = errors.Next(&mut first);
+            Some(hr.is_ok() && first.is_some())
+        })
+        .unwrap_or(false)
+    }
+
+    /// Up to five corrections, best first, never echoing the word back.
+    pub fn suggestions(word: &str) -> Vec<String> {
+        with(|c| unsafe {
+            let w = wide(word);
+            let iter = c.Suggest(PCWSTR(w.as_ptr())).ok()?;
+            let mut out = Vec::new();
+            loop {
+                let mut item = [PWSTR::null()];
+                let mut got = 0u32;
+                let hr = iter.Next(&mut item, Some(&mut got));
+                if !hr.is_ok() || got == 0 {
+                    break;
+                }
+                if let Ok(s) = item[0].to_string() {
+                    if s != word {
+                        out.push(s);
+                    }
+                }
+                CoTaskMemFree(Some(item[0].0 as _));
+                if out.len() >= 5 {
+                    break;
+                }
+            }
+            Some(out)
+        })
+        .unwrap_or_default()
+    }
+
+    /// Into the user's own Windows dictionary — the squiggle goes everywhere,
+    /// not just here.
+    pub fn learn(word: &str) {
+        let _ = with(|c| unsafe {
+            let w = wide(word);
+            c.Add(PCWSTR(w.as_ptr())).ok()
+        });
+    }
+}
+
+#[cfg(not(windows))]
+mod spell {
+    pub fn misspelled(_: &str) -> bool {
+        false
+    }
+    pub fn suggestions(_: &str) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn learn(_: &str) {}
+}
+
 // ---------- text fields ----------
+
+/// Right-click on a text field: Cut/Copy/Paste/Select all — and when the
+/// click landed on a misspelled word in a field that spellchecks, the
+/// checker's corrections above them, plus Add to dictionary (switchb: "right
+/// click an underlined word and it has the suggestions"). Chromium moves the
+/// caret to the right-click spot before contextmenu fires, so the field's own
+/// selectionStart is the word the pointer meant. Fields with
+/// spellcheck="false" — names, codes — skip straight to the plain four.
+pub fn open_for_text_field(mut menu: MenuSignal, event: &Event<MouseData>) {
+    event.prevent_default();
+    event.stop_propagation();
+    let at = event.client_coordinates();
+    spawn(async move {
+        let mut eval = dioxus::document::eval(
+            "const el = document.activeElement;
+             if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || !el.spellcheck
+                 || el.selectionStart !== el.selectionEnd) { dioxus.send(''); }
+             else {
+                 const v = el.value, s = el.selectionStart;
+                 const isW = (ch) => /[\\p{L}\\p{M}'\u{2019}]/u.test(ch);
+                 let a = s, b = s;
+                 while (a > 0 && isW(v[a - 1])) a--;
+                 while (b < v.length && isW(v[b])) b++;
+                 dioxus.send(JSON.stringify({ w: v.slice(a, b), a: a, b: b, prev: a > 0 ? v[a - 1] : '' }));
+             }",
+        );
+        let raw = eval.recv::<String>().await.unwrap_or_default();
+        let mut items: Vec<Item> = Vec::new();
+        if let Ok(hit) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let word = hit["w"].as_str().unwrap_or("").to_string();
+            let (a, b) = (hit["a"].as_u64().unwrap_or(0), hit["b"].as_u64().unwrap_or(0));
+            let prev = hit["prev"].as_str().unwrap_or("");
+            // A @mention, #channel or :emoji: is a name, not a typo.
+            if word.chars().count() >= 2 && !matches!(prev, "@" | "#" | ":") && spell::misspelled(&word) {
+                for s in spell::suggestions(&word) {
+                    let text = s.clone();
+                    items.push(item(s, "", move || replace_field_range(a, b, text.clone())));
+                }
+                let learned = word.clone();
+                items.push(item(format!("Add \u{201c}{word}\u{201d} to dictionary"), "plus", move || {
+                    spell::learn(&learned)
+                }));
+            }
+        }
+        items.extend(text_field_items());
+        menu.set(Some(Menu { x: at.x, y: at.y, items }));
+    });
+}
+
+/// Replace [a, b) — UTF-16 offsets, the units the field itself counts in —
+/// through insertText, so the input event fires and the Rust-side signal
+/// follows. The same route a paste takes.
+fn replace_field_range(a: u64, b: u64, text: String) {
+    let literal = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".into());
+    dioxus::document::eval(&format!(
+        "const el = document.activeElement;
+         if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {{
+             el.focus();
+             el.setSelectionRange({a}, {b});
+             document.execCommand('insertText', false, {literal});
+         }}"
+    ));
+}
 
 /// Cut/Copy/Paste/Select all for the focused input, in that order. Every text
 /// field gets the same four, because that's what a text field can do.
@@ -273,6 +463,18 @@ fn field_select_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real Windows checker, asked directly. `learn` is deliberately not
+    /// tested: it would write into the developer's actual custom dictionary.
+    #[cfg(windows)]
+    #[test]
+    fn the_spell_checker_knows_a_typo_and_offers_the_fix() {
+        assert!(spell::misspelled("helllo"));
+        assert!(!spell::misspelled("hello"));
+        let s = spell::suggestions("helllo");
+        assert!(!s.is_empty());
+        assert!(s.iter().any(|w| w.eq_ignore_ascii_case("hello")), "{s:?}");
+    }
 
     #[test]
     fn saving_the_same_name_twice_counts_up_instead_of_clobbering() {

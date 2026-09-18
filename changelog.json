@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.98.4",
+    "date": "2026-09-18",
+    "changes": [
+      "✏️ Right-click a squiggled word in the desktop app and the menu now leads with corrections (switchb's ask) — pick one and it's fixed in place — plus “Add to dictionary”, which teaches Windows itself, so the word stays learned everywhere. Suggestions come from the same Windows spellchecker that draws the squiggles, in your Windows language. Name fields — usernames, invite codes, channel names — stay out of it"
+    ]
+  },
+  {
     "version": "0.98.3",
     "date": "2026-09-18",
     "changes": [
