@@ -1214,6 +1214,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // user id -> (channel, name, expiry)
     let mut typing = use_signal(std::collections::HashMap::<i64, (i64, String, i64)>::new);
     let mut last_typing_sent = use_signal(|| 0i64);
+    // Which @mention suggestion the keyboard has landed on. Read modulo the
+    // list length so a stale index off the end just wraps; reset to 0 as the
+    // draft changes, so typing always re-highlights the top match.
+    let mut mention_sel = use_signal(|| 0usize);
     // Messages shown before the server has confirmed them. A pending message
     // carries a negative id — real ids are a positive autoincrement, so the
     // sign alone says "not yet real" without changing the wire type.
@@ -3375,10 +3379,12 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             // it's a prefix match over a handful of people,
                             // so there is nothing to memoise.
                             let suggestions = shared::mention_suggestions(&draft(), &members());
+                            // The keyboard's landing spot, wrapped into range.
+                            let sel = if suggestions.is_empty() { 0 } else { mention_sel() % suggestions.len() };
                             rsx! {
                                 if !suggestions.is_empty() {
                                     div { class: "mention-pop",
-                                        for name in suggestions {
+                                        for (i, name) in suggestions.into_iter().enumerate() {
                                             {
                                                 let member = members()
                                                     .into_iter()
@@ -3391,12 +3397,16 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                                 rsx! {
                                                     button {
                                                         key: "mention-{name}",
-                                                        class: "mention-row",
+                                                        class: if i == sel { "mention-row selected" } else { "mention-row" },
+                                                        // Hovering the mouse moves the selection to it,
+                                                        // so a click and the Tab-target never disagree.
+                                                        onmouseenter: move |_| mention_sel.set(i),
                                                         onclick: move |_| {
                                                             // Read out first: the peek guard would
                                                             // still be alive at the set() below.
                                                             let current = draft.peek().clone();
                                                             draft.set(shared::complete_mention(&current, &for_tap));
+                                                            mention_sel.set(0);
                                                             focus_composer();
                                                         },
                                                         if let Some(member) = member.clone() {
@@ -3461,6 +3471,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 value: "{draft}",
                                 oninput: move |e| {
                                     draft.set(e.value());
+                                    // Typing re-homes the mention highlight on
+                                    // the top match; arrow keys don't fire
+                                    // this, so they still move it freely.
+                                    mention_sel.set(0);
                                     // Throttled: one event every few seconds
                                     // holds the indicator up, and a phone
                                     // keyboard fires a lot of these.
@@ -3474,6 +3488,56 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 },
                                 onkeydown: move |e| {
                                     let mods = e.modifiers();
+                                    // The @mention popup takes the keyboard
+                                    // while it's up, the way the desktop app
+                                    // does: arrows move, Tab completes (and so
+                                    // does Enter where Enter would otherwise
+                                    // send), so nobody has to reach for the
+                                    // mouse to finish a name (switchb).
+                                    let suggestions = shared::mention_suggestions(&draft(), &members());
+                                    if !suggestions.is_empty() {
+                                        let sel = mention_sel() % suggestions.len();
+                                        // The name to insert, taken now so the
+                                        // closure needn't hold the whole list
+                                        // (the arrow arms still need its len).
+                                        let target = suggestions[sel].clone();
+                                        let mut complete = move || {
+                                            let current = draft.peek().clone();
+                                            draft.set(shared::complete_mention(&current, &target));
+                                            mention_sel.set(0);
+                                        };
+                                        match e.key() {
+                                            Key::ArrowDown => {
+                                                e.prevent_default();
+                                                mention_sel.set(sel + 1);
+                                                return;
+                                            }
+                                            Key::ArrowUp => {
+                                                e.prevent_default();
+                                                mention_sel.set((sel + suggestions.len() - 1) % suggestions.len());
+                                                return;
+                                            }
+                                            // Tab always completes — it has no
+                                            // other job in a chat box, and its
+                                            // default (move focus away) is the
+                                            // last thing you want mid-name.
+                                            Key::Tab => {
+                                                e.prevent_default();
+                                                complete();
+                                                return;
+                                            }
+                                            // Enter completes only where it
+                                            // would otherwise send; on a phone
+                                            // it stays a newline and the popup
+                                            // is tap-to-complete.
+                                            Key::Enter if has_mouse() && !mods.contains(Modifiers::SHIFT) => {
+                                                e.prevent_default();
+                                                complete();
+                                                return;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                     // A mouse means a real keyboard: Enter
                                     // sends and Shift+Enter breaks the line,
                                     // the way the desktop app works. On a

@@ -600,6 +600,12 @@ select.text-input { appearance: none; background: var(--n-900); }
     width: 100%; min-height: 46px; padding: 7px 14px; text-align: left;
 }
 .mention-row:active { background: var(--n-900); }
+/* The keyboard's landing row: an accent wash so it reads as chosen, not
+ * merely hovered. Left border keeps it legible whatever the background. */
+.mention-row.selected {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
 .mention-name { font-size: 14.5px; flex: 0 1 auto; }
 .mention-hint { font-size: 11.5px; color: var(--n-600); flex: 0 1 auto; }
 .mention-all {

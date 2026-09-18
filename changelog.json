@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.98.1",
+    "date": "2026-09-18",
+    "changes": [
+      "⌨️ Tab-complete an @mention in the web app, the way the desktop app has always done it (switchb). When the name popup is up: ↑↓ move through it, Tab finishes the highlighted name — and on a computer Enter finishes it too, then a second Enter sends. No more reaching for the mouse to click a name. On a phone it stays tap-to-complete"
+    ]
+  },
+  {
     "version": "0.98.0",
     "date": "2026-09-15",
     "changes": [
