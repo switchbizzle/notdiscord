@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.98.2",
+    "date": "2026-09-18",
+    "changes": [
+      "📜 Fixed the web app flinging you to the oldest messages when someone posted while you were scrolled up reading history (Jon). Now the view holds still where you're reading, stays pinned at the bottom when you're already there, and still jumps to your own message when you send one"
+    ]
+  },
+  {
     "version": "0.98.1",
     "date": "2026-09-18",
     "changes": [

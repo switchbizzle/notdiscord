@@ -472,6 +472,13 @@ select.text-input { appearance: none; background: var(--n-900); }
     overflow-x: hidden;
     display: flex; flex-direction: column-reverse;
     padding: 12px 12px 6px;
+    /* No scroll anchoring. In a column-reverse list a message arriving
+     * from someone else inserts a node at the top of the DOM, and the
+     * browser's anchoring then flung anyone scrolled up in history all the
+     * way to the oldest message (Jon: "slides waaaay up"). Off, the view
+     * holds still while reading, and column-reverse keeps you pinned at
+     * the bottom when you're already there. */
+    overflow-anchor: none;
 }
 /* Hold a message for its actions. Selection and the iOS callout are off
  * so the hold reads as a hold and not as "select this word" — "Copy text"
