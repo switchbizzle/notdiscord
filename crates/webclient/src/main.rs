@@ -3464,6 +3464,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 id: COMPOSER_ID,
                                 class: "draft",
                                 rows: "1",
+                                // Explicit, not left to the browser's default:
+                                // prose fields get the squiggles, name/code
+                                // fields elsewhere stay quiet.
+                                spellcheck: "true",
                                 // Just "message": the channel's name is in
                                 // the header directly above, and a long one
                                 // here wrapped to a second line.
@@ -4205,6 +4209,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 input {
                                     value: "{status_draft}",
                                     placeholder: "what you're up to",
+                                    spellcheck: "true",
                                     oninput: move |e| {
                                         status_draft.set(e.value());
                                         profile_saved.set(false);
@@ -4217,6 +4222,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                 textarea {
                                     rows: "3",
                                     value: "{bio_draft}",
+                                    spellcheck: "true",
                                     oninput: move |e| {
                                         bio_draft.set(e.value());
                                         profile_saved.set(false);
@@ -5350,6 +5356,7 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     textarea {
                         id: "edit-{msg_id}",
                         class: "msg-edit-box",
+                        spellcheck: "true",
                         // Tall enough for what's there, so the words aren't
                         // scrolled away inside a three-line box.
                         rows: "{(draft.lines().count() + draft.chars().count() / 34).clamp(2, 8)}",

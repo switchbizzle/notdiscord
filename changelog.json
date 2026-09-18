@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.98.3",
+    "date": "2026-09-18",
+    "changes": [
+      "✓ Spellcheck in the web app (switchb's ask): the message box, in-place editing, and your status and bio now tell the browser to check spelling — red squiggles as you type, right-click a squiggled word for corrections. Uses your browser's own checker and dictionary, so it speaks whatever languages your browser does. The desktop app already had it"
+    ]
+  },
+  {
     "version": "0.98.2",
     "date": "2026-09-18",
     "changes": [
