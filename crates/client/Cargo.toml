@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.98.4"
+version = "0.98.5"
 edition = "2021"
 
 [dependencies]
@@ -38,7 +38,7 @@ mslnk = "0.1"
 # The Windows Spell Checking API: the same engine WebView2 uses for the
 # squiggles, asked directly for corrections in the right-click menu.
 windows = { version = "0.61", features = ["Win32_Globalization", "Win32_System_Com", "Win32_Foundation"] }
-winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase", "dwmapi"] }
+winapi = { version = "0.3", features = ["playsoundapi", "synchapi", "handleapi", "errhandlingapi", "winuser", "winerror", "combaseapi", "objbase", "dwmapi", "processthreadsapi"] }
 winreg = "0.56"
 
 [target.'cfg(windows)'.build-dependencies]

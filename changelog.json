@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.98.5",
+    "date": "2026-09-21",
+    "changes": [
+      "🚪 Fixed the installed desktop app not actually quitting (switchb): Quit from the tray, and the relaunch after an install or update, were getting stuck in shutdown and leaving the process running in the background — so you couldn't exit, and reopening found the ghost still there. It now exits cleanly and for real"
+    ]
+  },
+  {
     "version": "0.98.4",
     "date": "2026-09-18",
     "changes": [

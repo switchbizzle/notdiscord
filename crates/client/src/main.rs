@@ -602,7 +602,7 @@ fn App() -> Element {
                                             // and get out of its way.
                                             release_single_instance();
                                             let _ = std::process::Command::new(&exe).spawn();
-                                            std::process::exit(0);
+                                            hard_exit(0);
                                         }
                                         Err(e) => install_error.set(e),
                                     },
@@ -7077,11 +7077,32 @@ fn close_behaviour(to_tray: bool) -> dioxus::desktop::WindowCloseBehaviour {
     }
 }
 
+/// Terminate the process now, skipping the C runtime's atexit and Rust's
+/// static/thread teardown. `std::process::exit` runs all of that first, and
+/// in this app it hangs there forever: cpal parks WASAPI/COM objects on
+/// background threads and WebView2 keeps its own, and tearing those down from
+/// a thread that doesn't own them deadlocks — so "Quit" logged and the
+/// process stayed alive (switchb: installed app you can't exit), and an
+/// install/update that spawned its successor then tried to exit left the old
+/// one hung behind it. ExitProcess force-terminates every thread instead.
+/// Everything worth keeping — settings, window bounds — is already written as
+/// it changes, so there is nothing to flush on the way out.
+fn hard_exit(code: u32) -> ! {
+    #[cfg(windows)]
+    unsafe {
+        winapi::um::processthreadsapi::ExitProcess(code);
+        // ExitProcess never returns; satisfy the `!` type anyway.
+        std::hint::unreachable_unchecked();
+    }
+    #[cfg(not(windows))]
+    std::process::exit(code as i32);
+}
+
 /// Really exit (closing the window only hides to the tray). Returns `()` so it
 /// can sit in an event handler.
 fn quit_now(reason: &str) {
     api::debug_log(reason);
-    std::process::exit(0);
+    hard_exit(0);
 }
 
 /// The image URL for a `:name:` token, when the server has that emoji.
@@ -8696,7 +8717,7 @@ fn apply_self_update(new_exe_bytes: Vec<u8>) -> Result<(), String> {
     std::process::Command::new(&exe)
         .spawn()
         .map_err(|e| format!("update installed but relaunch failed: {e}"))?;
-    std::process::exit(0);
+    hard_exit(0);
 }
 
 /// "3.2 MB"-style byte counts for the Files panel.

@@ -99,13 +99,18 @@ pub fn create() -> Option<Tray> {
     let quit_item = MenuItem::new("Quit", true, None);
     menu.append_items(&[&open_item, &quit_item]).ok()?;
 
-    let icon = TrayIconBuilder::new()
+    let icon = match TrayIconBuilder::new()
         .with_tooltip("NotDiscord")
         .with_icon(make_icon(false))
         .with_menu(Box::new(menu))
         .build()
-        .ok()?;
-
+    {
+        Ok(icon) => icon,
+        Err(e) => {
+            crate::api::debug_log(&format!("tray create failed: {e}"));
+            return None;
+        }
+    };
     Some(Tray { icon, open_id: open_item.id().clone(), quit_id: quit_item.id().clone() })
 }
 
