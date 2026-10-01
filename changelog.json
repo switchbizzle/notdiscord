@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.98.6",
+    "date": "2026-10-01",
+    "changes": [
+      "↩️ Tap a reply's quote in the web app to jump to what it is quoting, the way the desktop app has always done (switchb). It pages back through the history to find the message if it is older than what is loaded, and highlights it when it gets there",
+      "🖼️ Pictures and GIFs stopped being stretched (Jon). The message column is a flex column, which was quietly stretching anything without a known size to the full width and then clipping its height — a tall screenshot came out 528×420 instead of 105×420, five times too wide. It only hit media the server has no measurements for, which is exactly GIFs from the GIF button and anything pasted as a link, so uploads looked fine and everything else looked melted"
+    ]
+  },
+  {
     "version": "0.98.5",
     "date": "2026-09-21",
     "changes": [

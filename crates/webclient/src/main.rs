@@ -5120,6 +5120,11 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
     let mut confirming_delete = use_signal(|| false);
     let msg_id = msg.id;
     let channel_id = msg.channel_id;
+    // Tapping a reply quote goes to what it quotes. This is the same signal
+    // a permalink sets, so the quote inherits the page-back-to-find-it
+    // behaviour rather than growing a second copy of it.
+    let open_message = try_consume_context::<OpenMessage>();
+    let reply_target = msg.reply_to;
     let mine = msg.author.id == me_id;
     let public_url = try_consume_context::<PublicUrl>();
 
@@ -5334,7 +5339,24 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                 }
             }
             if let Some(preview) = msg.reply_preview.clone() {
-                div { class: "reply-ref", "↩ {preview.author}: {preview.content.chars().take(60).collect::<String>()}" }
+                div {
+                    class: if reply_target.is_some() { "reply-ref reply-jump" } else { "reply-ref" },
+                    title: "Jump to the original message",
+                    onclick: move |_| {
+                        // The browser sends a click when the finger lifts,
+                        // long-press or not; that one asked for the actions
+                        // sheet, not for a trip up the channel.
+                        if now_ms() - long_pressed_at() < 800 {
+                            return;
+                        }
+                        // A reply always sits in the same channel as the
+                        // message it answers, so this one is the right one.
+                        if let (Some(id), Some(mut open)) = (reply_target, open_message) {
+                            open.0.set(Some((channel_id, id)));
+                        }
+                    },
+                    "↩ {preview.author}: {preview.content.chars().take(60).collect::<String>()}"
+                }
             }
             // Pinning is still a desktop action, but the phone should show
             // which messages someone thought were worth keeping — including
