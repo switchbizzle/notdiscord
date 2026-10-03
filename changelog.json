@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.98.7",
+    "date": "2026-10-03",
+    "changes": [
+      "❌ The X button works again, and keeps working (switchb). After a long session it would stop responding entirely — no hide, no quit, nothing — while the app carried on running perfectly, and only a restart brought it back. The close was reaching the app and being dropped on the floor: the toolkit looks the window up in its own table before acting, returns quietly when it isn't there, and after a couple of days it isn't there. The button is handled directly now, so there is no lookup to miss",
+      "Every click of it also writes a line to the log, so if it ever goes quiet again we can tell in one look whether the click arrived"
+    ]
+  },
+  {
     "version": "0.98.6",
     "date": "2026-10-01",
     "changes": [

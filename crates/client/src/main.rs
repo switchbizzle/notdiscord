@@ -211,10 +211,11 @@ fn main() {
                             .unwrap(),
                     }
                 })
-                // What X does is a setting (Settings → App). Read here as
-                // well as in the effect that tracks it, so the very first
-                // close obeys the choice rather than the default.
-                .with_close_behaviour(close_behaviour(api::load_settings().close_to_tray)),
+                // Always "hide", because the close is ours to act on now
+                // (see the CloseRequested handler in App). Leaving this as
+                // WindowCloses would let dioxus destroy the window out from
+                // under a quit we are about to perform ourselves.
+                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides),
         )
         .launch(App);
 }
@@ -417,6 +418,34 @@ fn App() -> Element {
     // Remember where and how big the window is, so an update (which restarts
     // the app) doesn't reset it. Resizing fires a storm of events, so the
     // write is debounced: the handler only stamps a signal.
+    // The X button, handled here rather than left to dioxus.
+    //
+    // dioxus's own close handler looks the window up in its webview map and
+    // returns silently when it isn't there:
+    //
+    //     let Some(window) = self.webviews.get(&id) else { return; };
+    //
+    // After a long session that lookup starts missing, and then clicking X
+    // does nothing at all — no hide, no quit, no log, while the app carries
+    // on rendering perfectly (switchb, twice, after two-day sessions;
+    // reproduced on the live process by posting WM_CLOSE, which the window
+    // swallowed while still pumping every other message). Reading the
+    // setting from disk rather than a signal keeps this independent of the
+    // UI too: whatever state the app is in, the button does its job.
+    {
+        let window = window.clone();
+        dioxus::desktop::use_wry_event_handler(move |event, _| {
+            use dioxus::desktop::tao::event::{Event, WindowEvent};
+            if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
+                if api::load_settings().close_to_tray {
+                    api::debug_log("close button: hiding to tray");
+                    window.window.set_visible(false);
+                } else {
+                    quit_now("close button: quitting");
+                }
+            }
+        });
+    }
     {
         let window = window.clone();
         let mut moved = use_signal(|| 0u64);
@@ -1556,13 +1585,6 @@ fn MainView(session: api::Session) -> Element {
     let mut server_name_draft = use_signal(String::new);
     let mut retention_days = use_signal(|| 21i64);
     let mut audio_settings = use_signal(api::load_settings);
-    // Keep the X button in step with the setting, without a restart.
-    {
-        let window = use_window().clone();
-        use_effect(move || {
-            window.set_close_behavior(close_behaviour(audio_settings().close_to_tray));
-        });
-    }
     let mut input_devices = use_signal(Vec::<String>::new);
     let mut output_devices = use_signal(Vec::<String>::new);
 
@@ -7064,16 +7086,6 @@ fn PlayerCard(data: String) -> Element {
                 Icon { name: "stop", size: 16 }
             }
         }
-    }
-}
-
-/// What the window's X button does, from the setting.
-fn close_behaviour(to_tray: bool) -> dioxus::desktop::WindowCloseBehaviour {
-    use dioxus::desktop::WindowCloseBehaviour::{WindowCloses, WindowHides};
-    if to_tray {
-        WindowHides
-    } else {
-        WindowCloses
     }
 }
 
