@@ -3262,6 +3262,28 @@ fn MainView(session: api::Session) -> Element {
                                             }
                                         }
                                     }
+                                    label { "Audio quality" }
+                                    select {
+                                        onchange: move |e| {
+                                            if let Ok(v) = e.value().parse::<u32>() {
+                                                let mut s = audio_settings.write();
+                                                s.share_audio_bitrate = v;
+                                                api::save_settings(&s);
+                                            }
+                                        },
+                                        for (bps, label) in [
+                                            (128_000u32, "128 kbps \u{2014} easy on a slow upload"),
+                                            (192_000u32, "192 kbps \u{2014} transparent for most ears"),
+                                            (256_000u32, "256 kbps \u{2014} room to spare"),
+                                            (320_000u32, "320 kbps \u{2014} the most Opus will usefully take"),
+                                        ] {
+                                            option {
+                                                value: "{bps}",
+                                                selected: audio_settings().share_audio_bitrate == bps,
+                                                "{label}"
+                                            }
+                                        }
+                                    }
                                     {
                                         // Capturing the same output the call
                                         // plays on sends everyone their own

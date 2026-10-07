@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.1",
+    "date": "2026-10-07",
+    "changes": [
+      "🎚️ Shared audio has its own quality setting, up to 320kbps (Jon). It is a separate track from your microphone, so the two never had to share a number — the mic stays on speech settings while this carries the music. 320 is the default now; 128, 192 and 256 are there for a thin upload",
+      "Worth knowing before you go hunting for a difference: Opus is already transparent to most ears somewhere around 192, so the top of that range is headroom rather than something you will hear. It costs about 0.3Mbps next to a screen share measured in megabits, which is why it may as well be the default"
+    ]
+  },
+  {
     "version": "0.99.0",
     "date": "2026-10-07",
     "changes": [

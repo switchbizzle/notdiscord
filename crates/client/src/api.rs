@@ -404,6 +404,13 @@ pub struct Settings {
     /// back. See `share_audio_device`.
     #[serde(default)]
     pub share_audio: bool,
+    /// Bits per second for the shared audio track. Its own number because
+    /// it is its own track: the microphone stays on speech settings while
+    /// this carries music (Jon). Opus is transparent well below the top of
+    /// this range, but the headroom costs almost nothing next to a screen
+    /// share measured in megabits.
+    #[serde(default = "default_share_audio_bitrate")]
+    pub share_audio_bitrate: u32,
     /// Which output to listen in on. None means the system default. A
     /// producer wanting to share a mix picks their interface here and leaves
     /// the call playing somewhere else, which is also what keeps it clean.
@@ -446,6 +453,10 @@ fn default_ptt_key() -> String {
 
 /// Deliberately not F9: a different default from push-to-talk, so turning
 /// the mute hotkey on can never bind both jobs to one key.
+fn default_share_audio_bitrate() -> u32 {
+    320_000
+}
+
 fn default_mute_key() -> String {
     "F10".into()
 }
@@ -524,6 +535,7 @@ pub fn load_settings() -> Settings {
             ping_toasts: true,
             voice_join_sounds: true,
             close_to_tray: true,
+            share_audio_bitrate: default_share_audio_bitrate(),
             ..Default::default()
         })
 }

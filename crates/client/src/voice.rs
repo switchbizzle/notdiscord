@@ -639,11 +639,12 @@ fn to_stereo(data: &[i16], channels: usize, out: &mut Vec<i16>) {
 /// (which pumps exactly the dynamics a mix is made of), and no voice gate
 /// (which would drop quiet intros entirely). DTX and RED go too: DTX stops
 /// transmitting through passages it reads as silence, and RED spends
-/// bitrate on redundancy. 128kbps stereo Opus, the same settings the music
-/// bot has been using.
+/// bitrate on redundancy. Stereo Opus at whatever the setting says, which
+/// is otherwise the same shape the music bot has been using.
 async fn publish_share_audio(
     room: &Room,
     preferred: Option<String>,
+    bitrate: u32,
     mut status: VoiceStatusSignal,
 ) -> anyhow::Result<(ShareAudio, livekit::id::TrackSid)> {
     let (device, config) =
@@ -669,7 +670,7 @@ async fn publish_share_audio(
             LocalTrack::Audio(track),
             TrackPublishOptions {
                 source: TrackSource::ScreenshareAudio,
-                audio_encoding: Some(AudioEncoding { max_bitrate: 128_000 }),
+                audio_encoding: Some(AudioEncoding { max_bitrate: bitrate as u64 }),
                 dtx: false,
                 red: false,
                 ..Default::default()
@@ -1287,6 +1288,7 @@ pub async fn voice_task(
                                         match publish_share_audio(
                                             &active.room,
                                             settings.share_audio_device.clone(),
+                                            settings.share_audio_bitrate,
                                             status,
                                         )
                                         .await
