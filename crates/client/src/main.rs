@@ -2193,6 +2193,13 @@ fn MainView(session: api::Session) -> Element {
                                     session.set(s);
                                 }
                             }
+                            ServerEvent::UserBanChanged { user_id, banned } => {
+                                if let Some(m) =
+                                    members.write().iter_mut().find(|m| m.user.id == user_id)
+                                {
+                                    m.banned = banned;
+                                }
+                            }
                             ServerEvent::PresenceChanged { user, online } => {
                                 let mut list = members.write();
                                 match list.iter_mut().find(|m| m.user.id == user.id) {
@@ -6778,7 +6785,10 @@ fn MainView(session: api::Session) -> Element {
                         }
                     }
                 } else {
-                for member in members() {
+                // Banned people are off the roster. They stay in Server
+                // settings -> Roles & members, which is where an admin goes
+                // to undo it.
+                for member in members().into_iter().filter(|m| !m.banned) {
                     div {
                         key: "{member.user.id}",
                         class: if member.online { "member online" } else { "member" },

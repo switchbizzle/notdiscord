@@ -1050,6 +1050,10 @@ pub enum ServerEvent {
     PresenceChanged { user: User, online: bool },
     /// A user's profile (avatar/name) changed.
     UserUpdated { user: User },
+    /// Someone was banned or unbanned. Separate from UserUpdated because
+    /// `User` carries no ban flag — it is embedded in every message, and the
+    /// roster is the only place the flag belongs.
+    UserBanChanged { user_id: i64, banned: bool },
     Typing { channel_id: i64, user: User },
     ReactionAdded { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },

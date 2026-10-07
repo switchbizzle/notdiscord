@@ -2012,6 +2012,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     m.user = user;
                                 }
                             }
+                            ServerEvent::UserBanChanged { user_id, banned } => {
+                                if let Some(m) =
+                                    members.write().iter_mut().find(|m| m.user.id == user_id)
+                                {
+                                    m.banned = banned;
+                                }
+                            }
                             ServerEvent::VoiceSnapshot { entries } => {
                                 voice_users.set(entries.into_iter().map(|e| (e.user.id, e.channel_id)).collect());
                             }
@@ -2478,7 +2485,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // DM as "mentions: 1" whether or not you have read it, so on its own
     // that number would keep the tab lit after every DM was read.
     let any_mention = unread().values().any(|(count, mentions, _)| *count > 0 && *mentions > 0);
-    let online_now = members().iter().filter(|m| m.online).count();
+    let online_now = members().iter().filter(|m| m.online && !m.banned).count();
     let upload_percent = (upload_pct() * 100.0).round() as i64;
     // DMs newest-first: the conversation you're actually having belongs at
     // the top, which is what `last_at` is for.
@@ -3158,7 +3165,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
 
                             div { class: "section-label", style: "padding: 22px 2px 8px", "Members" }
-                            for member in members() {
+                            for member in members().into_iter().filter(|m| !m.banned) {
                                 {
                                     let colour = name_color(member.user.id, &members(), &tags());
                                     let sub = presence_line(member.online, &member.presence, member.status.clone());
@@ -4812,7 +4819,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             span { class: "sheet-title", "Members" }
                             span { class: "sheet-note", "{members().len()} · {online_now} online" }
                         }
-                        for member in members() {
+                        for member in members().into_iter().filter(|m| !m.banned) {
                             {
                                 let colour = name_color(member.user.id, &members(), &tags());
                                 let sub = presence_line(member.online, &member.presence, member.status.clone());

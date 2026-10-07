@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.98.9",
+    "date": "2026-10-07",
+    "changes": [
+      "🚫 Banning someone now actually removes them (switchb banned somebody and kept seeing them). Two things were wrong and they covered for each other: the member list never filtered banned people out, so even a reload still showed them, and the event the server sends when you ban someone carries no ban flag — it is the same event used for a name or avatar change, and that one is attached to every message, so the flag has never belonged on it. There is a proper event for it now, and both apps act on it the moment it arrives",
+      "They stay listed in Server settings → Roles & members, which is where you go to undo it"
+    ]
+  },
+  {
     "version": "0.98.8",
     "date": "2026-10-07",
     "changes": [

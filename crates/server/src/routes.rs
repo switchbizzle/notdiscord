@@ -671,6 +671,9 @@ pub async fn set_ban(
     }
     let updated = load_user(&state, target_id).await?;
     state.broadcast(ServerEvent::UserUpdated { user: updated.clone() });
+    // The roster keeps the ban flag and UserUpdated cannot carry it, so
+    // without this a ban only took effect on the next reload.
+    state.broadcast(ServerEvent::UserBanChanged { user_id: target_id, banned: req.banned });
     Ok(Json(updated))
 }
 
