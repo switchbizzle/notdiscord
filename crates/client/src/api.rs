@@ -404,6 +404,17 @@ pub struct Settings {
     /// back. See `share_audio_device`.
     #[serde(default)]
     pub share_audio: bool,
+    /// Frames per second for a screen share. 15 keeps text sharp (a shared
+    /// editor is nearly a still image); 60 is for things that move. It also
+    /// decides what gives first when the link can't keep up — see
+    /// `share_degradation`.
+    #[serde(default = "default_share_fps")]
+    pub share_fps: u32,
+    /// Tallest the encoder is allowed to aim at. Lower it to spend the link
+    /// on frames instead of pixels, or to spare a CPU: this is software VP8,
+    /// and 1440p60 is a great deal of it.
+    #[serde(default = "default_share_max_height")]
+    pub share_max_height: u32,
     /// Bits per second for the shared audio track. Its own number because
     /// it is its own track: the microphone stays on speech settings while
     /// this carries music (Jon). Opus is transparent well below the top of
@@ -455,6 +466,17 @@ fn default_ptt_key() -> String {
 /// the mute hotkey on can never bind both jobs to one key.
 fn default_share_audio_bitrate() -> u32 {
     320_000
+}
+
+/// 15, which is what every share has been until now: it was chosen by
+/// measurement for readable text, so it stays the default rather than
+/// everyone silently getting something different.
+fn default_share_fps() -> u32 {
+    15
+}
+
+fn default_share_max_height() -> u32 {
+    1440
 }
 
 fn default_mute_key() -> String {
@@ -536,6 +558,8 @@ pub fn load_settings() -> Settings {
             voice_join_sounds: true,
             close_to_tray: true,
             share_audio_bitrate: default_share_audio_bitrate(),
+            share_fps: default_share_fps(),
+            share_max_height: default_share_max_height(),
             ..Default::default()
         })
 }

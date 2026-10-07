@@ -63,18 +63,20 @@ pub struct VoiceStatus {
 
 /// What to tell the encoder it is working on, given the screen's real size.
 ///
-/// Anything up to 1440p is declared as-is. Above that we aim at 1440p: a 4K
-/// desktop encoded at 4K costs more CPU and uplink than a home machine
-/// reliably has, and the failure mode there (dropped frames) is worse than a
-/// slight downscale. Aspect ratio is preserved so an ultrawide isn't squashed.
-fn share_encode_size((width, height): (u32, u32)) -> (u32, u32) {
-    const MAX_HEIGHT: u32 = 1440;
-    if height <= MAX_HEIGHT || height == 0 {
+/// Anything at or under the chosen cap is declared as-is; above it we aim at
+/// the cap. A 4K desktop encoded at 4K costs more CPU and uplink than a home
+/// machine reliably has, and the failure mode there (dropped frames) is worse
+/// than a slight downscale. Aspect ratio is preserved so an ultrawide isn't
+/// squashed. The cap is a setting because the right answer depends on what is
+/// on the screen (Jon).
+fn share_encode_size((width, height): (u32, u32), max_height: u32) -> (u32, u32) {
+    let max_height = max_height.clamp(240, 2160);
+    if height <= max_height || height == 0 {
         return (width.max(1), height.max(1));
     }
-    let scaled_w = (u64::from(width) * u64::from(MAX_HEIGHT) / u64::from(height)) as u32;
+    let scaled_w = (u64::from(width) * u64::from(max_height) / u64::from(height)) as u32;
     // Encoders want even dimensions.
-    ((scaled_w & !1).max(2), MAX_HEIGHT)
+    ((scaled_w & !1).max(2), max_height)
 }
 
 /// Bitrate ceiling for a screen share of the given size.
@@ -83,15 +85,49 @@ fn share_encode_size((width, height): (u32, u32)) -> (u32, u32) {
 /// because those are tuned for a desktop in motion and this is usually
 /// somebody's editor. A ceiling is not a promise: congestion control still
 /// spends less when the link can't carry it.
-fn screen_share_bitrate(width: u32, height: u32) -> u64 {
+fn screen_share_bitrate(width: u32, height: u32, fps: u32) -> u64 {
     let pixels = u64::from(width) * u64::from(height);
-    match pixels {
+    let base: u64 = match pixels {
         // Up to 1080p
         0..=2_100_000 => 5_000_000,
         // Up to 1440p
         2_100_001..=3_700_000 => 8_000_000,
         // 4K and beyond
         _ => 12_000_000,
+    };
+    // Twice the frames is not twice the bits — consecutive frames are more
+    // alike the faster you sample, so the codec spends less on each. These
+    // are the usual broadcast ratios, and they land 1080p60 near the 7-9Mbps
+    // Jon put it at. Capped at 20Mbps, which is about what a good home
+    // upload actually sustains; above that the ceiling is fiction.
+    let scaled = base * u64::from(fps_bitrate_pct(fps)) / 100;
+    scaled.min(20_000_000)
+}
+
+/// Bitrate as a percentage of the 15fps figure.
+fn fps_bitrate_pct(fps: u32) -> u32 {
+    match fps {
+        0..=15 => 100,
+        16..=30 => 140,
+        _ => 200,
+    }
+}
+
+/// What gives first when the link cannot carry the whole picture.
+///
+/// Naming to be careful with: by the WebRTC spec, MaintainResolution keeps
+/// the pixels and drops frames, and MaintainFramerate does the reverse.
+/// (The doc comments on the enum in libwebrtc read the other way round; the
+/// spec, and the SDK's own choice of MaintainResolution as the screenshare
+/// default, are what these follow.) So someone sharing an editor keeps their
+/// text legible and loses motion, and someone sharing a game keeps it smooth
+/// and loses a little sharpness — which is exactly what picking 60 means.
+fn share_degradation(fps: u32) -> livekit::options::DegradationPreference {
+    use livekit::options::DegradationPreference;
+    if fps >= 60 {
+        DegradationPreference::MaintainFramerate
+    } else {
+        DegradationPreference::MaintainResolution
     }
 }
 
@@ -378,42 +414,90 @@ mod share_quality_tests {
     fn bitrate_follows_the_screen_being_shared() {
         // The point of the change: a bigger screen is not encoded as if it
         // were 1080p, which is what the hardcoded source resolution caused.
-        let hd = screen_share_bitrate(1920, 1080);
-        let qhd = screen_share_bitrate(2560, 1440);
-        let uhd = screen_share_bitrate(3840, 2160);
+        let hd = screen_share_bitrate(1920, 1080, 15);
+        let qhd = screen_share_bitrate(2560, 1440, 15);
+        let uhd = screen_share_bitrate(3840, 2160, 15);
         assert!(hd < qhd && qhd < uhd, "more pixels should get more bits");
         // And every tier clears the library's own 1080p30 screenshare preset,
         // which is 3 Mbps and the ceiling we were living under.
         assert!(hd > 3_000_000, "1080p should beat the old default");
 
         // Odd shapes still land somewhere sensible rather than panicking.
-        assert_eq!(screen_share_bitrate(1280, 720), hd, "smaller than 1080p uses the same tier");
-        assert_eq!(screen_share_bitrate(0, 0), hd, "a zero size falls in the lowest tier");
-        assert_eq!(screen_share_bitrate(5120, 2880), uhd, "5K lands in the top tier");
+        assert_eq!(screen_share_bitrate(1280, 720, 15), hd, "smaller than 1080p uses the same tier");
+        assert_eq!(screen_share_bitrate(0, 0, 15), hd, "a zero size falls in the lowest tier");
+        assert_eq!(screen_share_bitrate(5120, 2880, 15), uhd, "5K lands in the top tier");
         // An ultrawide has 1440p's height but far more pixels; it should be
         // treated by area, not by height.
-        assert!(screen_share_bitrate(3440, 1440) >= qhd);
+        assert!(screen_share_bitrate(3440, 1440, 15) >= qhd);
+    }
+
+    #[test]
+    fn a_faster_share_gets_more_bits_but_not_proportionally() {
+        let slow = screen_share_bitrate(1920, 1080, 15);
+        let mid = screen_share_bitrate(1920, 1080, 30);
+        let fast = screen_share_bitrate(1920, 1080, 60);
+        assert!(slow < mid && mid < fast, "more frames need more bits");
+        // Four times the frames must not cost four times the link: the
+        // frames are more alike the faster you sample them.
+        assert!(fast < slow * 4, "bitrate should not scale with the frame count");
+        // And it lands where broadcast practice puts 1080p60.
+        assert!(
+            (7_000_000..=11_000_000).contains(&fast),
+            "1080p60 came out at {fast}, which is nowhere near the usual 7-9 Mbps"
+        );
+    }
+
+    #[test]
+    fn the_ceiling_stays_inside_a_real_home_upload() {
+        // 4K at 60 would ask for 24 Mbps unclamped, which no home link
+        // sustains; a ceiling nobody can reach is just a lie to the encoder.
+        assert_eq!(screen_share_bitrate(3840, 2160, 60), 20_000_000);
+    }
+
+    #[test]
+    fn what_gives_first_follows_the_rate_you_asked_for() {
+        use livekit::options::DegradationPreference;
+        // Sharing an editor: keep the pixels, drop frames.
+        assert_eq!(share_degradation(15), DegradationPreference::MaintainResolution);
+        assert_eq!(share_degradation(30), DegradationPreference::MaintainResolution);
+        // Sharing something that moves: keep it smooth, lose a little detail.
+        assert_eq!(share_degradation(60), DegradationPreference::MaintainFramerate);
+    }
+
+    #[test]
+    fn the_resolution_cap_is_whatever_was_chosen() {
+        // 720p cap on a 1440p screen: aimed down, aspect kept.
+        let (w, h) = share_encode_size((2560, 1440), 720);
+        assert_eq!(h, 720);
+        assert_eq!(w, 1280, "16:9 should stay 16:9");
+        // Already under the cap: untouched, not upscaled.
+        assert_eq!(share_encode_size((1280, 720), 1440), (1280, 720));
+        // An ultrawide keeps its shape on the way down.
+        let (uw, uh) = share_encode_size((3440, 1440), 1080);
+        assert_eq!(uh, 1080);
+        assert!((uw as f64 / uh as f64 - 3440.0 / 1440.0).abs() < 0.01);
+        assert_eq!(uw % 2, 0, "encoders want even dimensions");
     }
 
     #[test]
     fn a_4k_screen_is_aimed_at_1440p_without_squashing_it() {
         // Below the cap, left exactly alone.
-        assert_eq!(share_encode_size((1920, 1080)), (1920, 1080));
-        assert_eq!(share_encode_size((2560, 1440)), (2560, 1440));
+        assert_eq!(share_encode_size((1920, 1080), 1440), (1920, 1080));
+        assert_eq!(share_encode_size((2560, 1440), 1440), (2560, 1440));
 
         // 4K comes down to 1440p and keeps 16:9.
-        let (w, h) = share_encode_size((3840, 2160));
+        let (w, h) = share_encode_size((3840, 2160), 1440);
         assert_eq!(h, 1440);
         assert_eq!(w, 2560);
 
         // An ultrawide keeps its shape rather than being squeezed to 16:9.
-        let (uw, uh) = share_encode_size((5120, 2160));
+        let (uw, uh) = share_encode_size((5120, 2160), 1440);
         assert_eq!(uh, 1440);
         assert!((uw as f32 / uh as f32 - 5120.0 / 2160.0).abs() < 0.01, "aspect kept");
 
         // Even dimensions, and a zero height can't divide by zero.
-        assert_eq!(share_encode_size((3441, 2161)).0 % 2, 0);
-        assert_eq!(share_encode_size((0, 0)), (1, 1));
+        assert_eq!(share_encode_size((3441, 2161), 1440).0 % 2, 0);
+        assert_eq!(share_encode_size((0, 0), 1440), (1, 1));
     }
 
     /// Depends on the machine's actual display, so it is not part of the
@@ -424,7 +508,7 @@ mod share_quality_tests {
     fn the_declared_size_is_the_real_screen() {
         let size = crate::share::target_size(&crate::share::ShareTarget::PrimaryMonitor);
         let (w, h) = size.expect("this machine has a primary monitor");
-        println!("primary monitor {w}x{h} -> {} bps", screen_share_bitrate(w, h));
+        println!("primary monitor {w}x{h} -> {} bps", screen_share_bitrate(w, h, 15));
         assert!(w > 0 && h > 0);
     }
 }
@@ -1199,8 +1283,11 @@ pub async fn voice_task(
                         // 4K text in software is heavy enough to cost frames,
                         // and 1440p is already far more readable than the
                         // 1080p everyone was silently getting.
+                        let quality = crate::api::load_settings();
+                        let fps = quality.share_fps.clamp(1, 120);
                         let (cap_w, cap_h) = share_encode_size(
                             crate::share::target_size(&target).unwrap_or((1920, 1080)),
+                            quality.share_max_height,
                         );
                         let source = NativeVideoSource::new(
                             VideoResolution { width: cap_w, height: cap_h },
@@ -1221,17 +1308,17 @@ pub async fn voice_task(
                                     // stop at 3 Mbps for 1080p30, which is
                                     // thin for a screen full of code: text is
                                     // the hardest thing a video codec does.
-                                    // Buy sharpness with the framerate — a
-                                    // shared editor is nearly a still image,
-                                    // and 15fps of readable text beats 30 of
-                                    // mush. Congestion costs frames, not
-                                    // pixels, because the SDK already
-                                    // defaults screenshare to
-                                    // MaintainResolution.
+                                    // 15fps of readable text beats 30 of
+                                    // mush for a shared editor, which is why
+                                    // that is still the default — but a game
+                                    // wants the opposite trade, so both the
+                                    // rate and what congestion takes first
+                                    // are the sharer's to choose now.
                                     video_encoding: Some(VideoEncoding {
-                                        max_bitrate: screen_share_bitrate(cap_w, cap_h),
-                                        max_framerate: 15.0,
+                                        max_bitrate: screen_share_bitrate(cap_w, cap_h, fps),
+                                        max_framerate: f64::from(fps),
                                     }),
+                                    degradation_preference: Some(share_degradation(fps)),
                                     ..Default::default()
                                 },
                             )
@@ -1270,7 +1357,7 @@ pub async fn voice_task(
                                         }
                                     });
                                 }
-                                match crate::share::start_capture(source, target, preview, closed) {
+                                match crate::share::start_capture(source, target, preview, closed, fps) {
                                 Ok(control) => {
                                     active.share = Some((control, publication.sid()));
                                     {

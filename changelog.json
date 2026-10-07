@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.99.3",
+    "date": "2026-10-07",
+    "changes": [
+      "🖥️ Screen share quality is yours to set (Jon). Settings → Voice has resolution (720p / 1080p / 1440p) and frame rate (15 / 30 / 60). Both default to what shares have always done — 1440p at 15 — because that was picked by measurement for readable text, and nothing changes unless you change it",
+      "The frame rate also decides what gives when the link gets tight: at 15 or 30 it holds the picture sharp and drops frames, which is what you want for code; at 60 it holds the motion and softens the picture, which is what you want for a game. The setting says which it is doing, and warns you when 1440p at 60 is more software encoding than a machine will enjoy",
+      "Bitrate follows both now instead of pixels alone — 1080p60 asks for about 10Mbps where 1080p15 asked for 5 — capped at 20Mbps, since a ceiling no home upload can reach is just a lie to the encoder",
+      "And a real bug behind all of it: the capture itself was pinned at 30fps regardless, so even asking for more could never have worked"
+    ]
+  },
+  {
     "version": "0.99.2",
     "date": "2026-10-07",
     "changes": [

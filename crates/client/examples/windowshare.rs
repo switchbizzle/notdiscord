@@ -49,6 +49,7 @@ async fn main() {
         share::ShareTarget::Window(target.hwnd),
         preview,
         closed.clone(),
+        30,
     ) {
         Ok(c) => c,
         Err(e) => {
@@ -95,7 +96,7 @@ async fn main() {
     // Stale-hwnd path: starting a capture of the now-dead window must fail
     // with a message, not panic.
     let source2 = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
-    match share::start_capture(source2, share::ShareTarget::Window(target.hwnd), None, Arc::new(AtomicBool::new(false))) {
+    match share::start_capture(source2, share::ShareTarget::Window(target.hwnd), None, Arc::new(AtomicBool::new(false)), 30) {
         Err(e) => println!("stale window refused cleanly: \"{e}\""),
         Ok(c) => {
             println!("FAIL: capture of a dead window started");

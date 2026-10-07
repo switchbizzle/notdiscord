@@ -3187,6 +3187,68 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     }
                                 }
+                                label { "Screen share \u{2014} resolution" }
+                                select {
+                                    onchange: move |e| {
+                                        if let Ok(v) = e.value().parse::<u32>() {
+                                            let mut s = audio_settings.write();
+                                            s.share_max_height = v;
+                                            api::save_settings(&s);
+                                        }
+                                    },
+                                    for (h, label) in [
+                                        (720u32, "720p \u{2014} kindest to a slow upload"),
+                                        (1080u32, "1080p \u{2014} the usual"),
+                                        (1440u32, "1440p \u{2014} sharpest, heaviest"),
+                                    ] {
+                                        option {
+                                            value: "{h}",
+                                            selected: audio_settings().share_max_height == h,
+                                            "{label}"
+                                        }
+                                    }
+                                }
+                                label { "Screen share \u{2014} frame rate" }
+                                select {
+                                    onchange: move |e| {
+                                        if let Ok(v) = e.value().parse::<u32>() {
+                                            let mut s = audio_settings.write();
+                                            s.share_fps = v;
+                                            api::save_settings(&s);
+                                        }
+                                    },
+                                    for (f, label) in [
+                                        (15u32, "15 \u{2014} sharpest text, for code and docs"),
+                                        (30u32, "30 \u{2014} in between"),
+                                        (60u32, "60 \u{2014} smoothest, for games and video"),
+                                    ] {
+                                        option {
+                                            value: "{f}",
+                                            selected: audio_settings().share_fps == f,
+                                            "{label}"
+                                        }
+                                    }
+                                }
+                                {
+                                    // The rate decides what congestion takes
+                                    // first, which is the part people are
+                                    // surprised by, so it is spelled out.
+                                    let fps = audio_settings().share_fps;
+                                    let h = audio_settings().share_max_height;
+                                    let heavy = fps >= 60 && h >= 1440;
+                                    rsx! {
+                                        div {
+                                            class: if heavy { "settings-hint pw-bad" } else { "settings-hint" },
+                                            if heavy {
+                                                "1440p at 60 is a lot of software encoding \u{2014} if your fans spin up or the share stutters, drop one of them"
+                                            } else if fps >= 60 {
+                                                "When the link is tight this keeps it smooth and softens the picture"
+                                            } else {
+                                                "When the link is tight this keeps the picture sharp and drops frames"
+                                            }
+                                        }
+                                    }
+                                }
                                 // A toggle, not a hold: press once to go
                                 // quiet, again to come back. Flips the same
                                 // mute the mic button does, so the two can

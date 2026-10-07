@@ -39,6 +39,8 @@ pub struct CaptureFlags {
     pub preview: Option<SelfShare>,
     /// Set when the capture ends on its own (the shared window closed).
     pub closed: Arc<std::sync::atomic::AtomicBool>,
+    /// Shortest gap between forwarded frames, from the frame-rate setting.
+    pub min_gap: std::time::Duration,
 }
 
 pub struct Capturer {
@@ -46,6 +48,10 @@ pub struct Capturer {
     preview: Option<SelfShare>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     scratch: Vec<u8>,
+    /// Shortest gap between frames we will forward — the frame rate, as a
+    /// duration. Was a hardcoded 33ms, which quietly capped every share at
+    /// 30fps however fast the encoder was told it could go.
+    min_gap: std::time::Duration,
     last: std::time::Instant,
     last_preview: std::time::Instant,
 }
@@ -63,6 +69,7 @@ impl GraphicsCaptureApiHandler for Capturer {
             preview: ctx.flags.preview,
             closed: ctx.flags.closed,
             scratch: Vec::new(),
+            min_gap: ctx.flags.min_gap,
             last: long_ago,
             last_preview: long_ago,
         })
@@ -78,8 +85,7 @@ impl GraphicsCaptureApiHandler for Capturer {
         frame: &mut Frame,
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
-        // ~30fps cap.
-        if self.last.elapsed() < std::time::Duration::from_millis(33) {
+        if self.last.elapsed() < self.min_gap {
             return Ok(());
         }
         self.last = std::time::Instant::now();
@@ -325,8 +331,12 @@ pub fn start_capture(
     target: ShareTarget,
     preview: Option<SelfShare>,
     closed: Arc<std::sync::atomic::AtomicBool>,
+    fps: u32,
 ) -> Result<ShareControl, String> {
-    let flags = CaptureFlags { source, preview, closed };
+    // A hair under the exact period: frames do not arrive on a perfect clock,
+    // and insisting on the full gap drops every other one.
+    let min_gap = std::time::Duration::from_micros(1_000_000 / fps.clamp(1, 120) as u64 * 9 / 10);
+    let flags = CaptureFlags { source, preview, closed, min_gap };
     macro_rules! settings {
         ($item:expr) => {
             Settings::new(
