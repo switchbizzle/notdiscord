@@ -1414,6 +1414,9 @@ fn MainView(session: api::Session) -> Element {
     });
     // A person is a person wherever they turn up, so the member list and the
     // voice roster offer the same menu.
+    // A call we have placed and are waiting on: (channel, who). Declared
+    // here because the member menu below places calls by writing to it.
+    let mut calling = use_signal(|| None::<(i64, String)>);
     let member_items = move |user: User, banned: bool, is_admin: bool| -> Vec<menu::Item> {
         let me = session().user.id;
         let mut items = vec![menu::item("View profile", "user", {
@@ -1432,7 +1435,7 @@ fn MainView(session: api::Session) -> Element {
             items.push(menu::item("Call", "phone", {
                 let (id, name) = (user.id, user.username.clone());
                 move || {
-                    call_user(session(), id, name.clone(), voice, channels, status);
+                    call_user(session(), id, name.clone(), channels, status, calling);
                 }
             }));
             items.push(menu::item("Message", "message", {
@@ -2301,6 +2304,66 @@ fn MainView(session: api::Session) -> Element {
                                 }
                                 voice_rosters.set(map);
                             }
+                            ServerEvent::CallSignal { channel_id, from, action } => {
+                                let me = session().user.id;
+                                match action {
+                                    // Somebody is calling. Their own echo of
+                                    // their own ring is not an incoming call.
+                                    shared::RingAction::Ring if from.id != me => {
+                                        if voice_status().channel_id != Some(channel_id) {
+                                            incoming_call.set(Some((channel_id, from)));
+                                            if audio_settings().notification_sounds {
+                                                play_ring_sound();
+                                            }
+                                        }
+                                    }
+                                    // Answered: now there is someone to join.
+                                    shared::RingAction::Answer => {
+                                        if from.id != me
+                                            && calling().is_some_and(|(c, _)| c == channel_id)
+                                        {
+                                            let name = calling()
+                                                .map(|(_, n)| n)
+                                                .unwrap_or_else(|| from.username.clone());
+                                            calling.set(None);
+                                            spawn(async move {
+                                                match api::voice_token(&session(), channel_id).await {
+                                                    Ok(grant) => voice.send(voice::VoiceCmd::Join {
+                                                        channel_id,
+                                                        channel_name: format!("@{name}"),
+                                                        url: grant.url,
+                                                        token: grant.token,
+                                                    }),
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        } else if from.id == me {
+                                            // Another of my devices picked up.
+                                            incoming_call.set(None);
+                                        }
+                                    }
+                                    shared::RingAction::Decline => {
+                                        if calling().is_some_and(|(c, _)| c == channel_id) {
+                                            calling.set(None);
+                                            status.set(format!("{} declined", from.username));
+                                        }
+                                        if from.id == me {
+                                            incoming_call.set(None);
+                                        }
+                                    }
+                                    shared::RingAction::Cancel => {
+                                        if incoming_call().is_some_and(|(c, _)| c == channel_id) {
+                                            incoming_call.set(None);
+                                        }
+                                        if from.id == me
+                                            && calling().is_some_and(|(c, _)| c == channel_id)
+                                        {
+                                            calling.set(None);
+                                        }
+                                    }
+                                    shared::RingAction::Ring => {}
+                                }
+                            }
                             ServerEvent::VoiceStateChanged { user, channel_id, sharing, camera } => {
                                 {
                                     let mut map = voice_rosters.write();
@@ -2468,6 +2531,24 @@ fn MainView(session: api::Session) -> Element {
     // Announce our own voice channel over the chat WebSocket whenever it
     // changes, so everyone's sidebar shows who's in voice.
     let mut announced_voice = use_signal(|| (None::<i64>, false, false));
+    // Placing a call is a signal, not a join. Sent from an effect so the ring
+    // goes out once per call rather than once per render.
+    {
+        let mut rang_for = use_signal(|| None::<i64>);
+        use_effect(move || {
+            let now = calling().map(|(c, _)| c);
+            if *rang_for.peek() == now {
+                return;
+            }
+            rang_for.set(now);
+            if let Some(channel_id) = now {
+                ws.send(ClientEvent::CallSignal {
+                    channel_id,
+                    action: shared::RingAction::Ring,
+                });
+            }
+        });
+    }
     use_effect(move || {
         let current = voice_status().channel_id.filter(|_| !voice_status().connecting);
         let sharing = voice_status().sharing_self;
@@ -3568,6 +3649,12 @@ fn MainView(session: api::Session) -> Element {
                             let caller_name = caller.username.clone();
                             move |_| {
                                 incoming_call.set(None);
+                                // Tell them before connecting: the caller is
+                                // not in the room yet and is waiting on this.
+                                ws.send(ClientEvent::CallSignal {
+                                    channel_id: call_channel,
+                                    action: shared::RingAction::Answer,
+                                });
                                 let caller_name = caller_name.clone();
                                 spawn(async move {
                                     match api::voice_token(&session(), call_channel).await {
@@ -3582,12 +3669,37 @@ fn MainView(session: api::Session) -> Element {
                                 });
                             }
                         },
-                        "Join"
+                        "Answer"
                     }
                     button {
                         class: "profile-btn",
-                        onclick: move |_| incoming_call.set(None),
-                        "Ignore"
+                        onclick: move |_| {
+                            incoming_call.set(None);
+                            ws.send(ClientEvent::CallSignal {
+                                channel_id: call_channel,
+                                action: shared::RingAction::Decline,
+                            });
+                        },
+                        "Decline"
+                    }
+                }
+            }
+            if let Some((ring_channel, who)) = calling() {
+                div { class: "incoming-call",
+                    div { class: "incoming-call-text",
+                        span { class: "incoming-call-name", "{who}" }
+                        span { class: "incoming-call-sub", "ringing\u{2026}" }
+                    }
+                    button {
+                        class: "profile-btn",
+                        onclick: move |_| {
+                            calling.set(None);
+                            ws.send(ClientEvent::CallSignal {
+                                channel_id: ring_channel,
+                                action: shared::RingAction::Cancel,
+                            });
+                        },
+                        "Cancel"
                     }
                 }
             }
@@ -4806,7 +4918,7 @@ fn MainView(session: api::Session) -> Element {
                                             profile_card.set(None);
                                             call_user(
                                                 session(), id, name.clone(),
-                                                voice, channels, status,
+                                                channels, status, calling,
                                             );
                                         }
                                     },
@@ -5917,17 +6029,20 @@ fn MainView(session: api::Session) -> Element {
                             class: "call-btn",
                             title: "Start a voice call",
                             onclick: move |_| {
+                                // Same as calling from the member list: ring,
+                                // and wait to be let in. The DM already
+                                // exists here, so there is nothing to create.
                                 let Some(channel) = selected() else { return };
                                 let peer = dm_peer_name(&channel, session().user.id);
+                                calling.set(Some((channel.id, peer)));
+                                let channel_id = channel.id;
+                                let mut calling = calling;
+                                let mut status = status;
                                 spawn(async move {
-                                    match api::voice_token(&session(), channel.id).await {
-                                        Ok(grant) => voice.send(voice::VoiceCmd::Join {
-                                            channel_id: channel.id,
-                                            channel_name: format!("@{peer}"),
-                                            url: grant.url,
-                                            token: grant.token,
-                                        }),
-                                        Err(e) => status.set(e),
+                                    gloo_timers_sleep(shared::RING_TIMEOUT_MS as u32).await;
+                                    if calling.peek().as_ref().is_some_and(|(c, _)| *c == channel_id) {
+                                        calling.set(None);
+                                        status.set("no answer".into());
                                     }
                                 });
                             },
@@ -7375,9 +7490,9 @@ fn call_user(
     session: api::Session,
     user_id: i64,
     peer: String,
-    voice: Coroutine<voice::VoiceCmd>,
     mut channels: Signal<Vec<shared::Channel>>,
     mut status: Signal<String>,
+    mut calling: Signal<Option<(i64, String)>>,
 ) {
     spawn(async move {
         let channel = match api::create_dm(&session, user_id).await {
@@ -7388,16 +7503,29 @@ fn call_user(
         if !channels.peek().iter().any(|c| c.id == channel.id) {
             channels.write().push(channel.clone());
         }
-        match api::voice_token(&session, channel.id).await {
-            Ok(grant) => voice.send(voice::VoiceCmd::Join {
-                channel_id: channel.id,
-                channel_name: format!("@{peer}"),
-                url: grant.url,
-                token: grant.token,
-            }),
-            Err(e) => status.set(e),
-        }
+        // Ring, and wait. Joining here is what used to make this "a call"
+        // from the caller's side and a fait accompli from the other's.
+        // Setting this IS placing the call: an effect alongside the socket
+        // turns it into a ring. Done this way because the member menu is
+        // built before the socket exists, and a menu item should not have to
+        // care where in the file its coroutine was declared.
+        calling.set(Some((channel.id, peer)));
+        // Nobody rings forever at an empty chair.
+        let channel_id = channel.id;
+        spawn(async move {
+            gloo_timers_sleep(shared::RING_TIMEOUT_MS as u32).await;
+            if calling.peek().as_ref().is_some_and(|(c, _)| *c == channel_id) {
+                calling.set(None);
+                status.set("no answer".into());
+            }
+        });
     });
+}
+
+/// Sleep inside the desktop client's runtime. Named for what it does rather
+/// than where it came from, so the call sites read the same in both apps.
+async fn gloo_timers_sleep(ms: u32) {
+    tokio::time::sleep(std::time::Duration::from_millis(u64::from(ms))).await;
 }
 
 /// Really exit (closing the window only hides to the tray). Returns `()` so it

@@ -1309,6 +1309,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // doubles as its own voice room, so a call is a join, and the desktop
     // has rung off exactly this event since v0.20.0.
     let mut incoming_call = use_signal(|| None::<(i64, User)>);
+    // A call we have placed and are waiting on.
+    let mut calling = use_signal(|| None::<i64>);
+    // Set when they pick up: the join happens next to join_voice itself.
+    let mut answered = use_signal(|| None::<i64>);
     // What the volume sliders draw. LiveKit holds the real gain; without
     // this the slider would snap back to 100 on every re-render.
     let mut volumes = use_signal(HashMap::<String, i64>::new);
@@ -2050,6 +2054,53 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     m.kicked = kicked;
                                 }
                             }
+                            ServerEvent::CallSignal { channel_id, from, action } => {
+                                match action {
+                                    shared::RingAction::Ring if from.id != me_id => {
+                                        let mine = voice_conn.peek().as_ref().map(|(c, _)| *c)
+                                            == Some(channel_id);
+                                        if !mine {
+                                            incoming_call.set(Some((channel_id, from)));
+                                            buzz();
+                                        }
+                                    }
+                                    shared::RingAction::Answer => {
+                                        if from.id != me_id {
+                                            if calling.peek().is_some_and(|c| c == channel_id) {
+                                                calling.set(None);
+                                                // join_voice is defined below
+                                                // this handler, so the join is
+                                                // parked for the effect that
+                                                // sits beside it.
+                                                answered.set(Some(channel_id));
+                                            }
+                                        } else {
+                                            // Answered on another device.
+                                            incoming_call.set(None);
+                                        }
+                                    }
+                                    shared::RingAction::Decline => {
+                                        if calling.peek().is_some_and(|c| c == channel_id) {
+                                            calling.set(None);
+                                            status.set(format!("{} declined", from.username));
+                                        }
+                                        if from.id == me_id {
+                                            incoming_call.set(None);
+                                        }
+                                    }
+                                    shared::RingAction::Cancel => {
+                                        if incoming_call.peek().as_ref().is_some_and(|(c, _)| *c == channel_id) {
+                                            incoming_call.set(None);
+                                        }
+                                        if from.id == me_id
+                                            && calling.peek().is_some_and(|c| c == channel_id)
+                                        {
+                                            calling.set(None);
+                                        }
+                                    }
+                                    shared::RingAction::Ring => {}
+                                }
+                            }
                             ServerEvent::VoiceSnapshot { entries } => {
                                 voice_users.set(entries.into_iter().map(|e| (e.user.id, e.channel_id)).collect());
                             }
@@ -2265,6 +2316,16 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
             }
         });
     };
+
+    // They answered: connect now that there is somebody to connect to.
+    use_effect(move || {
+        if let Some(channel_id) = answered() {
+            answered.set(None);
+            if let Some(channel) = channels.peek().iter().find(|c| c.id == channel_id).cloned() {
+                join_voice(channel);
+            }
+        }
+    });
 
     let leave_voice = move |_| {
         spawn(async move {
@@ -3274,6 +3335,14 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                             // Already on the line: show it rather
                                             // than dialling on top of yourself.
                                             call_open.set(true);
+                                        } else if channel.kind == "dm" {
+                                            // Ring rather than walk in: the
+                                            // other end gets to answer.
+                                            calling.set(Some(channel.id));
+                                            ws.send(ClientEvent::CallSignal {
+                                                channel_id: channel.id,
+                                                action: shared::RingAction::Ring,
+                                            });
                                         } else {
                                             join_voice(channel);
                                         }
@@ -4619,7 +4688,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                     div { class: "ring-actions",
                         button {
                             class: "ring-btn",
-                            onclick: move |_| incoming_call.set(None),
+                            onclick: move |_| {
+                                incoming_call.set(None);
+                                ws.send(ClientEvent::CallSignal {
+                                    channel_id: ring_channel,
+                                    action: shared::RingAction::Decline,
+                                });
+                            },
                             span { class: "ring-circle", Icon { name: "phone-off", size: 24 } }
                             span { "Decline" }
                         }
@@ -4627,6 +4702,10 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             class: "ring-btn answer",
                             onclick: move |_| {
                                 incoming_call.set(None);
+                                ws.send(ClientEvent::CallSignal {
+                                    channel_id: ring_channel,
+                                    action: shared::RingAction::Answer,
+                                });
                                 if let Some(channel) = channels.peek().iter().find(|c| c.id == ring_channel).cloned() {
                                     join_voice(channel);
                                 }

@@ -511,6 +511,22 @@ async fn handle_event(state: &SharedState, user: &User, event: ClientEvent) -> a
         }
         // Handled at the connection level in handle_socket.
         ClientEvent::VoiceState { .. } | ClientEvent::MusicControl { .. } => {}
+        ClientEvent::CallSignal { channel_id, action } => {
+            // Only inside a DM you are part of. Ringing someone through a
+            // channel you cannot see would be a way to bother strangers.
+            let Some(members) = crate::dm_recipients(&state.db, channel_id).await? else {
+                return Ok(());
+            };
+            if !members.contains(&user.id) {
+                return Ok(());
+            }
+            // Everyone in the DM including the sender: their own other
+            // devices need to stop ringing once one of them answers.
+            state.broadcast_only(
+                members,
+                ServerEvent::CallSignal { channel_id, from: user.clone(), action },
+            );
+        }
         ClientEvent::Typing { channel_id } => {
             let recipients = channel_audience(&state.db, channel_id).await?;
             if recipients.as_ref().is_some_and(|ids| !ids.contains(&user.id)) {

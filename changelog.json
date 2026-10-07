@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.99.4",
+    "date": "2026-10-07",
+    "changes": [
+      "📲 Calling somebody now rings them instead of dropping you both in a room (switchb). Press Call and you get \"ringing…\" with a Cancel; they get Answer or Decline; and nobody is connected to anything until they answer. Before this, placing a call meant joining the empty room yourself and letting the other end notice you were standing in it — which is why it felt automatic, why there was no way to take it back, and why declining just left you sitting there",
+      "Declining says so now, rather than going quiet. So does giving up: a call that nobody picks up stops ringing after 35 seconds and tells you there was no answer",
+      "If you're signed in twice, answering on one device stops the other ringing",
+      "Everyone needs this update for calls to ring — a client still on 0.99.3 won't hear a call placed from 0.99.4, because the caller no longer announces themselves by joining"
+    ]
+  },
+  {
     "version": "0.99.3",
     "date": "2026-10-07",
     "changes": [

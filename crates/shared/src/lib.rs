@@ -452,6 +452,29 @@ pub struct LoginRequest {
     pub invite: Option<String>,
 }
 
+/// The stages of placing a call, in both directions.
+///
+/// Until now a DM call was not placed at all: the caller joined the room and
+/// the other end noticed somebody was in it. That left the caller sitting in
+/// an empty call with no way to take it back, and no way to be told no.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RingAction {
+    /// I am calling you. Nobody is in the room yet.
+    Ring,
+    /// I am picking up — join, and I will see you there.
+    Answer,
+    /// Not now.
+    Decline,
+    /// The caller gave up, or the callee stopped waiting.
+    Cancel,
+}
+
+/// How long a call rings before both ends give up, in milliseconds. Long
+/// enough to walk back to the desk, short enough that a missed call does not
+/// ring at an empty chair all afternoon.
+pub const RING_TIMEOUT_MS: i64 = 35_000;
+
 /// What the server says when a kicked person tries to log in without the
 /// code. A constant because both apps have to recognise it to know to ask
 /// for one, and a message that drifts would silently stop them asking.
@@ -1036,6 +1059,8 @@ pub enum ClientEvent {
     /// Press a button on the music player card: "pause", "resume", "skip", "stop".
     MusicControl { action: String },
     /// Announce which voice channel this user is in (None = left voice).
+    /// Ring, answer, decline or cancel a DM call.
+    CallSignal { channel_id: i64, action: RingAction },
     VoiceState {
         channel_id: Option<i64>,
         #[serde(default)]
@@ -1108,6 +1133,8 @@ pub enum ServerEvent {
     /// Server emojis changed; clients refetch /api/emojis.
     EmojisChanged,
     /// Someone joined (Some) or left (None) a voice channel.
+    /// The other side of a CallSignal, with whoever sent it.
+    CallSignal { channel_id: i64, from: User, action: RingAction },
     VoiceStateChanged {
         user: User,
         channel_id: Option<i64>,
