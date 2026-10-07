@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::prelude::*;
 use futures_util::StreamExt;
-use livekit::options::{TrackPublishOptions, VideoEncoding};
+use livekit::options::{AudioEncoding, TrackPublishOptions, VideoEncoding};
 use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, RemoteTrack, RemoteVideoTrack, TrackSource};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
@@ -42,6 +42,8 @@ pub struct VoiceStatus {
     pub deafened: bool,
     /// We are currently sharing our screen.
     pub sharing_self: bool,
+    /// The screen share is carrying desktop audio too.
+    pub sharing_audio: bool,
     /// Our webcam is currently on.
     pub camera_self: bool,
     /// Push-to-talk mode is active and the key is currently held.
@@ -548,12 +550,209 @@ fn pick_output_device(host: &cpal::Host, preferred: &Option<String>) -> Option<c
     host.default_output_device()
 }
 
+/// 10ms of 48kHz stereo, the frame size the track is fed in.
+const SHARE_FRAME_PER_CH: usize = 480;
+
+/// A running desktop-audio capture. Dropping it stops the device thread and
+/// the pump; the track is unpublished separately, by whoever published it.
+pub struct ShareAudio {
+    _stop: std_mpsc::Sender<()>,
+    pump: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ShareAudio {
+    fn drop(&mut self) {
+        self.pump.abort();
+    }
+}
+
+/// Open a render endpoint for loopback capture.
+///
+/// cpal turns an input stream on an *output* device into WASAPI loopback,
+/// which is what lets us hear what the machine is playing without a virtual
+/// cable. The device is whatever the user picked, so they can share their
+/// interface while the call itself plays somewhere else.
+fn open_loopback(
+    preferred: &Option<String>,
+) -> anyhow::Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    let host = cpal::default_host();
+    let device = pick_output_device(&host, preferred)
+        .ok_or_else(|| anyhow::anyhow!("no output device to capture"))?;
+    let name = device_name(&device).unwrap_or_else(|| "unknown".into());
+    let config = device
+        .default_output_config()
+        .map_err(|e| anyhow::anyhow!("cannot listen in on '{name}': {e}"))?;
+    Ok((device, config))
+}
+
+/// Resample interleaved stereo to 48kHz, linearly, keeping the two channels
+/// independent. `carry` holds the fractional read position and the last
+/// frame across calls, so block boundaries don't click.
+fn resample_stereo(input: &[i16], from_rate: u32, carry: &mut (f64, [f32; 2]), out: &mut Vec<i16>) {
+    if input.is_empty() {
+        return;
+    }
+    if from_rate == NS_RATE {
+        out.extend_from_slice(input);
+        return;
+    }
+    let step = from_rate as f64 / NS_RATE as f64;
+    let frames = input.len() / 2;
+    let (mut pos, mut last) = *carry;
+    while pos < frames as f64 {
+        let i = pos.floor() as usize;
+        let frac = (pos - i as f64) as f32;
+        for ch in 0..2 {
+            let prev = if i == 0 { last[ch] } else { input[(i - 1) * 2 + ch] as f32 };
+            let cur = input[i * 2 + ch] as f32;
+            out.push((prev + (cur - prev) * frac).clamp(-32768.0, 32767.0) as i16);
+        }
+        pos += step;
+    }
+    last = [input[(frames - 1) * 2] as f32, input[(frames - 1) * 2 + 1] as f32];
+    *carry = (pos - frames as f64, last);
+}
+
+/// Fold however many channels the endpoint has into interleaved stereo.
+fn to_stereo(data: &[i16], channels: usize, out: &mut Vec<i16>) {
+    match channels {
+        0 => {}
+        1 => out.extend(data.iter().flat_map(|s| [*s, *s])),
+        2 => out.extend_from_slice(data),
+        n => {
+            // Surround: take the front pair and leave the rest. Mixing the
+            // centre and surrounds in would need gains we cannot verify here,
+            // and a wrong fold is worse than a plain one.
+            for frame in data.chunks_exact(n) {
+                out.push(frame[0]);
+                out.push(frame[1]);
+            }
+        }
+    }
+}
+
+/// Capture a render endpoint and publish it as its own stereo track.
+///
+/// Everything the microphone path does to make speech intelligible is left
+/// out on purpose: no echo cancellation, no noise suppression (which is
+/// trained on voices and eats reverb tails and pads), no automatic gain
+/// (which pumps exactly the dynamics a mix is made of), and no voice gate
+/// (which would drop quiet intros entirely). DTX and RED go too: DTX stops
+/// transmitting through passages it reads as silence, and RED spends
+/// bitrate on redundancy. 128kbps stereo Opus, the same settings the music
+/// bot has been using.
+async fn publish_share_audio(
+    room: &Room,
+    preferred: Option<String>,
+    mut status: VoiceStatusSignal,
+) -> anyhow::Result<(ShareAudio, livekit::id::TrackSid)> {
+    let (device, config) =
+        tokio::task::spawn_blocking(move || { com_init_mta(); open_loopback(&preferred) }).await??;
+    let rate = config.sample_rate();
+    let channels = config.channels() as usize;
+
+    let source = NativeAudioSource::new(
+        AudioSourceOptions {
+            echo_cancellation: false,
+            noise_suppression: false,
+            auto_gain_control: false,
+        },
+        NS_RATE,
+        2,
+        1000,
+    );
+    let track =
+        LocalAudioTrack::create_audio_track("screen-audio", RtcAudioSource::Native(source.clone()));
+    let publication = room
+        .local_participant()
+        .publish_track(
+            LocalTrack::Audio(track),
+            TrackPublishOptions {
+                source: TrackSource::ScreenshareAudio,
+                audio_encoding: Some(AudioEncoding { max_bitrate: 128_000 }),
+                dtx: false,
+                red: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
+    let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
+    let mut err_status = status;
+    std::thread::spawn(move || {
+        com_init_mta();
+        match build_capture_stream(&device, &config, frame_tx, err_status, "desktop audio") {
+            Ok(stream) => match stream.play() {
+                Ok(()) => {
+                    let _ = stop_rx.recv();
+                }
+                Err(e) => {
+                    err_status.write().error = format!("desktop audio failed to start: {e}");
+                }
+            },
+            Err(e) => {
+                err_status.write().error = format!("desktop audio capture failed: {e}");
+            }
+        }
+    });
+
+    // The pump runs on its own clock rather than on arriving packets: a
+    // silent endpoint delivers nothing at all through loopback, and a track
+    // that stops being fed stalls rather than going quiet. Silence is sent
+    // instead, so the stream stays alive through the gaps between tracks.
+    let pump = tokio::spawn(async move {
+        let mut staged: Vec<i16> = Vec::with_capacity(SHARE_FRAME_PER_CH * 4);
+        let mut stereo: Vec<i16> = Vec::with_capacity(SHARE_FRAME_PER_CH * 4);
+        let mut carry = (0.0f64, [0.0f32; 2]);
+        let want = SHARE_FRAME_PER_CH * 2;
+        let mut tick =
+            tokio::time::interval(std::time::Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            while let Ok(chunk) = frame_rx.try_recv() {
+                stereo.clear();
+                to_stereo(&chunk, channels, &mut stereo);
+                resample_stereo(&stereo, rate, &mut carry, &mut staged);
+            }
+            // Anything beyond a quarter second is latency nobody asked for.
+            let cap = NS_RATE as usize / 2;
+            if staged.len() > cap {
+                let extra = staged.len() - cap;
+                staged.drain(..extra);
+            }
+            let data: Vec<i16> = if staged.len() >= want {
+                staged.drain(..want).collect()
+            } else {
+                vec![0i16; want]
+            };
+            let frame = AudioFrame {
+                data: data.into(),
+                sample_rate: NS_RATE,
+                num_channels: 2,
+                samples_per_channel: SHARE_FRAME_PER_CH as u32,
+            };
+            if source.capture_frame(&frame).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    status.write().sharing_audio = true;
+    Ok((ShareAudio { _stop: stop_tx, pump }, publication.sid()))
+}
+
 /// Convert any cpal input sample slice to i16.
 fn build_capture_stream(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
     mut status: VoiceStatusSignal,
+    // What to call this stream when it goes wrong. The same builder serves
+    // the microphone and the desktop-audio capture, and "mic stream error"
+    // on a screen share would send someone hunting the wrong device.
+    label: &'static str,
 ) -> Result<cpal::Stream, cpal::Error> {
     let cfg = config.config();
     let err_cb = move |e: cpal::Error| {
@@ -563,7 +762,7 @@ fn build_capture_stream(
         if text.contains("underrun") || text.contains("overrun") {
             return;
         }
-        status.write().error = format!("mic stream error: {text}");
+        status.write().error = format!("{label} error: {text}");
     };
     macro_rules! stream_as {
         ($ty:ty, $conv:expr) => {{
@@ -615,6 +814,8 @@ struct ActiveCall {
     _ptt_stop: std_mpsc::Sender<()>,
     /// Active screen capture + its published track sid.
     share: Option<(crate::share::ShareControl, livekit::id::TrackSid)>,
+    /// Desktop audio riding along with that share, when it is switched on.
+    share_audio: Option<(ShareAudio, livekit::id::TrackSid)>,
     /// Active webcam capture + its published track sid.
     camera: Option<(crate::camera::CameraHandle, livekit::id::TrackSid)>,
     /// Remote video tracks by participant identity, split by source.
@@ -629,6 +830,13 @@ struct VideoTracks {
 }
 
 async fn stop_share(active: &mut ActiveCall, mut status: VoiceStatusSignal) {
+    if let Some((audio, sid)) = active.share_audio.take() {
+        // Drop first: the pump and the device thread go with it, so nothing
+        // is still feeding a track that is about to stop existing.
+        drop(audio);
+        let _ = active.room.local_participant().unpublish_track(&sid).await;
+        status.write().sharing_audio = false;
+    }
     if let Some((control, sid)) = active.share.take() {
         let _ = control.stop();
         let _ = active.room.local_participant().unpublish_track(&sid).await;
@@ -1064,10 +1272,31 @@ pub async fn voice_task(
                                 match crate::share::start_capture(source, target, preview, closed) {
                                 Ok(control) => {
                                     active.share = Some((control, publication.sid()));
-                                    let mut s = status.write();
-                                    s.sharing_self = true;
-                                    if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
-                                        me.sharing = true;
+                                    {
+                                        let mut s = status.write();
+                                        s.sharing_self = true;
+                                        if let Some(me) = s.participants.iter_mut().find(|p| p.is_me) {
+                                            me.sharing = true;
+                                        }
+                                    }
+                                    // The picture is already going out; audio
+                                    // is a bonus, so a failure here says so
+                                    // and leaves the share running.
+                                    let settings = crate::api::load_settings();
+                                    if settings.share_audio {
+                                        match publish_share_audio(
+                                            &active.room,
+                                            settings.share_audio_device.clone(),
+                                            status,
+                                        )
+                                        .await
+                                        {
+                                            Ok(pair) => active.share_audio = Some(pair),
+                                            Err(e) => {
+                                                status.write().error =
+                                                    format!("desktop audio: {e}")
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -1359,7 +1588,7 @@ async fn connect(
     let mic_status = status;
     std::thread::spawn(move || {
         com_init_mta();
-        match build_capture_stream(&mic, &mic_config, frame_tx, mic_status) {
+        match build_capture_stream(&mic, &mic_config, frame_tx, mic_status, "mic stream") {
             Ok(stream) => match stream.play() {
                 Ok(()) => {
                     // Block until the ActiveCall drops the sender.
@@ -1703,6 +1932,7 @@ async fn connect(
         mute_hotkey_key,
         _ptt_stop: ptt_stop_tx,
         share: None,
+        share_audio: None,
         camera: None,
         video_tracks,
         event_task,
@@ -1960,5 +2190,69 @@ mod mute_hotkey_tests {
         let ticks = [true, true, false, false, true, true, true, false];
         let fires = ticks.iter().filter(|&&d| pressed_now(d, &mut was_down)).count();
         assert_eq!(fires, 2);
+    }
+}
+
+#[cfg(test)]
+mod share_audio_tests {
+    use super::*;
+
+    #[test]
+    fn surround_and_mono_both_become_stereo() {
+        let mut out = Vec::new();
+        to_stereo(&[7, -7], 1, &mut out);
+        assert_eq!(out, vec![7, 7, -7, -7], "mono goes to both ears");
+
+        out.clear();
+        to_stereo(&[1, 2, 3, 4], 2, &mut out);
+        assert_eq!(out, vec![1, 2, 3, 4], "stereo is left alone");
+
+        out.clear();
+        // 5.1: front L, front R, centre, LFE, rear L, rear R.
+        to_stereo(&[1, 2, 99, 99, 99, 99], 6, &mut out);
+        assert_eq!(out, vec![1, 2], "the front pair, and nothing invented");
+    }
+
+    #[test]
+    fn resampling_keeps_the_two_channels_apart() {
+        // The thing that would ruin this feature quietly: left bleeding into
+        // right turns a mix into mush and still sounds like "audio works".
+        let frames = 441;
+        let mut input = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            input.push(1000);
+            input.push(-1000);
+        }
+        let mut carry = (0.0f64, [0.0f32; 2]);
+        let mut out = Vec::new();
+        resample_stereo(&input, 44_100, &mut carry, &mut out);
+
+        assert_eq!(out.len() % 2, 0, "whole frames only");
+        // 10ms at 44.1k resampled to 48k is ~480 frames.
+        let got = out.len() / 2;
+        assert!((470..=490).contains(&got), "expected ~480 frames, got {got}");
+        // Sign separation holds everywhere, ramp included: if the channels
+        // were bleeding into each other these would converge on zero.
+        for pair in out.chunks_exact(2) {
+            assert!(pair[0] >= 0, "left took the right's sign");
+            assert!(pair[1] <= 0, "right took the left's sign");
+        }
+        // 48k is the faster clock, so the first couple of output frames land
+        // before input frame 1 and interpolate against the carried-in last
+        // sample — zero on the very first block, which is a stream starting
+        // from silence. Past that it must be exact.
+        let ramp = (1.0 / (44_100.0 / NS_RATE as f64)).ceil() as usize;
+        for pair in out.chunks_exact(2).skip(ramp) {
+            assert_eq!(pair[0], 1000, "left drifted");
+            assert_eq!(pair[1], -1000, "right drifted");
+        }
+    }
+
+    #[test]
+    fn a_matching_rate_is_passed_straight_through() {
+        let mut carry = (0.0f64, [0.0f32; 2]);
+        let mut out = Vec::new();
+        resample_stereo(&[5, 6, 7, 8], NS_RATE, &mut carry, &mut out);
+        assert_eq!(out, vec![5, 6, 7, 8], "48k needs no arithmetic at all");
     }
 }

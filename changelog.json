@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.98.8",
+    "date": "2026-10-07",
+    "changes": [
+      "🎧 Screen shares can carry what you're hearing, in stereo (DELTAnine). Settings → Voice → \"Share what you're hearing when you share your screen\". It goes out at 128kbps stereo with every piece of speech processing switched off — no noise suppression, which is trained on voices and eats reverb tails and pads; no automatic gain, which pumps the dynamics a mix is made of; no voice gate, which drops quiet intros entirely; and no DTX, which stops transmitting through passages it mistakes for silence. The same settings the music bot has been using all along",
+      "You choose which output it listens in on, because that is what keeps it clean: point it at your interface and leave the call playing on your headphones, and only your music goes out. Pick the same device the call plays on and it says so — that one sends everyone their own voices back",
+      "Your microphone is untouched by all of this and still goes out as speech, so you can talk over what you're playing"
+    ]
+  },
+  {
     "version": "0.98.7",
     "date": "2026-10-03",
     "changes": [

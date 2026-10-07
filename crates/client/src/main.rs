@@ -3165,6 +3165,64 @@ fn MainView(session: api::Session) -> Element {
                                         }
                                     }
                                 }
+                                // Desktop audio. Sits with the voice
+                                // devices because the echo problem below is
+                                // entirely about which device is which.
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().share_audio,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.share_audio = e.checked();
+                                            api::save_settings(&s);
+                                        },
+                                    }
+                                    " Share what you're hearing when you share your screen"
+                                }
+                                if audio_settings().share_audio {
+                                    label { "Audio to share" }
+                                    select {
+                                        onchange: move |e| {
+                                            let v = e.value();
+                                            let mut s = audio_settings.write();
+                                            s.share_audio_device = if v.is_empty() { None } else { Some(v) };
+                                            api::save_settings(&s);
+                                        },
+                                        option {
+                                            value: "",
+                                            selected: audio_settings().share_audio_device.is_none(),
+                                            "System default"
+                                        }
+                                        for name in output_devices() {
+                                            option {
+                                                value: "{name}",
+                                                selected: audio_settings().share_audio_device.as_deref() == Some(name.as_str()),
+                                                "{name}"
+                                            }
+                                        }
+                                    }
+                                    {
+                                        // Capturing the same output the call
+                                        // plays on sends everyone their own
+                                        // voices back, delayed. Worth saying
+                                        // plainly rather than leaving someone
+                                        // to discover it mid-call.
+                                        let shared = audio_settings().share_audio_device;
+                                        let call_out = audio_settings().output_device;
+                                        let clash = shared == call_out;
+                                        rsx! {
+                                            div {
+                                                class: if clash { "settings-hint pw-bad" } else { "settings-hint" },
+                                                if clash {
+                                                    "that's the same device the call plays on — everyone would hear themselves back. Pick a different one, or send the call to your headphones above"
+                                                } else {
+                                                    "stereo, 128kbps, none of the speech processing — a mix goes out as a mix. Only what this device plays is shared"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 label { "Mic volume · {(audio_settings().input_volume * 100.0) as i32}%" }
                                 input {
                                     r#type: "range",

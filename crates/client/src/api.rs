@@ -397,6 +397,18 @@ pub struct Settings {
     /// Pop a toast for @mentions and DMs you aren't currently reading.
     #[serde(default = "yes")]
     pub ping_toasts: bool,
+    /// Send what the machine is playing along with a screen share, so the
+    /// other side hears the music/video and not just your microphone.
+    /// Off by default: it is captured from a speaker output, and pointing it
+    /// at the one the call itself plays on sends everyone their own voices
+    /// back. See `share_audio_device`.
+    #[serde(default)]
+    pub share_audio: bool,
+    /// Which output to listen in on. None means the system default. A
+    /// producer wanting to share a mix picks their interface here and leaves
+    /// the call playing somewhere else, which is also what keeps it clean.
+    #[serde(default)]
+    pub share_audio_device: Option<String>,
     /// Whether closing the window hides to the tray instead of quitting.
     /// On by default, which is how it has always behaved; the tray's Quit
     /// and the chevron button mean neither choice traps you.
