@@ -88,7 +88,7 @@ pub async fn login(
     State(state): State<SharedState>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
-    let row = sqlx::query("SELECT id, username, password_hash, avatar, role, banned FROM users WHERE username = ?")
+    let row = sqlx::query("SELECT id, username, password_hash, avatar, role, banned, kicked FROM users WHERE username = ?")
         .bind(req.username.trim())
         .fetch_optional(&state.db)
         .await
@@ -101,12 +101,30 @@ pub async fn login(
     let avatar: Option<String> = row.get(3);
     let role: String = row.get(4);
     let banned: i64 = row.get(5);
+    let kicked: i64 = row.get(6);
 
     if !auth::verify_password(req.password, hash).await {
         return Err(err(StatusCode::UNAUTHORIZED, "invalid username or password"));
     }
     if banned != 0 {
         return Err(err(StatusCode::FORBIDDEN, "you are banned from this server"));
+    }
+    // Kicked: the password alone is no longer enough. Checked after the
+    // password so this never tells a stranger whether an account exists.
+    if kicked != 0 {
+        let required = meta_value_opt(&state, "invite_code").await?.unwrap_or_default();
+        let supplied = req.invite.as_deref().map(str::trim).unwrap_or_default();
+        // An empty code means the server stopped gating signups, and there
+        // is then nothing left for a kick to hold them to.
+        if !required.is_empty() && supplied != required {
+            return Err(err(StatusCode::FORBIDDEN, shared::INVITE_REQUIRED));
+        }
+        sqlx::query("UPDATE users SET kicked = 0 WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+        state.broadcast(ServerEvent::UserKickChanged { user_id: id, kicked: false });
     }
 
     let token = create_session(&state, id).await?;
@@ -402,7 +420,7 @@ pub async fn list_users(
     AuthUser(me): AuthUser,
 ) -> ApiResult<Json<Vec<UserStatus>>> {
     let rows = sqlx::query(
-        "SELECT id, username, avatar, role, banned, status_text, COALESCE(presence_mode, 'online') \
+        "SELECT id, username, avatar, role, banned, status_text, COALESCE(presence_mode, 'online'), kicked \
          FROM users ORDER BY username COLLATE NOCASE",
     )
     .fetch_all(&state.db)
@@ -441,7 +459,16 @@ pub async fn list_users(
                 mode
             };
             let tag_ids = tag_map.remove(&user.id).unwrap_or_default();
-            UserStatus { user, online: is_online, presence: mode, banned: banned != 0, tag_ids, status }
+            let kicked: i64 = r.get(7);
+            UserStatus {
+                user,
+                online: is_online,
+                presence: mode,
+                banned: banned != 0,
+                kicked: kicked != 0,
+                tag_ids,
+                status,
+            }
         })
         .collect();
     Ok(Json(users))
@@ -675,6 +702,38 @@ pub async fn set_ban(
     // without this a ban only took effect on the next reload.
     state.broadcast(ServerEvent::UserBanChanged { user_id: target_id, banned: req.banned });
     Ok(Json(updated))
+}
+
+/// Put someone back outside the invite: signed out everywhere, off the
+/// roster, and their password alone will not get them back in.
+pub async fn kick(
+    State(state): State<SharedState>,
+    AuthUser(user): AuthUser,
+    Path(target_id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.role != "admin" {
+        return Err(err(StatusCode::FORBIDDEN, "admins only"));
+    }
+    if target_id == owner_id(&state).await? {
+        return Err(err(StatusCode::FORBIDDEN, "the server owner cannot be kicked"));
+    }
+    if target_id == user.id {
+        return Err(err(StatusCode::BAD_REQUEST, "you cannot kick yourself"));
+    }
+    load_user(&state, target_id).await?;
+    sqlx::query("UPDATE users SET kicked = 1 WHERE id = ?")
+        .bind(target_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    // Out now, not on next login.
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(target_id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    state.broadcast(ServerEvent::UserKickChanged { user_id: target_id, kicked: true });
+    Ok(Json(serde_json::json!({ "kicked": true })))
 }
 
 pub async fn delete_channel(

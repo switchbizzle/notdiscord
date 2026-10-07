@@ -57,8 +57,18 @@ async fn handle<T: DeserializeOwned>(resp: Response) -> Result<T, String> {
 }
 
 pub async fn login(username: String, password: String) -> Result<Session, String> {
+    login_with_invite(username, password, None).await
+}
+
+/// Log in, carrying the invite code when the server has asked for it. Only
+/// someone who was kicked ever needs to.
+pub async fn login_with_invite(
+    username: String,
+    password: String,
+    invite: Option<String>,
+) -> Result<Session, String> {
     let resp = Request::post("/api/login")
-        .json(&shared::LoginRequest { username, password })
+        .json(&shared::LoginRequest { username, password, invite })
         .map_err(|e| e.to_string())?
         .send()
         .await

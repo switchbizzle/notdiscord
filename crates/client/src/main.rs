@@ -225,6 +225,7 @@ fn main() {
 enum ConfirmAction {
     DeleteChannel { id: i64, name: String },
     SetBan { user_id: i64, username: String, banned: bool },
+    Kick { user_id: i64, username: String },
     SetRole { user_id: i64, username: String, make_admin: bool },
     DeleteTag { id: i64, name: String },
     DeleteSticker { id: i64, name: String },
@@ -240,6 +241,10 @@ impl ConfirmAction {
                 format!("Ban {username}? They'll be logged out immediately and can't log back in.")
             }
             Self::SetBan { username, banned: false, .. } => format!("Unban {username}?"),
+            Self::Kick { username, .. } => format!(
+                "Kick {username}? They'll be signed out and off the member list. They can \
+                 come back, but only with the current invite code."
+            ),
             Self::SetRole { username, make_admin: true, .. } => {
                 format!("Make {username} an admin? They'll be able to delete anyone's messages, delete channels, and ban members.")
             }
@@ -256,6 +261,7 @@ impl ConfirmAction {
             Self::DeleteChannel { .. } => "Delete channel",
             Self::SetBan { banned: true, .. } => "Ban",
             Self::SetBan { banned: false, .. } => "Unban",
+            Self::Kick { .. } => "Kick",
             Self::SetRole { make_admin: true, .. } => "Make admin",
             Self::SetRole { make_admin: false, .. } => "Remove admin",
             Self::DeleteTag { .. } => "Delete tag",
@@ -793,6 +799,8 @@ fn LoginView(adding: Signal<bool>) -> Element {
     // Logging in is what almost everyone is here to do; an invite code box on
     // that screen is a question nobody signing in can answer (switchb).
     let mut registering = use_signal(|| false);
+    // Set when the server says this account was kicked and needs the code.
+    let mut needs_invite = use_signal(|| false);
 
     use_future(move || async move {
         let mut last = String::new();
@@ -847,14 +855,26 @@ fn LoginView(adding: Signal<bool>) -> Element {
             let result = if register {
                 api::register(&base_url(), username(), password(), invite()).await
             } else {
-                api::login(&base_url(), username(), password()).await
+                // The code only goes up once the server has asked for it, so
+                // an ordinary login is unchanged.
+                let code = invite();
+                let code = (!code.trim().is_empty() && needs_invite()).then_some(code);
+                api::login_with_invite(&base_url(), username(), password(), code).await
             };
             match result {
                 Ok(s) => {
+                    needs_invite.set(false);
                     servers.set(api::upsert_server(s));
                     adding.set(false);
                 }
-                Err(e) => error.set(e),
+                Err(e) => {
+                    // Kicked: ask for the code instead of leaving them at a
+                    // password box that will never work.
+                    if e == shared::INVITE_REQUIRED {
+                        needs_invite.set(true);
+                    }
+                    error.set(e)
+                }
             }
             busy.set(false);
         });
@@ -906,6 +926,20 @@ fn LoginView(adding: Signal<bool>) -> Element {
                     }
                     div { class: "settings-hint",
                         "Leave it empty and anyone who can reach this server can register."
+                    }
+                } else if needs_invite() && !registering() {
+                    label { "Invite code" }
+                    input {
+                        value: "{invite}",
+                        oninput: move |e| invite.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                submit(false);
+                            }
+                        },
+                    }
+                    div { class: "settings-hint",
+                        "You were removed from this server. The current code lets you back in."
                     }
                 } else if registering() {
                     label { "Invite code" }
@@ -1436,6 +1470,16 @@ fn MainView(session: api::Session) -> Element {
                     }));
                 }
             }));
+            if !banned {
+                let uid = user.id;
+                let name = user.username.clone();
+                items.push(menu::item("Kick", "x", move || {
+                    // Copy per call, the way the Ban item below does: the
+                    // menu wants an Fn and Signal::set needs &mut.
+                    let mut confirm = confirm;
+                    confirm.set(Some(ConfirmAction::Kick { user_id: uid, username: name.clone() }));
+                }));
+            }
             items.push(menu::danger(if banned { "Unban" } else { "Ban" }, "ban", {
                 let (id, username) = (user.id, user.username.clone());
                 move || {
@@ -1714,6 +1758,7 @@ fn MainView(session: api::Session) -> Element {
         spawn(async move {
             let result = match &action {
                 ConfirmAction::DeleteChannel { id, .. } => api::delete_channel(&session(), *id).await,
+                ConfirmAction::Kick { user_id, .. } => api::kick(&session(), *user_id).await,
                 ConfirmAction::SetBan { user_id, banned, .. } => {
                     api::set_ban(&session(), *user_id, *banned).await.map(|_| ())
                 }
@@ -2200,6 +2245,13 @@ fn MainView(session: api::Session) -> Element {
                                     m.banned = banned;
                                 }
                             }
+                            ServerEvent::UserKickChanged { user_id, kicked } => {
+                                if let Some(m) =
+                                    members.write().iter_mut().find(|m| m.user.id == user_id)
+                                {
+                                    m.kicked = kicked;
+                                }
+                            }
                             ServerEvent::PresenceChanged { user, online } => {
                                 let mut list = members.write();
                                 match list.iter_mut().find(|m| m.user.id == user.id) {
@@ -2213,6 +2265,7 @@ fn MainView(session: api::Session) -> Element {
                                             online,
                                             presence: "online".to_string(),
                                             banned: false,
+                                            kicked: false,
                                             tag_ids: Vec::new(),
                                             status: None,
                                         });
@@ -6788,7 +6841,7 @@ fn MainView(session: api::Session) -> Element {
                 // Banned people are off the roster. They stay in Server
                 // settings -> Roles & members, which is where an admin goes
                 // to undo it.
-                for member in members().into_iter().filter(|m| !m.banned) {
+                for member in members().into_iter().filter(|m| !m.banned && !m.kicked) {
                     div {
                         key: "{member.user.id}",
                         class: if member.online { "member online" } else { "member" },

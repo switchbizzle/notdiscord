@@ -229,6 +229,10 @@ pub struct UserStatus {
     pub presence: String,
     #[serde(default)]
     pub banned: bool,
+    /// Kicked out: off the roster until they come back with the invite code.
+    /// Unlike a ban this clears itself the moment they do.
+    #[serde(default)]
+    pub kicked: bool,
     /// Ids of custom tags assigned to this user.
     #[serde(default)]
     pub tag_ids: Vec<i64>,
@@ -442,7 +446,17 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    /// Only needed by someone who was kicked. Ignored otherwise, so the
+    /// ordinary login is unchanged.
+    #[serde(default)]
+    pub invite: Option<String>,
 }
+
+/// What the server says when a kicked person tries to log in without the
+/// code. A constant because both apps have to recognise it to know to ask
+/// for one, and a message that drifts would silently stop them asking.
+pub const INVITE_REQUIRED: &str =
+    "you were removed from this server — enter the invite code to rejoin";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
@@ -1054,6 +1068,9 @@ pub enum ServerEvent {
     /// `User` carries no ban flag — it is embedded in every message, and the
     /// roster is the only place the flag belongs.
     UserBanChanged { user_id: i64, banned: bool },
+    /// Someone was kicked, or came back. Same reasoning as UserBanChanged:
+    /// it is roster state, and `User` is in every message.
+    UserKickChanged { user_id: i64, kicked: bool },
     Typing { channel_id: i64, user: User },
     ReactionAdded { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },
     ReactionRemoved { channel_id: i64, message_id: i64, emoji: String, user_id: i64 },

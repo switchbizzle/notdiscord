@@ -341,6 +341,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users/{id}/profile", get(routes::get_profile))
         .route("/api/users/{id}/role", post(routes::set_role))
         .route("/api/users/{id}/ban", post(routes::set_ban))
+        .route("/api/users/{id}/kick", post(routes::kick))
         .route(
             "/api/channels/{id}",
             axum::routing::delete(routes::delete_channel).patch(routes::rename_channel),

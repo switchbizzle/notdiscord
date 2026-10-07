@@ -1098,6 +1098,8 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
     // Logging in is what almost everyone is here to do; an invite code box on
     // that screen is a question nobody signing in can answer.
     let mut registering = use_signal(|| false);
+    // The server asked for the code: this account was kicked.
+    let mut needs_invite = use_signal(|| false);
 
     let submit = move |register: bool| {
         if busy() {
@@ -1109,15 +1111,23 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
             let result = if register {
                 api::register(username(), password(), invite()).await
             } else {
-                api::login(username(), password()).await
+                let code = invite();
+                let code = (!code.trim().is_empty() && needs_invite()).then_some(code);
+                api::login_with_invite(username(), password(), code).await
             };
             match result {
                 Ok(s) => {
+                    needs_invite.set(false);
                     let s = Some(s);
                     save_session(&s);
                     session.set(s);
                 }
-                Err(e) => error.set(e),
+                Err(e) => {
+                    if e == shared::INVITE_REQUIRED {
+                        needs_invite.set(true);
+                    }
+                    error.set(e)
+                }
             }
             busy.set(false);
         });
@@ -1153,6 +1163,20 @@ fn Login(session: Signal<Option<api::Session>>) -> Element {
                                     submit(registering());
                                 }
                             },
+                        }
+                    }
+                    if needs_invite() && !registering() {
+                        div { class: "field",
+                            label { "Invite code" }
+                            input {
+                                value: "{invite}",
+                                autocapitalize: "none",
+                                placeholder: "the code gets you back in",
+                                oninput: move |e| invite.set(e.value()),
+                            }
+                            span { class: "field-hint",
+                                "You were removed from this server. The current code lets you back in."
+                            }
                         }
                     }
                     if registering() {
@@ -2019,6 +2043,13 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     m.banned = banned;
                                 }
                             }
+                            ServerEvent::UserKickChanged { user_id, kicked } => {
+                                if let Some(m) =
+                                    members.write().iter_mut().find(|m| m.user.id == user_id)
+                                {
+                                    m.kicked = kicked;
+                                }
+                            }
                             ServerEvent::VoiceSnapshot { entries } => {
                                 voice_users.set(entries.into_iter().map(|e| (e.user.id, e.channel_id)).collect());
                             }
@@ -2485,7 +2516,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
     // DM as "mentions: 1" whether or not you have read it, so on its own
     // that number would keep the tab lit after every DM was read.
     let any_mention = unread().values().any(|(count, mentions, _)| *count > 0 && *mentions > 0);
-    let online_now = members().iter().filter(|m| m.online && !m.banned).count();
+    let online_now = members().iter().filter(|m| m.online && !m.banned && !m.kicked).count();
     let upload_percent = (upload_pct() * 100.0).round() as i64;
     // DMs newest-first: the conversation you're actually having belongs at
     // the top, which is what `last_at` is for.
@@ -3165,7 +3196,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             }
 
                             div { class: "section-label", style: "padding: 22px 2px 8px", "Members" }
-                            for member in members().into_iter().filter(|m| !m.banned) {
+                            for member in members().into_iter().filter(|m| !m.banned && !m.kicked) {
                                 {
                                     let colour = name_color(member.user.id, &members(), &tags());
                                     let sub = presence_line(member.online, &member.presence, member.status.clone());
@@ -4819,7 +4850,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                             span { class: "sheet-title", "Members" }
                             span { class: "sheet-note", "{members().len()} · {online_now} online" }
                         }
-                        for member in members().into_iter().filter(|m| !m.banned) {
+                        for member in members().into_iter().filter(|m| !m.banned && !m.kicked) {
                             {
                                 let colour = name_color(member.user.id, &members(), &tags());
                                 let sub = presence_line(member.online, &member.presence, member.status.clone());

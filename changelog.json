@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.99.0",
+    "date": "2026-10-07",
+    "changes": [
+      "👋 Kick (switchb). Right-click someone → Kick: they're signed out everywhere, straight off the member list, and their password alone won't get them back in. The invite code will — so they can return if you want them to, and if you've changed the code since, they can't. It clears itself the moment they rejoin, so there's nothing to remember to undo",
+      "Someone who's been kicked isn't just refused at the login screen — it tells them what happened and shows them a box for the code, which is the whole difference between \"you're out\" and \"you're out for good\"",
+      "The owner can't be kicked and only admins can kick, same guards as a ban"
+    ]
+  },
+  {
     "version": "0.98.9",
     "date": "2026-10-07",
     "changes": [

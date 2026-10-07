@@ -676,7 +676,19 @@ async fn session_from_auth(base_url: &str, auth: AuthResponse) -> Session {
 }
 
 pub async fn login(base_url: &str, username: String, password: String) -> Result<Session, String> {
-    let auth = auth_request(base_url, "login", LoginRequest { username, password }).await?;
+    login_with_invite(base_url, username, password, None).await
+}
+
+/// Log in, optionally carrying the invite code. Only someone who was kicked
+/// needs it; for everyone else `invite` is None and this is a plain login.
+pub async fn login_with_invite(
+    base_url: &str,
+    username: String,
+    password: String,
+    invite: Option<String>,
+) -> Result<Session, String> {
+    let auth =
+        auth_request(base_url, "login", LoginRequest { username, password, invite }).await?;
     Ok(session_from_auth(base_url, auth).await)
 }
 
@@ -951,6 +963,17 @@ pub async fn set_role(session: &Session, user_id: i64, role: &str) -> Result<Use
         .json(&SetRoleRequest { role: role.into() }))
         .await?;
     handle(resp).await
+}
+
+/// Put someone outside the invite. No body: it is not a flag you toggle,
+/// it clears itself when they come back.
+pub async fn kick(session: &Session, user_id: i64) -> Result<(), String> {
+    let resp = send_retry(http()
+        .post(format!("{}/api/users/{user_id}/kick", session.base_url))
+        .bearer_auth(&session.token))
+        .await?;
+    let _: serde_json::Value = handle(resp).await?;
+    Ok(())
 }
 
 pub async fn set_ban(session: &Session, user_id: i64, banned: bool) -> Result<User, String> {
