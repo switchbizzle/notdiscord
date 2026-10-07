@@ -1429,6 +1429,12 @@ fn MainView(session: api::Session) -> Element {
             }
         })];
         if user.id != me {
+            items.push(menu::item("Call", "phone", {
+                let (id, name) = (user.id, user.username.clone());
+                move || {
+                    call_user(session(), id, name.clone(), voice, channels, status);
+                }
+            }));
             items.push(menu::item("Message", "message", {
                 let id = user.id;
                 move || {
@@ -4725,6 +4731,52 @@ fn MainView(session: api::Session) -> Element {
                         } else if let Some(text) = profile.status.clone() {
                             div { class: "profile-status", "{text}" }
                         }
+                        if profile.user.id != session().user.id {
+                            // The card is where you end up after clicking
+                            // somebody, so it is where "call them" belongs.
+                            div { class: "profile-reach",
+                                button {
+                                    class: "profile-btn primary",
+                                    onclick: {
+                                        let (id, name) =
+                                            (profile.user.id, profile.user.username.clone());
+                                        move |_| {
+                                            profile_card.set(None);
+                                            call_user(
+                                                session(), id, name.clone(),
+                                                voice, channels, status,
+                                            );
+                                        }
+                                    },
+                                    Icon { name: "phone", size: 14 }
+                                    " Call"
+                                }
+                                button {
+                                    class: "profile-btn",
+                                    onclick: {
+                                        let id = profile.user.id;
+                                        move |_| {
+                                            profile_card.set(None);
+                                            spawn(async move {
+                                                let (mut channels, mut status) = (channels, status);
+                                                let mut open = open_channel;
+                                                match api::create_dm(&session(), id).await {
+                                                    Ok(channel) => {
+                                                        if !channels().iter().any(|c| c.id == channel.id) {
+                                                            channels.write().push(channel.clone());
+                                                        }
+                                                        open(channel);
+                                                    }
+                                                    Err(e) => status.set(e),
+                                                }
+                                            });
+                                        }
+                                    },
+                                    Icon { name: "message", size: 14 }
+                                    " Message"
+                                }
+                            }
+                        }
                         div { class: "profile-joined", "Member since {format_date(profile.created_at)}" }
                         if editing_bio() {
                             textarea {
@@ -7251,6 +7303,39 @@ fn hard_exit(code: u32) -> ! {
     }
     #[cfg(not(windows))]
     std::process::exit(code as i32);
+}
+
+/// Ring someone directly: open (or find) the DM with them, then start its
+/// call. The DM's voice room has always been the call — the only way in was
+/// to open the conversation first and spot an unlabelled handset among the
+/// header icons, which switchb reasonably read as the feature not existing.
+fn call_user(
+    session: api::Session,
+    user_id: i64,
+    peer: String,
+    voice: Coroutine<voice::VoiceCmd>,
+    mut channels: Signal<Vec<shared::Channel>>,
+    mut status: Signal<String>,
+) {
+    spawn(async move {
+        let channel = match api::create_dm(&session, user_id).await {
+            Ok(c) => c,
+            Err(e) => return status.set(e),
+        };
+        // Keep the DM in the list, so hanging up leaves you somewhere real.
+        if !channels.peek().iter().any(|c| c.id == channel.id) {
+            channels.write().push(channel.clone());
+        }
+        match api::voice_token(&session, channel.id).await {
+            Ok(grant) => voice.send(voice::VoiceCmd::Join {
+                channel_id: channel.id,
+                channel_name: format!("@{peer}"),
+                url: grant.url,
+                token: grant.token,
+            }),
+            Err(e) => status.set(e),
+        }
+    });
 }
 
 /// Really exit (closing the window only hides to the tray). Returns `()` so it

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.2",
+    "date": "2026-10-07",
+    "changes": [
+      "📞 Calling someone is where you'd look for it (switchb: \"i dont see how i can call someone\"). One-to-one calls have worked since v0.20.0 — ring, Join/Ignore card and all — but the only way to start one was to open the DM first and spot an unlabelled handset among the header icons. Click anyone and their card now has Call and Message on it, and right-clicking them in the member list offers Call too. Both open the DM for you and ring them in one go",
+      "The handset in the DM header still does what it always did; this just stops it being the only door"
+    ]
+  },
+  {
     "version": "0.99.1",
     "date": "2026-10-07",
     "changes": [

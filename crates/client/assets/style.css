@@ -612,6 +612,13 @@ button.sidebar-title:hover { background: #35373c; }
     user-select: none;
 }
 .profile-name { font-size: 20px; font-weight: 700; }
+/* Call / Message on someone else's card. Its own class: .profile-actions
+ * already dresses the admin rows further down and had no business changing. */
+.profile-reach {
+    display: flex; gap: 8px; justify-content: center;
+    margin: 10px 0 2px; width: 100%;
+}
+.profile-reach .profile-btn { display: inline-flex; align-items: center; gap: 6px; }
 .profile-joined { color: #949ba4; font-size: 12px; }
 .profile-status {
     color: #dbdee1;
