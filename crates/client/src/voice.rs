@@ -1712,6 +1712,10 @@ async fn connect(
     let ns_enabled = Arc::new(AtomicBool::new(settings.noise_suppression));
     let agc_enabled = Arc::new(AtomicBool::new(settings.auto_gain));
     let deafened = Arc::new(AtomicBool::new(false));
+    // One canceller per call, shared by the output (which tells it what was
+    // played) and the microphone pump (which has the echo taken out of it).
+    let echo = settings.echo_cancellation.then(Canceller::new);
+    let pump_echo = echo.clone();
     let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
     let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
     let ptt_active = Arc::new(AtomicBool::new(false));
@@ -1811,6 +1815,25 @@ async fn connect(
             while mono48.len() >= NS_FRAME {
                 let mut frame: Vec<f32> = mono48.drain(..NS_FRAME).collect();
 
+                // Echo first, on the rawest signal there is. Everything below
+                // changes the microphone non-linearly — the gain knob, the
+                // auto gain, RNNoise — and a canceller works by comparing the
+                // microphone against what was played, so anything that alters
+                // one and not the other makes the echo harder to recognise.
+                //
+                // Every frame goes through, including ones the gate is about
+                // to throw away: the canceller tracks the room continuously,
+                // and feeding it only the frames where somebody spoke would
+                // leave it permanently misaligned against the reverse stream.
+                if let Some(echo) = &pump_echo {
+                    let mut pcm: Vec<i16> =
+                        frame.iter().map(|s| s.clamp(-32768.0, 32767.0) as i16).collect();
+                    echo.heard(&mut pcm);
+                    for (dst, src) in frame.iter_mut().zip(pcm) {
+                        *dst = src as f32;
+                    }
+                }
+
                 let gain = f32::from_bits(pump_gain.load(Ordering::Relaxed));
                 if (gain - 1.0).abs() > f32::EPSILON {
                     for s in frame.iter_mut() {
@@ -1892,7 +1915,7 @@ async fn connect(
         Arc::new(Mutex::new(HashMap::new()));
     // One stream for the call, opened now and kept until it ends: everything
     // anyone says is summed into it.
-    let mixer = Mixer::new(master_gain.clone(), deafened.clone());
+    let mixer = Mixer::new(master_gain.clone(), deafened.clone(), echo);
     let mix_stop = start_mix_output(mixer.clone(), settings.output_device.clone(), status);
     let video_tracks: Arc<Mutex<VideoTracks>> = Arc::new(Mutex::new(VideoTracks::default()));
     let tracks_for_events = video_tracks.clone();
@@ -2191,6 +2214,68 @@ fn refresh_participants(
 
 /// Play one remote audio track on the configured (or default) output device.
 /// Returns a stop handle; dropping it ends the playback thread.
+/// How far behind the microphone hears what the speakers played.
+///
+/// The canceller aligns itself from here, so it only has to be in the right
+/// area: a wrong guess costs convergence time, not correctness. Output
+/// buffer plus input buffer plus a couple of feet of air is tens of
+/// milliseconds on a normal machine.
+const ECHO_DELAY_MS: i32 = 80;
+
+/// The echo canceller, and the 10ms chunking both sides of it need.
+///
+/// WebRTC wants exactly 10ms at a time, from both ends: the microphone
+/// (`process_stream`, which is where the echo is removed) and whatever the
+/// speakers are playing (`process_reverse_stream`, the reference it subtracts
+/// against). The microphone side already arrives in 10ms frames; the output
+/// callback is handed whatever size the device feels like, so it is buffered
+/// into chunks here.
+pub struct Canceller {
+    apm: Mutex<livekit::webrtc::native::apm::AudioProcessingModule>,
+    /// Mixed output waiting to make up a whole 10ms chunk.
+    render: Mutex<Vec<i16>>,
+}
+
+/// 10ms of 48kHz stereo, the reverse stream's chunk.
+const RENDER_CHUNK: usize = (NS_RATE as usize / 100) * 2;
+
+impl Canceller {
+    fn new() -> Arc<Self> {
+        // Echo canceller and high-pass only. Noise suppression and gain
+        // control are left to the chain that already does them — RNNoise and
+        // our own AutoGain are tuned and tested, and running two of each
+        // would fight.
+        let apm = livekit::webrtc::native::apm::AudioProcessingModule::new(true, false, true, false);
+        let this = Arc::new(Self { apm: Mutex::new(apm), render: Mutex::new(Vec::new()) });
+        if let Ok(mut apm) = this.apm.lock() {
+            let _ = apm.set_stream_delay_ms(ECHO_DELAY_MS);
+        }
+        this
+    }
+
+    /// What the speakers are about to play.
+    fn played(&self, out: &[f32]) {
+        let Ok(mut render) = self.render.lock() else { return };
+        render.extend(out.iter().map(|s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16));
+        let whole = render.len() / RENDER_CHUNK * RENDER_CHUNK;
+        if whole == 0 {
+            return;
+        }
+        let mut chunk: Vec<i16> = render.drain(..whole).collect();
+        drop(render);
+        if let Ok(mut apm) = self.apm.lock() {
+            let _ = apm.process_reverse_stream(&mut chunk, NS_RATE as i32, 2);
+        }
+    }
+
+    /// One 10ms microphone frame, with the echo taken out of it in place.
+    fn heard(&self, frame: &mut [i16]) {
+        if let Ok(mut apm) = self.apm.lock() {
+            let _ = apm.process_stream(frame, NS_RATE as i32, 1);
+        }
+    }
+}
+
 /// One remote track's audio, waiting its turn to be mixed.
 struct MixTrack {
     samples: std::collections::VecDeque<i16>,
@@ -2214,6 +2299,9 @@ pub struct Mixer {
     tracks: Mutex<HashMap<String, MixTrack>>,
     master: Arc<AtomicU32>,
     deafened: Arc<AtomicBool>,
+    /// Told what came out, so the microphone can have it subtracted again.
+    /// None when the setting is off.
+    echo: Option<Arc<Canceller>>,
 }
 
 /// Latency cap per track: anything older than this is stale by the time it
@@ -2221,8 +2309,12 @@ pub struct Mixer {
 const MIX_LATENCY_CAP: usize = 48_000 / 2;
 
 impl Mixer {
-    fn new(master: Arc<AtomicU32>, deafened: Arc<AtomicBool>) -> Arc<Self> {
-        Arc::new(Self { tracks: Mutex::new(HashMap::new()), master, deafened })
+    fn new(
+        master: Arc<AtomicU32>,
+        deafened: Arc<AtomicBool>,
+        echo: Option<Arc<Canceller>>,
+    ) -> Arc<Self> {
+        Arc::new(Self { tracks: Mutex::new(HashMap::new()), master, deafened, echo })
     }
 
     fn add(&self, sid: String, gain: Arc<AtomicU32>) {
@@ -2278,6 +2370,14 @@ impl Mixer {
         // once, rather than per track.
         for sample in out.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
+        }
+        drop(tracks);
+        // Hand the finished mix to the canceller. It has to be THIS signal —
+        // after volumes, after the master, after clipping — because that is
+        // what the speakers get and therefore what the microphone will hear
+        // a moment later.
+        if let Some(echo) = &self.echo {
+            echo.played(out);
         }
     }
 }
@@ -2443,7 +2543,7 @@ mod mixer_tests {
     }
 
     fn mixer(master: f32, deaf: bool) -> Arc<Mixer> {
-        Mixer::new(gain(master), Arc::new(AtomicBool::new(deaf)))
+        Mixer::new(gain(master), Arc::new(AtomicBool::new(deaf)), None)
     }
 
     #[test]
@@ -2488,7 +2588,7 @@ mod mixer_tests {
         // would queue up the conversation and replay it the moment you
         // un-deafened, which is the opposite of what the button is for.
         let deaf = Arc::new(AtomicBool::new(true));
-        let m = Mixer::new(gain(1.0), deaf.clone());
+        let m = Mixer::new(gain(1.0), deaf.clone(), None);
         m.add("a".into(), gain(1.0));
         m.push("a", &[9000; 8]);
         let mut out = [0.0f32; 4];
@@ -2591,7 +2691,7 @@ mod mix_hardware_tests {
     fn mix_output_is_audible_on_the_real_device() {
         let master = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let deaf = Arc::new(AtomicBool::new(false));
-        let mixer = Mixer::new(master, deaf);
+        let mixer = Mixer::new(master, deaf, None);
         // Two people: one at full volume, one turned down to a quarter.
         mixer.add("loud".into(), Arc::new(AtomicU32::new(1.0f32.to_bits())));
         mixer.add("quiet".into(), Arc::new(AtomicU32::new(0.25f32.to_bits())));
@@ -2647,5 +2747,92 @@ mod mix_hardware_tests {
         assert!(loud > 0.001, "the full-volume track never made it out");
         assert!(quiet > 0.0002, "the quiet track was dropped entirely");
         assert!(loud > quiet * 2.0, "per-track volume was not applied: {loud} vs {quiet}");
+    }
+}
+
+#[cfg(test)]
+mod echo_tests {
+    use super::*;
+
+    /// Energy at one frequency, by Goertzel.
+    fn tone_energy(samples: &[f32], freq: f32) -> f32 {
+        let k = (0.5 + samples.len() as f32 * freq / NS_RATE as f32).floor();
+        let w = std::f32::consts::TAU * k / samples.len() as f32;
+        let coeff = 2.0 * w.cos();
+        let (mut s0, mut s1, mut s2) = (0.0f32, 0.0f32, 0.0f32);
+        for x in samples {
+            s0 = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt() / samples.len() as f32
+    }
+
+    #[test]
+    fn it_subtracts_what_the_speakers_played() {
+        // The worst case a speaker user produces: the microphone hears
+        // exactly what came out, and nothing else. Everything the canceller
+        // leaves behind is echo it failed to remove.
+        let echo = Canceller::new();
+        let mut phase = 0.0f32;
+        let mut first = Vec::new();
+        let mut last = Vec::new();
+
+        // Three seconds. AEC3 has to hear the room before it can cancel it,
+        // so the beginning is expected to leak — the question is where it
+        // ends up.
+        for frame_no in 0..300 {
+            let mut played = Vec::with_capacity(RENDER_CHUNK);
+            let mut mono = Vec::with_capacity(NS_FRAME);
+            for _ in 0..NS_FRAME {
+                let v = (phase * std::f32::consts::TAU).sin() * 0.5;
+                phase = (phase + 440.0 / NS_RATE as f32).fract();
+                mono.push((v * 32767.0) as i16);
+                played.push(v);
+                played.push(v);
+            }
+            echo.played(&played);
+            echo.heard(&mut mono);
+            let out: Vec<f32> = mono.iter().map(|s| *s as f32 / 32768.0).collect();
+            if frame_no < 20 {
+                first.extend(out);
+            } else if frame_no >= 280 {
+                last.extend(out);
+            }
+        }
+
+        let before = tone_energy(&first, 440.0);
+        let after = tone_energy(&last, 440.0);
+        println!("echo at the start: {before:.6}\necho at the end:   {after:.6}");
+        assert!(
+            after < before * 0.5,
+            "the canceller never converged: {before:.6} -> {after:.6}"
+        );
+    }
+
+    #[test]
+    fn silence_from_the_speakers_leaves_the_voice_alone() {
+        // Nothing is playing, so nothing should be subtracted: somebody on
+        // headphones must not have their own voice eaten.
+        let echo = Canceller::new();
+        let mut phase = 0.0f32;
+        let mut spoken = Vec::new();
+        let mut heard = Vec::new();
+        for _ in 0..100 {
+            let mut mono = Vec::with_capacity(NS_FRAME);
+            for _ in 0..NS_FRAME {
+                let v = (phase * std::f32::consts::TAU).sin() * 0.4;
+                phase = (phase + 300.0 / NS_RATE as f32).fract();
+                mono.push((v * 32767.0) as i16);
+            }
+            spoken.extend(mono.iter().map(|s| *s as f32 / 32768.0));
+            echo.played(&vec![0.0f32; RENDER_CHUNK]);
+            echo.heard(&mut mono);
+            heard.extend(mono.iter().map(|s| *s as f32 / 32768.0));
+        }
+        let sent = tone_energy(&spoken, 300.0);
+        let kept = tone_energy(&heard, 300.0);
+        println!("voice in: {sent:.6}\nvoice out: {kept:.6}");
+        assert!(kept > sent * 0.5, "it ate the voice: {sent:.6} -> {kept:.6}");
     }
 }

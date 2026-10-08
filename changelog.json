@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.99.6",
+    "date": "2026-10-07",
+    "changes": [
+      "🔇 Echo cancellation, for anyone on speakers (switchb could hear himself whenever Chris's speakers fed Chris's mic). What the speakers are playing is now subtracted from what the microphone hears, so your voice stops coming back at you a moment later",
+      "This needed last release's mixer first: a canceller works by comparing the mic against a reference of what came out of the speakers, and until everyone's audio was summed in one place, nothing in the app had that reference. The flag has been set to true in the code since the first voice release and could never have done anything",
+      "On by default, and free on headphones — with nothing coming out of the speakers there is no echo to find, and a test checks it leaves your voice alone in that case. Settings → Voice has a switch if it ever misbehaves"
+    ]
+  },
+  {
     "version": "0.99.5",
     "date": "2026-10-07",
     "changes": [

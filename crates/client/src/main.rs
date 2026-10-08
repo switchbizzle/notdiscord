@@ -3502,6 +3502,20 @@ fn MainView(session: api::Session) -> Element {
                                     }
                                     " Auto mic level (boosts quiet microphones)"
                                 }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: audio_settings().echo_cancellation,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.echo_cancellation = e.checked();
+                                            api::save_settings(&s);
+                                            drop(s);
+                                            rejoin_voice();
+                                        },
+                                    }
+                                    " Echo cancellation (for speakers)"
+                                }
                                 label { "Output volume · {(audio_settings().output_volume * 100.0) as i32}%" }
                                 input {
                                     r#type: "range",

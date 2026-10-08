@@ -364,6 +364,11 @@ pub struct Settings {
     /// Master voice output gain (1.0 = 100%).
     #[serde(default = "one")]
     pub output_volume: f32,
+    /// Subtract what the speakers are playing from what the microphone
+    /// hears, so people on speakers stop sending everyone their own voices
+    /// back. Costs nothing on headphones, where there is no echo to find.
+    #[serde(default = "yes")]
+    pub echo_cancellation: bool,
     /// RNNoise ML noise suppression on the microphone.
     #[serde(default = "yes")]
     pub noise_suppression: bool,
@@ -548,6 +553,7 @@ pub fn load_settings() -> Settings {
             input_volume: 1.0,
             output_volume: 1.0,
             noise_suppression: true,
+            echo_cancellation: true,
             auto_gain: true,
             voice_mode: vad(),
             ptt_key: default_ptt_key(),
