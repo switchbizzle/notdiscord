@@ -210,6 +210,71 @@ struct SidecarStatus {
     up_next: Vec<String>,
     #[serde(default)]
     paused: bool,
+    #[serde(default)]
+    played: usize,
+    #[serde(default)]
+    skipped: Vec<SidecarSkip>,
+    #[serde(default)]
+    failed: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Default)]
+struct SidecarSkip {
+    title: String,
+    reason: String,
+}
+
+/// What to say on the way out.
+///
+/// This used to be one cheerful line, which was a lie in the one case that
+/// mattered: a queue where nothing played at all. SoundCloud serves a lot of
+/// label catalogue DRM-protected, so a pasted playlist can fail every track
+/// in about six seconds each and leave "thanks for listening!" as the only
+/// trace — the bot joins, the titles appear, no sound comes out, and nothing
+/// anywhere says why.
+fn farewell(status: &SidecarStatus) -> String {
+    if let Some(error) = &status.failed {
+        // The sidecar's own words, which are yt-dlp's or LiveKit's, and not
+        // for chat — but the log line is, because that's where the answer is.
+        tracing::warn!("music session failed: {error}");
+        return "😖 the music player fell out of the voice channel — nothing played. worth a retry.".to_owned();
+    }
+    if status.played == 0 && !status.skipped.is_empty() {
+        let n = status.skipped.len();
+        let what = if n == 1 {
+            "that track".to_owned()
+        } else {
+            format!("any of those {n} tracks")
+        };
+        return format!(
+            "😖 couldn't play {what} — {}. a link from somewhere other than SoundCloud usually plays fine.",
+            reason_summary(&status.skipped)
+        );
+    }
+    let mut out = "🎶 that's the end of the queue — thanks for listening! leaving voice~".to_owned();
+    if !status.skipped.is_empty() {
+        out.push_str(&format!(
+            "\n(skipped {} along the way — {})",
+            status.skipped.len(),
+            reason_summary(&status.skipped)
+        ));
+    }
+    out
+}
+
+/// Distinct reasons, commonest first. Thirteen tracks that all died the same
+/// way is one fact, not thirteen — and listing thirteen identical lines is
+/// how a clear explanation turns back into noise.
+fn reason_summary(skipped: &[SidecarSkip]) -> String {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for skip in skipped {
+        match counts.iter_mut().find(|(reason, _)| *reason == skip.reason) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((skip.reason.as_str(), 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.iter().take(3).map(|(reason, _)| *reason).collect::<Vec<_>>().join("; ")
 }
 
 /// The player card the client renders with transport buttons:
@@ -499,6 +564,11 @@ fn spawn_status_watch(state: SharedState, text_channel: i64) {
     tokio::spawn(async move {
         let http = reqwest::Client::new();
         let mut painted = String::new();
+        // Whether the "this one won't play" note has already gone out. Said
+        // once, early — a 13-track queue of unplayable links drains in under
+        // ninety seconds, and waiting for the summary means a minute and a
+        // half of staring at a silent player card.
+        let mut warned = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let status: Option<SidecarStatus> = match http
@@ -515,14 +585,23 @@ fn spawn_status_watch(state: SharedState, text_channel: i64) {
             if !status.active {
                 leave_roster(&state);
                 // Retire the card: no buttons once there's nothing to control.
-                let _ = paint_player(
-                    &state,
-                    text_channel,
-                    "🎶 that's the end of the queue — thanks for listening! leaving voice~",
-                )
-                .await;
+                let _ = paint_player(&state, text_channel, &farewell(&status)).await;
                 *state.music_player.lock().unwrap() = None;
                 break;
+            }
+
+            // Nothing has played and something has already failed: say so
+            // now rather than at the end of the queue.
+            if !warned && status.played == 0 {
+                if let Some(skip) = status.skipped.first() {
+                    warned = true;
+                    let _ = crate::bot::post_message(
+                        &state,
+                        text_channel,
+                        &format!("⚠️ **{}** won't play — {}. trying the rest…", skip.title, skip.reason),
+                    )
+                    .await;
+                }
             }
 
             let card = player_card(&status);
@@ -539,6 +618,72 @@ fn spawn_status_watch(state: SharedState, text_channel: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status_after(played: usize, skipped: &[(&str, &str)]) -> SidecarStatus {
+        SidecarStatus {
+            active: false,
+            now_playing: None,
+            queue_len: 0,
+            up_next: Vec::new(),
+            paused: false,
+            failed: None,
+            played,
+            skipped: skipped
+                .iter()
+                .map(|(title, reason)| SidecarSkip {
+                    title: (*title).to_owned(),
+                    reason: (*reason).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_queue_that_played_nothing_is_not_thanked_for_listening() {
+        let drm = "SoundCloud only offers it DRM-protected";
+        let said = farewell(&status_after(
+            0,
+            &[("Brown Mtn Lights", drm), ("Phone Jumping", drm), ("Repeat Message", drm)],
+        ));
+        assert!(said.contains("any of those 3 tracks"), "{said}");
+        assert!(said.contains(drm), "{said}");
+        assert!(!said.contains("thanks for listening"), "{said}");
+    }
+
+    #[test]
+    fn one_dud_in_a_good_queue_is_a_footnote_not_the_headline() {
+        let said = farewell(&status_after(9, &[("Til The Sun Burns Out", "the upload is gone")]));
+        assert!(said.starts_with("🎶 that's the end of the queue"), "{said}");
+        assert!(said.contains("skipped 1"), "{said}");
+    }
+
+    #[test]
+    fn a_player_that_never_joined_does_not_claim_the_queue_finished() {
+        let mut status = status_after(0, &[]);
+        status.failed = Some("could not connect to wss://…: 401 unauthorized".into());
+        let said = farewell(&status);
+        assert!(!said.contains("thanks for listening"), "{said}");
+        // And it doesn't paste the transport error into chat either.
+        assert!(!said.contains("401"), "{said}");
+    }
+
+    #[test]
+    fn a_clean_run_says_exactly_what_it_always_said() {
+        assert_eq!(
+            farewell(&status_after(4, &[])),
+            "🎶 that's the end of the queue — thanks for listening! leaving voice~"
+        );
+    }
+
+    #[test]
+    fn identical_reasons_collapse_commonest_first() {
+        let summary = reason_summary(&status_after(
+            0,
+            &[("a", "the upload is gone"), ("b", "it's private"), ("c", "it's private")],
+        )
+        .skipped);
+        assert_eq!(summary, "it's private; the upload is gone");
+    }
 
     #[test]
     fn a_spotify_link_is_a_play_command_like_any_other() {

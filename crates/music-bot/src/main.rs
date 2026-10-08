@@ -80,9 +80,31 @@ struct Session {
     controls: Arc<Controls>,
 }
 
+/// A track that never made it to the speakers, and why in plain words.
+#[derive(Clone, Debug, Serialize)]
+struct Skipped {
+    title: String,
+    reason: String,
+}
+
+/// What became of this session's queue. Deliberately *not* part of `Session`:
+/// the session is dropped the instant playback ends, and the moment anyone
+/// most wants to know why nothing played is the moment after the bot leaves.
+#[derive(Default)]
+struct Report {
+    played: usize,
+    skipped: Vec<Skipped>,
+    /// Set when the session itself fell over — LiveKit unreachable, the token
+    /// rejected — as opposed to individual tracks refusing to play. Without
+    /// it, a bot that never got into the room is indistinguishable from one
+    /// that played an empty queue, and both end with "thanks for listening".
+    failed: Option<String>,
+}
+
 #[derive(Default)]
 struct AppState {
     session: Mutex<Option<Session>>,
+    report: Mutex<Report>,
 }
 
 type Shared = Arc<AppState>;
@@ -301,6 +323,7 @@ async fn play(
                 paused: AtomicBool::new(false),
                 position_ms: std::sync::atomic::AtomicU64::new(0),
             });
+            *state.report.lock().unwrap() = Report::default();
             *guard = Some(Session {
                 room_name: req.room.clone(),
                 queue: tracks.into(),
@@ -313,6 +336,7 @@ async fn play(
             tokio::spawn(async move {
                 if let Err(e) = run_session(state.clone(), req, controls).await {
                     tracing::warn!("session ended with error: {e}");
+                    state.report.lock().unwrap().failed = Some(e.to_string());
                 }
                 *state.session.lock().unwrap() = None;
             });
@@ -369,9 +393,19 @@ struct StatusResponse {
     queue_len: usize,
     up_next: Vec<String>,
     paused: bool,
+    /// How many tracks actually reached the room this session, and the ones
+    /// that didn't. Survive the session ending so the server can explain a
+    /// queue that died rather than thanking everyone for listening to it.
+    played: usize,
+    skipped: Vec<Skipped>,
+    failed: Option<String>,
 }
 
 async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
+    let (played, skipped, failed) = {
+        let report = state.report.lock().unwrap();
+        (report.played, report.skipped.clone(), report.failed.clone())
+    };
     let guard = state.session.lock().unwrap();
     Json(match guard.as_ref() {
         Some(s) => StatusResponse {
@@ -383,6 +417,9 @@ async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
             queue_len: s.queue.len(),
             up_next: s.queue.iter().take(5).map(|t| t.title.clone()).collect(),
             paused: s.controls.paused.load(Ordering::Relaxed),
+            played,
+            skipped,
+            failed: failed.clone(),
         },
         None => StatusResponse {
             active: false,
@@ -393,6 +430,9 @@ async fn status(State(state): State<Shared>) -> Json<StatusResponse> {
             queue_len: 0,
             up_next: Vec::new(),
             paused: false,
+            played,
+            skipped,
+            failed,
         },
     })
 }
@@ -825,18 +865,47 @@ async fn ytdlp_resolve(page_url: &str, cookies: Vec<String>) -> anyhow::Result<s
 /// if it's a search, then resolve one to a stream. Both the player and the
 /// look-ahead go through here, so a prefetched track is prepared exactly the
 /// way an immediate one is.
-async fn prepare(track: &Track) -> Option<(String, Resolved)> {
+async fn prepare(track: &Track) -> Result<(String, Resolved), String> {
     let candidates = match track.url.strip_prefix(SEARCH_PREFIX) {
         None => vec![track.url.clone()],
         Some(query) => match search_soundcloud(query, track.duration, &track.title).await {
             Ok(urls) => urls,
             Err(e) => {
                 tracing::warn!("could not find {}: {e}", track.title);
-                return None;
+                return Err("nothing on SoundCloud matched it".into());
             }
         },
     };
+    if candidates.is_empty() {
+        return Err("nothing on SoundCloud matched it".into());
+    }
     first_playable(&candidates).await
+}
+
+/// yt-dlp's last line of stderr, as something worth reading in chat.
+///
+/// The failure everyone actually hits is the first one: SoundCloud serves a
+/// lot of label-released catalogue as encrypted HLS, and no login, cookie or
+/// yt-dlp version gets past it — the track is simply not ours to play. Saying
+/// that plainly is the difference between a bug and a fact.
+fn skip_reason(error: &str) -> String {
+    let e = error.to_ascii_lowercase();
+    if e.contains("drm") {
+        "SoundCloud only offers it DRM-protected"
+    } else if e.contains("404") || e.contains("not found") {
+        "the upload is gone"
+    } else if e.contains("private") || e.contains("log in") || e.contains("sign in") {
+        "it's private"
+    } else if e.contains("403") || e.contains("forbidden") {
+        "SoundCloud refused it"
+    } else if e.contains("geo") || e.contains("not available in your") {
+        "it's blocked here"
+    } else if e.contains("timed out") || e.contains("timeout") {
+        "SoundCloud timed out"
+    } else {
+        "it wouldn't resolve"
+    }
+    .to_owned()
 }
 
 /// How long before a track ends to go and fetch the next one.
@@ -859,14 +928,18 @@ fn prefetch_lead() -> f64 {
 /// Work down a candidate list until one actually plays. The best guess can
 /// still be a DRM protected Go+ upload or a dead link, and the next one
 /// usually is not.
-async fn first_playable(candidates: &[String]) -> Option<(String, Resolved)> {
+async fn first_playable(candidates: &[String]) -> Result<(String, Resolved), String> {
+    let mut last = String::new();
     for page_url in candidates.iter().take(SEARCH_ATTEMPTS) {
         match resolve_stream(page_url).await {
-            Ok(resolved) => return Some((page_url.clone(), resolved)),
-            Err(e) => tracing::warn!("candidate unplayable ({page_url}): {e}"),
+            Ok(resolved) => return Ok((page_url.clone(), resolved)),
+            Err(e) => {
+                tracing::warn!("candidate unplayable ({page_url}): {e}");
+                last = e.to_string();
+            }
         }
     }
-    None
+    Err(skip_reason(&last))
 }
 
 /// Resolve one track page to (title, direct stream URL).
@@ -970,7 +1043,7 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         let ready_was_used = ready.is_some();
         let waited = std::time::Instant::now();
         let outcome = match ready {
-            Some(prepared) => Some(prepared),
+            Some(prepared) => Ok(prepared),
             None => prepare(&track).await,
         };
         tracing::info!(
@@ -981,7 +1054,7 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
         );
 
         match outcome {
-            Some((page_url, resolved)) => {
+            Ok((page_url, resolved)) => {
                 // A Spotify link already knew the title; whatever upload we
                 // found shouldn't rename the song mid-queue.
                 let playing = Track {
@@ -1004,6 +1077,7 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
                     session.now_playing = Some(playing);
                 }
                 tracing::info!("playing: {announce}");
+                state.report.lock().unwrap().played += 1;
 
                 // Get the next one ready while this one plays. Timed to land
                 // shortly before the end rather than immediately: a stream URL
@@ -1022,7 +1096,7 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
                         .unwrap_or(0.0);
                     ahead_task = Some(tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs_f64(lead)).await;
-                        prepare(&next).await.map(|prepared| (next.id, prepared))
+                        prepare(&next).await.ok().map(|prepared| (next.id, prepared))
                     }));
                 }
 
@@ -1033,7 +1107,7 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
                     // Resolve once more before giving up — silently dropping a
                     // song is a worse trade than the gap prefetching saved.
                     if ready_was_used && !controls.skip.load(Ordering::Relaxed) {
-                        if let Some((_, fresh)) = prepare(&track).await {
+                        if let Ok((_, fresh)) = prepare(&track).await {
                             tracing::info!("retrying {announce} with a fresh stream");
                             if let Err(e) = stream_pcm(&source, &fresh.stream, &controls).await {
                                 tracing::warn!("second attempt failed ({announce}): {e}");
@@ -1054,7 +1128,13 @@ async fn run_session(state: Shared, req: PlayRequest, controls: Arc<Controls>) -
                     None => None,
                 };
             }
-            None => tracing::warn!("gave up on {}", track.title),
+            Err(reason) => {
+                tracing::warn!("gave up on {}: {reason}", track.title);
+                state.report.lock().unwrap().skipped.push(Skipped {
+                    title: track.title.clone(),
+                    reason,
+                });
+            }
         }
     }
 
@@ -1221,6 +1301,31 @@ mod tests {
         ]
     }
 
+    /// These are the exact last lines yt-dlp printed for the Daily Bread
+    /// playlist that played nothing on 2026-10-08.
+    #[test]
+    fn a_drm_locked_catalogue_says_so_rather_than_failing_vaguely() {
+        assert_eq!(
+            skip_reason("ERROR: [soundcloud] 2376950666: This video is DRM protected"),
+            "SoundCloud only offers it DRM-protected"
+        );
+        assert_eq!(
+            skip_reason(
+                "ERROR: [soundcloud] 2378819183: Unable to download JSON metadata:                  HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)"
+            ),
+            "SoundCloud refused it"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_failure_still_reads_as_a_sentence() {
+        // Never leak yt-dlp's wording into chat — whatever broke, the reason
+        // has to be something a person can act on.
+        let reason = skip_reason("ERROR: Postprocessing: Conversion failed!");
+        assert_eq!(reason, "it wouldn't resolve");
+        assert!(!reason.contains("ERROR"), "{reason}");
+    }
+
     #[test]
     fn length_decides_which_upload_is_the_song() {
         let c = candidates();
@@ -1346,6 +1451,7 @@ mod tests {
         println!("invented from the URL: {before:?}");
 
         let state: Shared = Arc::new(AppState {
+            report: Mutex::new(Report::default()),
             session: Mutex::new(Some(Session {
                 room_name: "test".into(),
                 queue,
