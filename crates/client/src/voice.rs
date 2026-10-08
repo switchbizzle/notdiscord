@@ -878,7 +878,12 @@ struct ActiveCall {
     mic_publication: livekit::publication::LocalTrackPublication,
     /// Dropping these ends the audio device threads.
     _mic_stop: std_mpsc::Sender<()>,
-    playback_stops: Arc<Mutex<HashMap<String, std_mpsc::Sender<()>>>>,
+    /// One reader per remote track, feeding the mix. Aborted when the track
+    /// goes away; dropping the call takes the lot.
+    readers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// The call's audio, and the single stream playing it.
+    mixer: Arc<Mixer>,
+    _mix_stop: std_mpsc::Sender<()>,
     /// Per-identity playback gain, read lock-free by audio callbacks.
     gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>>,
     mic_gain: Arc<AtomicU32>,
@@ -973,7 +978,10 @@ fn gain_handle(
 impl Drop for ActiveCall {
     fn drop(&mut self) {
         self.event_task.abort();
-        self.playback_stops.lock().unwrap().clear();
+        for (_, reader) in self.readers.lock().unwrap().drain() {
+            reader.abort();
+        }
+        self.mixer.clear();
     }
 }
 
@@ -1880,18 +1888,20 @@ async fn connect(
         let mut s = status;
         s.write().volumes = settings.volumes.clone();
     }
-    let playback_stops: Arc<Mutex<HashMap<String, std_mpsc::Sender<()>>>> =
+    let readers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    // One stream for the call, opened now and kept until it ends: everything
+    // anyone says is summed into it.
+    let mixer = Mixer::new(master_gain.clone(), deafened.clone());
+    let mix_stop = start_mix_output(mixer.clone(), settings.output_device.clone(), status);
     let video_tracks: Arc<Mutex<VideoTracks>> = Arc::new(Mutex::new(VideoTracks::default()));
     let tracks_for_events = video_tracks.clone();
     let gains: Arc<Mutex<HashMap<String, Arc<AtomicU32>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let stops = playback_stops.clone();
+    let readers_for_events = readers.clone();
+    let mixer_for_events = mixer.clone();
     let gains_for_events = gains.clone();
-    let master_for_events = master_gain.clone();
-    let deafen_for_events = deafened.clone();
     let saved_volumes = settings.volumes.clone();
     let room_handle = room.clone();
-    let output_device = settings.output_device.clone();
     let event_task = tokio::spawn(async move {
         let mut events = events;
         refresh_participants(&room_handle, status, &tracks_for_events);
@@ -1904,8 +1914,9 @@ async fn connect(
                             let identity = participant.identity().to_string();
                             let initial = *saved_volumes.get(&identity).unwrap_or(&1.0);
                             let gain = gain_handle(&gains_for_events, &identity, initial);
-                            let stop = spawn_playback(audio, output_device.clone(), status, gain, master_for_events.clone(), deafen_for_events.clone());
-                            stops.lock().unwrap().insert(sid, stop);
+                            let reader =
+                                spawn_reader(audio, sid.clone(), mixer_for_events.clone(), gain);
+                            readers_for_events.lock().unwrap().insert(sid, reader);
                         }
                         RemoteTrack::Video(video) => {
                             let identity = participant.identity().to_string();
@@ -1936,7 +1947,11 @@ async fn connect(
                 RoomEvent::TrackUnsubscribed { track, publication, participant } => {
                     match track {
                         RemoteTrack::Audio(audio) => {
-                            stops.lock().unwrap().remove(&audio.sid().to_string());
+                            let sid = audio.sid().to_string();
+                            if let Some(reader) = readers_for_events.lock().unwrap().remove(&sid) {
+                                reader.abort();
+                            }
+                            mixer_for_events.remove(&sid);
                         }
                         RemoteTrack::Video(_) => {
                             let identity = participant.identity().to_string();
@@ -2007,7 +2022,9 @@ async fn connect(
         room,
         mic_publication,
         _mic_stop: mic_stop_tx,
-        playback_stops,
+        readers,
+        mixer,
+        _mix_stop: mix_stop,
         gains,
         mic_gain,
         master_gain,
@@ -2174,37 +2191,104 @@ fn refresh_participants(
 
 /// Play one remote audio track on the configured (or default) output device.
 /// Returns a stop handle; dropping it ends the playback thread.
-fn spawn_playback(
-    track: livekit::track::RemoteAudioTrack,
-    output_device: Option<String>,
-    mut status: VoiceStatusSignal,
+/// One remote track's audio, waiting its turn to be mixed.
+struct MixTrack {
+    samples: std::collections::VecDeque<i16>,
+    /// That person's volume slider. Shared with the UI, so moving it is
+    /// heard on the next callback without touching the mixer.
     gain: Arc<AtomicU32>,
+}
+
+/// Everything being played, summed in one place.
+///
+/// This used to be one cpal output stream per remote track, each opening the
+/// device and mixing itself in by writing on top of whatever was there. That
+/// works, but it means the machine is playing N independent streams and
+/// nothing in this process ever knows what the speakers are actually
+/// producing — which is precisely the signal an echo canceller needs, and
+/// why ours has never been able to do anything.
+///
+/// So: one stream, one callback, one place where the call's audio exists as
+/// a single buffer.
+pub struct Mixer {
+    tracks: Mutex<HashMap<String, MixTrack>>,
     master: Arc<AtomicU32>,
     deafened: Arc<AtomicBool>,
-) -> std_mpsc::Sender<()> {
-    let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
+}
 
-    // Shared buffer between the LiveKit frame reader and the cpal callback.
-    let buffer: Arc<Mutex<std::collections::VecDeque<i16>>> =
-        Arc::new(Mutex::new(std::collections::VecDeque::new()));
+/// Latency cap per track: anything older than this is stale by the time it
+/// would be heard, so it is dropped rather than queued.
+const MIX_LATENCY_CAP: usize = 48_000 / 2;
 
-    // Reader: LiveKit frames -> buffer (48kHz stereo, resampled by libwebrtc).
-    let reader_buffer = buffer.clone();
-    let rtc_track = track.rtc_track();
-    let reader = tokio::spawn(async move {
-        let mut stream = NativeAudioStream::new(rtc_track, 48000, 2);
-        while let Some(frame) = stream.next().await {
-            let mut buf = reader_buffer.lock().unwrap();
-            buf.extend(frame.data.iter().copied());
-            // Cap latency: drop oldest samples beyond ~250ms.
-            let cap = 48000 / 2;
-            let extra = buf.len().saturating_sub(cap);
-            if extra > 0 {
-                buf.drain(..extra);
+impl Mixer {
+    fn new(master: Arc<AtomicU32>, deafened: Arc<AtomicBool>) -> Arc<Self> {
+        Arc::new(Self { tracks: Mutex::new(HashMap::new()), master, deafened })
+    }
+
+    fn add(&self, sid: String, gain: Arc<AtomicU32>) {
+        self.tracks
+            .lock()
+            .unwrap()
+            .insert(sid, MixTrack { samples: std::collections::VecDeque::new(), gain });
+    }
+
+    fn remove(&self, sid: &str) {
+        self.tracks.lock().unwrap().remove(sid);
+    }
+
+    fn clear(&self) {
+        self.tracks.lock().unwrap().clear();
+    }
+
+    /// A track's reader hands over whatever LiveKit gave it.
+    fn push(&self, sid: &str, samples: &[i16]) {
+        let mut tracks = self.tracks.lock().unwrap();
+        let Some(track) = tracks.get_mut(sid) else { return };
+        track.samples.extend(samples.iter().copied());
+        let extra = track.samples.len().saturating_sub(MIX_LATENCY_CAP);
+        if extra > 0 {
+            track.samples.drain(..extra);
+        }
+    }
+
+    /// Sum every track into `out`, at that person's volume times the master.
+    ///
+    /// Deafened plays silence but still drains: holding the audio back would
+    /// just queue it up, and un-deafening would replay the conversation you
+    /// deliberately missed.
+    fn fill(&self, out: &mut [f32]) {
+        for sample in out.iter_mut() {
+            *sample = 0.0;
+        }
+        let silent = self.deafened.load(Ordering::Relaxed);
+        let master = f32::from_bits(self.master.load(Ordering::Relaxed));
+        let mut tracks = self.tracks.lock().unwrap();
+        for track in tracks.values_mut() {
+            let gain = if silent {
+                0.0
+            } else {
+                f32::from_bits(track.gain.load(Ordering::Relaxed)) * master
+            };
+            for sample in out.iter_mut() {
+                let s = track.samples.pop_front().unwrap_or(0);
+                *sample += s as f32 / 32768.0 * gain;
             }
         }
-    });
+        // Several people at once can sum past full scale; clip at the end,
+        // once, rather than per track.
+        for sample in out.iter_mut() {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
+    }
+}
 
+/// Open the call's one output stream. Lives until the call ends.
+fn start_mix_output(
+    mixer: Arc<Mixer>,
+    output_device: Option<String>,
+    mut status: VoiceStatusSignal,
+) -> std_mpsc::Sender<()> {
+    let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
     std::thread::spawn(move || {
         com_init_mta();
         let host = cpal::default_host();
@@ -2217,22 +2301,9 @@ fn spawn_playback(
             sample_rate: 48000,
             buffer_size: cpal::BufferSize::Default,
         };
-        let cb_buffer = buffer.clone();
         let stream = device.build_output_stream(
             config,
-            move |out: &mut [f32], _: &_| {
-                let g = if deafened.load(Ordering::Relaxed) {
-                    0.0
-                } else {
-                    f32::from_bits(gain.load(Ordering::Relaxed))
-                        * f32::from_bits(master.load(Ordering::Relaxed))
-                };
-                let mut buf = cb_buffer.lock().unwrap();
-                for sample in out.iter_mut() {
-                    let s = buf.pop_front().map(|s| s as f32 / 32768.0).unwrap_or(0.0);
-                    *sample = (s * g).clamp(-1.0, 1.0);
-                }
-            },
+            move |out: &mut [f32], _: &_| mixer.fill(out),
             move |e| {
                 let text = e.to_string();
                 if text.contains("underrun") || text.contains("overrun") {
@@ -2254,10 +2325,27 @@ fn spawn_playback(
                 s.write().error = format!("audio output failed to open: {e}");
             }
         }
-        reader.abort();
     });
-
     stop_tx
+}
+
+/// Feed one remote track into the mix. Returns the reader, to abort when the
+/// track goes away.
+fn spawn_reader(
+    track: livekit::track::RemoteAudioTrack,
+    sid: String,
+    mixer: Arc<Mixer>,
+    gain: Arc<AtomicU32>,
+) -> tokio::task::JoinHandle<()> {
+    mixer.add(sid.clone(), gain);
+    let rtc_track = track.rtc_track();
+    tokio::spawn(async move {
+        // 48kHz stereo, resampled by libwebrtc on the way out.
+        let mut stream = NativeAudioStream::new(rtc_track, 48000, 2);
+        while let Some(frame) = stream.next().await {
+            mixer.push(&sid, &frame.data);
+        }
+    })
 }
 
 #[cfg(test)]
@@ -2343,5 +2431,221 @@ mod share_audio_tests {
         let mut out = Vec::new();
         resample_stereo(&[5, 6, 7, 8], NS_RATE, &mut carry, &mut out);
         assert_eq!(out, vec![5, 6, 7, 8], "48k needs no arithmetic at all");
+    }
+}
+
+#[cfg(test)]
+mod mixer_tests {
+    use super::*;
+
+    fn gain(v: f32) -> Arc<AtomicU32> {
+        Arc::new(AtomicU32::new(v.to_bits()))
+    }
+
+    fn mixer(master: f32, deaf: bool) -> Arc<Mixer> {
+        Mixer::new(gain(master), Arc::new(AtomicBool::new(deaf)))
+    }
+
+    #[test]
+    fn two_people_talking_are_summed() {
+        let m = mixer(1.0, false);
+        m.add("a".into(), gain(1.0));
+        m.add("b".into(), gain(1.0));
+        m.push("a", &[8000, 8000]);
+        m.push("b", &[4000, 4000]);
+        let mut out = [0.0f32; 2];
+        m.fill(&mut out);
+        let want = 12000.0 / 32768.0;
+        assert!((out[0] - want).abs() < 1e-4, "got {}, wanted {want}", out[0]);
+    }
+
+    #[test]
+    fn each_person_keeps_their_own_volume() {
+        let m = mixer(1.0, false);
+        m.add("loud".into(), gain(1.0));
+        m.add("quiet".into(), gain(0.25));
+        m.push("loud", &[8000, 8000]);
+        m.push("quiet", &[8000, 8000]);
+        let mut out = [0.0f32; 2];
+        m.fill(&mut out);
+        let want = (8000.0 + 2000.0) / 32768.0;
+        assert!((out[0] - want).abs() < 1e-4, "got {}, wanted {want}", out[0]);
+    }
+
+    #[test]
+    fn the_master_scales_everyone() {
+        let m = mixer(0.5, false);
+        m.add("a".into(), gain(1.0));
+        m.push("a", &[10000, 10000]);
+        let mut out = [0.0f32; 2];
+        m.fill(&mut out);
+        assert!((out[0] - 5000.0 / 32768.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn deafened_is_silent_but_still_drains() {
+        // The subtle one. Holding the audio back instead of dropping it
+        // would queue up the conversation and replay it the moment you
+        // un-deafened, which is the opposite of what the button is for.
+        let deaf = Arc::new(AtomicBool::new(true));
+        let m = Mixer::new(gain(1.0), deaf.clone());
+        m.add("a".into(), gain(1.0));
+        m.push("a", &[9000; 8]);
+        let mut out = [0.0f32; 4];
+        m.fill(&mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "deafened must be silent");
+
+        // Those four samples are gone, not waiting.
+        deaf.store(false, Ordering::Relaxed);
+        let mut out = [0.0f32; 8];
+        m.fill(&mut out);
+        let heard = out.iter().filter(|s| **s != 0.0).count();
+        assert_eq!(heard, 4, "only what arrived after un-deafening should play");
+    }
+
+    #[test]
+    fn a_silent_track_does_not_mute_the_others() {
+        let m = mixer(1.0, false);
+        m.add("talking".into(), gain(1.0));
+        m.add("idle".into(), gain(1.0));
+        m.push("talking", &[6000, 6000]);
+        let mut out = [0.0f32; 2];
+        m.fill(&mut out);
+        assert!((out[0] - 6000.0 / 32768.0).abs() < 1e-4, "the idle track contributed noise");
+    }
+
+    #[test]
+    fn a_backlog_is_dropped_rather_than_queued() {
+        let m = mixer(1.0, false);
+        m.add("a".into(), gain(1.0));
+        // Three seconds of audio at once: a stall, then a flood.
+        m.push("a", &vec![1234i16; 48_000 * 2 * 3]);
+        let held = m.tracks.lock().unwrap()["a"].samples.len();
+        assert!(held <= MIX_LATENCY_CAP, "kept {held} samples, cap is {MIX_LATENCY_CAP}");
+    }
+
+    #[test]
+    fn a_loud_room_clips_instead_of_wrapping() {
+        let m = mixer(1.0, false);
+        for who in ["a", "b", "c"] {
+            m.add(who.into(), gain(1.0));
+            m.push(who, &[30000, 30000]);
+        }
+        let mut out = [0.0f32; 2];
+        m.fill(&mut out);
+        assert!(out[0] <= 1.0 && out[0] >= 0.99, "should sit at full scale, got {}", out[0]);
+    }
+
+    #[test]
+    fn a_track_that_leaves_stops_being_mixed() {
+        let m = mixer(1.0, false);
+        m.add("a".into(), gain(1.0));
+        m.push("a", &[7000, 7000]);
+        m.remove("a");
+        let mut out = [0.0f32; 2];
+        m.fill(&mut out);
+        assert_eq!(out, [0.0, 0.0]);
+    }
+}
+
+/// Real-hardware check for the mix. Opens the default output, plays two
+/// tones through the mixer at different volumes, and listens to that same
+/// device via WASAPI loopback to hear what actually came out.
+///
+/// Ignored by default because it makes a noise and needs a working output.
+///   cargo test -p client -- --ignored mix_output --nocapture
+#[cfg(test)]
+mod mix_hardware_tests {
+    use super::*;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    /// Energy at one frequency, by Goertzel — cheaper than an FFT and all
+    /// this needs is "is that tone in there".
+    fn tone_energy(samples: &[f32], freq: f32, rate: f32) -> f32 {
+        let k = (0.5 + samples.len() as f32 * freq / rate).floor();
+        let w = std::f32::consts::TAU * k / samples.len() as f32;
+        let coeff = 2.0 * w.cos();
+        let (mut s0, mut s1, mut s2) = (0.0f32, 0.0f32, 0.0f32);
+        for x in samples {
+            s0 = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt() / samples.len() as f32
+    }
+
+    fn tone(freq: f32, frames: usize, phase: &mut f32) -> Vec<i16> {
+        let mut out = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            let v = (*phase * std::f32::consts::TAU).sin() * 0.4;
+            *phase = (*phase + freq / 48_000.0).fract();
+            let s = (v * 32767.0) as i16;
+            out.push(s);
+            out.push(s);
+        }
+        out
+    }
+
+    #[test]
+    #[ignore]
+    fn mix_output_is_audible_on_the_real_device() {
+        let master = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let deaf = Arc::new(AtomicBool::new(false));
+        let mixer = Mixer::new(master, deaf);
+        // Two people: one at full volume, one turned down to a quarter.
+        mixer.add("loud".into(), Arc::new(AtomicU32::new(1.0f32.to_bits())));
+        mixer.add("quiet".into(), Arc::new(AtomicU32::new(0.25f32.to_bits())));
+
+        // Listen to the device we are about to play through.
+        let host = cpal::default_host();
+        let device = host.default_output_device().expect("an output device");
+        let config = device.default_output_config().expect("a config");
+        let rate = config.sample_rate() as f32;
+        let heard: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        let listener = device
+            .build_input_stream(
+                config.config(),
+                move |data: &[f32], _: &_| sink.lock().unwrap().extend_from_slice(data),
+                |e| eprintln!("listen: {e}"),
+                None,
+            )
+            .expect("loopback capture");
+        listener.play().expect("listening");
+
+        // The same callback start_mix_output installs, without needing a
+        // dioxus runtime for the error signal it would otherwise report to.
+        let cb_mixer = mixer.clone();
+        let player = device
+            .build_output_stream(
+                cpal::StreamConfig {
+                    channels: 2,
+                    sample_rate: 48000,
+                    buffer_size: cpal::BufferSize::Default,
+                },
+                move |out: &mut [f32], _: &_| cb_mixer.fill(out),
+                |e| eprintln!("play: {e}"),
+                None,
+            )
+            .expect("output stream");
+        player.play().expect("playing");
+
+        let (mut p1, mut p2) = (0.0f32, 0.0f32);
+        for _ in 0..100 {
+            mixer.push("loud", &tone(440.0, 480, &mut p1));
+            mixer.push("quiet", &tone(1760.0, 480, &mut p2));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let samples = heard.lock().unwrap().clone();
+        assert!(samples.len() > 48_000, "captured almost nothing: {}", samples.len());
+        let mono: Vec<f32> = samples.chunks(2).map(|c| c[0]).collect();
+        let loud = tone_energy(&mono, 440.0, rate);
+        let quiet = tone_energy(&mono, 1760.0, rate);
+        println!("440Hz (full volume): {loud:.5}\n1760Hz (quarter):    {quiet:.5}");
+        assert!(loud > 0.001, "the full-volume track never made it out");
+        assert!(quiet > 0.0002, "the quiet track was dropped entirely");
+        assert!(loud > quiet * 2.0, "per-track volume was not applied: {loud} vs {quiet}");
     }
 }

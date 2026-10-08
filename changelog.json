@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.5",
+    "date": "2026-10-07",
+    "changes": [
+      "🔊 One audio stream for a call instead of one per person. Everyone's voice is summed in a single mixer now, which is quieter work for the sound card and the same to listen to — volumes, deafen and the master slider all behave exactly as before",
+      "This is groundwork: echo cancellation needs to know what your speakers are playing, and until now nothing in the app did, because each person was a separate stream the app never saw the sum of. (switchb could hear himself when Chris's speakers fed Chris's mic — that is the thing this makes fixable.)"
+    ]
+  },
+  {
     "version": "0.99.4",
     "date": "2026-10-07",
     "changes": [
