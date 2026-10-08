@@ -382,6 +382,10 @@ pub struct Settings {
     /// Voice-activity gate threshold, RMS of i16 samples (0 = always transmit).
     #[serde(default = "default_vad_threshold")]
     pub vad_threshold: f32,
+    /// Tick when the push-to-talk key goes down and up, so you know whether
+    /// the microphone is open without having to ask.
+    #[serde(default = "yes")]
+    pub ptt_sounds: bool,
     /// Blip when someone joins/leaves your voice channel.
     #[serde(default = "yes")]
     pub voice_join_sounds: bool,
@@ -562,6 +566,7 @@ pub fn load_settings() -> Settings {
             notification_sounds: true,
             ping_toasts: true,
             voice_join_sounds: true,
+            ptt_sounds: true,
             close_to_tray: true,
             share_audio_bitrate: default_share_audio_bitrate(),
             share_fps: default_share_fps(),

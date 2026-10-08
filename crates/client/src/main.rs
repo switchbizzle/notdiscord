@@ -3550,6 +3550,18 @@ fn MainView(session: api::Session) -> Element {
                                 label { class: "ns-toggle-row",
                                     input {
                                         r#type: "checkbox",
+                                        checked: audio_settings().ptt_sounds,
+                                        onchange: move |e| {
+                                            let mut s = audio_settings.write();
+                                            s.ptt_sounds = e.checked();
+                                            api::save_settings(&s);
+                                        },
+                                    }
+                                    " Push-to-talk tick (hear when your mic opens)"
+                                }
+                                label { class: "ns-toggle-row",
+                                    input {
+                                        r#type: "checkbox",
                                         checked: audio_settings().notification_sounds,
                                         onchange: move |e| {
                                             let mut s = audio_settings.write();

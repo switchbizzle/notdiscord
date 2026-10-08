@@ -1761,6 +1761,10 @@ async fn connect(
                 let held = ptt && keys.contains(&*key.lock().unwrap());
                 if active.swap(held, Ordering::Relaxed) != held {
                     ptt_status.write().ptt_held = held;
+                    // The edge, which is exactly when the microphone opens
+                    // and closes — so the tick cannot drift out of step with
+                    // what is actually being transmitted.
+                    play_ptt_tick(held);
                 }
 
                 let mute_down = watch_mute && keys.contains(&*mute_key.lock().unwrap());
@@ -2086,6 +2090,35 @@ fn blip_samples(join: bool) -> Vec<f32> {
         }
     }
     samples
+}
+
+/// A short tick for the push-to-talk key: up in pitch when the microphone
+/// opens, down when it closes.
+///
+/// Deliberately smaller than the join/leave blip — one note, 45ms, quieter.
+/// This one can fire many times a minute, and anything with presence would
+/// become infuriating by the third sentence. It is also kept brief because
+/// on speakers the open tick lands while the microphone is already live, so
+/// whatever it is, the room hears a little of it.
+fn ptt_tick_samples(open: bool) -> Vec<f32> {
+    let freq = if open { 1046.5 } else { 659.25 };
+    let n = CUE_RATE * 45 / 1000;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / CUE_RATE as f32;
+            // Fade both ends: a tick that starts or stops abruptly clicks.
+            let p = i as f32 / n as f32;
+            let env = (p * std::f32::consts::PI).sin().powf(0.8);
+            (t * freq * std::f32::consts::TAU).sin() * env * 0.12
+        })
+        .collect()
+}
+
+fn play_ptt_tick(open: bool) {
+    if !crate::api::load_settings().ptt_sounds {
+        return;
+    }
+    play_samples_on_voice_output(ptt_tick_samples(open), CUE_RATE);
 }
 
 fn play_voice_blip(join: bool) {
@@ -2834,5 +2867,48 @@ mod echo_tests {
         let kept = tone_energy(&heard, 300.0);
         println!("voice in: {sent:.6}\nvoice out: {kept:.6}");
         assert!(kept > sent * 0.5, "it ate the voice: {sent:.6} -> {kept:.6}");
+    }
+}
+
+#[cfg(test)]
+mod ptt_tick_tests {
+    use super::*;
+
+    #[test]
+    fn the_two_ticks_are_tellable_apart() {
+        let open = ptt_tick_samples(true);
+        let close = ptt_tick_samples(false);
+        assert_eq!(open.len(), close.len());
+
+        // Count zero crossings: more of them means a higher note, so opening
+        // reads as "up" and closing as "down" without having to listen.
+        let crossings = |s: &[f32]| {
+            s.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+        };
+        assert!(
+            crossings(&open) > crossings(&close),
+            "the open tick should be the higher of the two"
+        );
+    }
+
+    #[test]
+    fn it_is_short_quiet_and_does_not_click() {
+        let tick = ptt_tick_samples(true);
+        let ms = tick.len() * 1000 / CUE_RATE as usize;
+        assert!((30..=60).contains(&ms), "a tick that fires every sentence must stay short: {ms}ms");
+
+        let peak = tick.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak < 0.2, "too loud to live with: {peak}");
+        // A tick that starts or ends on a step clicks; both ends must be at
+        // rest. The join blip only fades out, so this is its own check.
+        assert!(tick[0].abs() < 0.01, "starts with a step: {}", tick[0]);
+        assert!(tick.last().unwrap().abs() < 0.01, "ends with a step: {}", tick.last().unwrap());
+    }
+
+    #[test]
+    fn it_is_quieter_than_the_join_blip() {
+        // It fires far more often, so it has to sit further back.
+        let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak(&ptt_tick_samples(true)) < peak(&blip_samples(true)));
     }
 }

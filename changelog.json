@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.7",
+    "date": "2026-10-07",
+    "changes": [
+      "🔔 Push-to-talk ticks when your mic opens and again when it closes (switchb), so you know you're live without having to ask. Up in pitch for open, down for closed",
+      "It is one short quiet note rather than the join/leave blip — this one can fire every sentence, and anything with presence would be unbearable by the third. Settings → Voice turns it off"
+    ]
+  },
+  {
     "version": "0.99.6",
     "date": "2026-10-07",
     "changes": [
