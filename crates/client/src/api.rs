@@ -590,6 +590,10 @@ fn http() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
+            // Updates are a click on a banner, so the crew drifts across
+            // versions; the server logs this when someone joins voice, which
+            // is how a bug that only one old build has gets found.
+            .user_agent(concat!("NotDiscord/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("http client")
     })

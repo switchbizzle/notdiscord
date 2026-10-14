@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.8",
+    "date": "2026-10-14",
+    "changes": [
+      "🔁 Less of your own voice coming back at you (switchb, DELTAnine). Auto mic level was mistaking the leftover echo from someone's speakers for a quiet microphone and turning it up — as much as 16× — undoing the echo canceller. It now holds still while other people are talking",
+      "If you're on speakers, update: echo cancellation only exists from 0.99.6 on, and updates don't install themselves. Headphones still beat any canceller"
+    ]
+  },
+  {
     "version": "0.99.7",
     "date": "2026-10-07",
     "changes": [

@@ -1029,7 +1029,23 @@ pub async fn voice_token(
     State(state): State<SharedState>,
     AuthUser(user): AuthUser,
     Query(q): Query<VoiceTokenQuery>,
+    headers: axum::http::HeaderMap,
 ) -> ApiResult<Json<VoiceTokenResponse>> {
+    // Which build is joining. The desktop app names its version; anything
+    // that doesn't is a browser, a phone, or a desktop build from before it
+    // started saying.
+    let agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
+    let build = if agent.starts_with("NotDiscord/") {
+        agent
+    } else if agent.contains("Mozilla") {
+        "browser"
+    } else {
+        "desktop <= 0.99.7"
+    };
+    tracing::info!("voice: {} joining channel {} on {build}", user.username, q.channel_id);
     let (Ok(api_key), Ok(api_secret), Ok(url)) = (
         std::env::var("LIVEKIT_API_KEY"),
         std::env::var("LIVEKIT_API_SECRET"),

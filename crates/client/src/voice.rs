@@ -6,7 +6,7 @@
 //! (i.e. when the `ActiveCall` owning it is dropped).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -260,9 +260,26 @@ impl AutoGain {
 
     /// Feed one 10ms frame's RMS (pre-AGC); returns the gain to apply to it.
     pub fn feed(&mut self, rms: f64) -> f32 {
+        self.feed_against(rms, false)
+    }
+
+    /// The same, knowing whether the other side of the call is audible right
+    /// now. While it is, the gain may come down but never goes up.
+    ///
+    /// Without this the auto level was the loudest echo in the call. On a
+    /// speaker user, whatever the canceller cannot remove — and in a real
+    /// room, with two devices whose clocks drift apart, that is not nothing —
+    /// arrives here as a quiet signal above the floor, which is exactly what
+    /// this was built to turn up. Measured (echo_measure): with 500ppm of
+    /// drift the canceller takes 11.8 dB off the echo, and the auto level put
+    /// 21.7 dB back, sending everyone their own voice louder than if there
+    /// were no canceller at all. Held while the far end talks, it stays at
+    /// whatever level your own voice set, so the echo keeps the reduction
+    /// the canceller won.
+    pub fn feed_against(&mut self, rms: f64, far_end_audible: bool) -> f32 {
         if rms > AGC_SIGNAL_FLOOR {
             let boosted = rms * self.gain as f64;
-            if boosted < AGC_TARGET_RMS {
+            if boosted < AGC_TARGET_RMS && !far_end_audible {
                 // ~6 dB/s upward at 100 frames/s: fast enough to converge in
                 // a few sentences, slow enough not to pump.
                 self.gain = (self.gain * 1.007).min(AGC_MAX_GAIN);
@@ -341,6 +358,56 @@ mod capture_tests {
         assert!(gain > 4.0, "gain only reached {gain}");
         assert!(level > AGC_TARGET_RMS * 0.6 && level < AGC_TARGET_RMS * 2.5,
             "landed at {level}");
+    }
+
+    #[test]
+    fn agc_never_turns_up_the_other_side_of_the_call() {
+        // A speaker user, silent, while the others talk: what reaches the
+        // auto level is whatever echo the canceller left. Ten seconds of it.
+        let mut agc = AutoGain::new();
+        for _ in 0..1000 {
+            agc.feed_against(250.0, true);
+        }
+        assert_eq!(agc.feed_against(250.0, true), 1.0, "the echo was boosted");
+
+        // Their own voice, with the far end quiet, still brings it up — and
+        // the gain it earned holds through the next time the others talk.
+        for _ in 0..1500 {
+            agc.feed_against(250.0, false);
+        }
+        let earned = agc.feed_against(250.0, false);
+        assert!(earned > 4.0, "own voice only reached {earned}");
+        for _ in 0..500 {
+            agc.feed_against(250.0, true);
+        }
+        assert_eq!(agc.feed_against(250.0, true), earned, "far end moved the gain");
+    }
+
+    #[test]
+    fn far_end_audibility_follows_the_mix_and_lapses() {
+        let m = Mixer::new(
+            Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
+        let far = m.far_end();
+        assert!(!far_end_audible(&far), "nothing has played yet");
+
+        m.add("a".into(), Arc::new(AtomicU32::new(1.0f32.to_bits())));
+        m.push("a", &[0; 960]);
+        let mut out = [0.0f32; 960];
+        m.fill(&mut out);
+        assert!(!far_end_audible(&far), "silence is not the far end talking");
+
+        m.push("a", &[6000; 960]);
+        m.fill(&mut out);
+        assert!(far_end_audible(&far), "a voice in the mix was missed");
+
+        // The echo of the last word is still on its way for a while, then
+        // the room has gone quiet.
+        let at = far.load(Ordering::Relaxed);
+        assert!(far_end_recent(at, at + FAR_END_HOLD_MS - 1), "let go before the echo could arrive");
+        assert!(!far_end_recent(at, at + FAR_END_HOLD_MS), "the hold never lapses");
     }
 
     #[test]
@@ -1716,6 +1783,11 @@ async fn connect(
     // played) and the microphone pump (which has the echo taken out of it).
     let echo = settings.echo_cancellation.then(Canceller::new);
     let pump_echo = echo.clone();
+    // One stream for the call, opened below and kept until it ends:
+    // everything anyone says is summed into it. Built here so the microphone
+    // pump can ask it whether the far end is talking.
+    let mixer = Mixer::new(master_gain.clone(), deafened.clone(), echo);
+    let pump_far_end = mixer.far_end();
     let ptt_mode = Arc::new(AtomicBool::new(settings.voice_mode == "ptt"));
     let ptt_key = Arc::new(Mutex::new(parse_ptt_key(&settings.ptt_key)));
     let ptt_active = Arc::new(AtomicBool::new(false));
@@ -1852,7 +1924,7 @@ async fn connect(
                     let raw_rms = (frame.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
                         / frame.len() as f64)
                         .sqrt();
-                    let boost = agc.feed(raw_rms);
+                    let boost = agc.feed_against(raw_rms, far_end_audible(&pump_far_end));
                     if boost > 1.0 {
                         for s in frame.iter_mut() {
                             *s = (*s * boost).clamp(-32768.0, 32767.0);
@@ -1917,9 +1989,6 @@ async fn connect(
     }
     let readers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    // One stream for the call, opened now and kept until it ends: everything
-    // anyone says is summed into it.
-    let mixer = Mixer::new(master_gain.clone(), deafened.clone(), echo);
     let mix_stop = start_mix_output(mixer.clone(), settings.output_device.clone(), status);
     let video_tracks: Arc<Mutex<VideoTracks>> = Arc::new(Mutex::new(VideoTracks::default()));
     let tracks_for_events = video_tracks.clone();
@@ -2335,6 +2404,36 @@ pub struct Mixer {
     /// Told what came out, so the microphone can have it subtracted again.
     /// None when the setting is off.
     echo: Option<Arc<Canceller>>,
+    /// When anything was last audible through the speakers, on `clock_ms`.
+    /// The microphone side reads it to know when what it hears might be
+    /// the call coming back.
+    far_end_at: Arc<AtomicU64>,
+}
+
+/// Milliseconds on one clock both audio threads can read.
+fn clock_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    // +1 so that 0 can mean "never".
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// Output quieter than this (RMS, full scale 1.0, about -54 dBFS) is not the
+/// far end talking. Opus with DTX decodes silence to near-zero, so this only
+/// has to clear rounding, not a noise floor.
+const FAR_END_FLOOR: f32 = 0.002;
+
+/// How long after the far end stops that its echo can still be arriving:
+/// the output buffer, the trip through the air, the input buffer, and the
+/// room's tail.
+const FAR_END_HOLD_MS: u64 = 400;
+
+/// Whether the far end was audible recently enough to still be echoing.
+fn far_end_audible(far_end_at: &AtomicU64) -> bool {
+    far_end_recent(far_end_at.load(Ordering::Relaxed), clock_ms())
+}
+
+fn far_end_recent(at: u64, now: u64) -> bool {
+    at != 0 && now.saturating_sub(at) < FAR_END_HOLD_MS
 }
 
 /// Latency cap per track: anything older than this is stale by the time it
@@ -2347,7 +2446,18 @@ impl Mixer {
         deafened: Arc<AtomicBool>,
         echo: Option<Arc<Canceller>>,
     ) -> Arc<Self> {
-        Arc::new(Self { tracks: Mutex::new(HashMap::new()), master, deafened, echo })
+        Arc::new(Self {
+            tracks: Mutex::new(HashMap::new()),
+            master,
+            deafened,
+            echo,
+            far_end_at: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    /// Shared with the microphone pump.
+    fn far_end(&self) -> Arc<AtomicU64> {
+        self.far_end_at.clone()
     }
 
     fn add(&self, sid: String, gain: Arc<AtomicU32>) {
@@ -2405,6 +2515,12 @@ impl Mixer {
             *sample = sample.clamp(-1.0, 1.0);
         }
         drop(tracks);
+        if !out.is_empty() {
+            let mean_square = out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32;
+            if mean_square > FAR_END_FLOOR * FAR_END_FLOOR {
+                self.far_end_at.store(clock_ms(), Ordering::Relaxed);
+            }
+        }
         // Hand the finished mix to the canceller. It has to be THIS signal —
         // after volumes, after the master, after clipping — because that is
         // what the speakers get and therefore what the microphone will hear
@@ -2780,6 +2896,259 @@ mod mix_hardware_tests {
         assert!(loud > 0.001, "the full-volume track never made it out");
         assert!(quiet > 0.0002, "the quiet track was dropped entirely");
         assert!(loud > quiet * 2.0, "per-track volume was not applied: {loud} vs {quiet}");
+    }
+}
+
+#[cfg(test)]
+mod echo_measure {
+    use super::*;
+
+    /// Deterministic noise, so runs are comparable.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+        }
+    }
+
+    /// Speech-shaped far end: noise in syllable-rate bursts.
+    fn far_end(seconds: usize) -> Vec<f32> {
+        let mut rng = Lcg(7);
+        let mut lp = 0.0f32;
+        (0..NS_RATE as usize * seconds)
+            .map(|n| {
+                let t = n as f32 / NS_RATE as f32;
+                let env = (t * 3.1 * std::f32::consts::TAU).sin().max(0.0).powi(2)
+                    * (0.6 + 0.4 * (t * 0.37 * std::f32::consts::TAU).sin().abs());
+                lp = 0.7 * lp + 0.3 * rng.next();
+                lp * env * 0.6
+            })
+            .collect()
+    }
+
+    /// A small room: direct path plus a few reflections, after `delay_ms`.
+    fn room(x: &[f32], delay_ms: usize, level: f32) -> Vec<f32> {
+        let d = NS_RATE as usize * delay_ms / 1000;
+        let taps: [(usize, f32); 5] = [(0, 1.0), (240, 0.45), (620, -0.3), (1300, 0.18), (2900, 0.08)];
+        (0..x.len())
+            .map(|n| {
+                taps.iter()
+                    .filter_map(|(off, g)| n.checked_sub(d + off).map(|i| x[i] * g))
+                    .sum::<f32>()
+                    * level
+            })
+            .collect()
+    }
+
+    fn energy(x: &[f32]) -> f64 {
+        x.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / x.len().max(1) as f64
+    }
+
+    /// Run the canceller the way a call does, with the echo arriving
+    /// `delay_ms` after it was played. Returns (ERLE dB, echo-return dB after
+    /// the auto gain stage).
+    fn run(delay_ms: usize, with_agc: bool) -> (f64, f64) {
+        let secs = 12;
+        let x = far_end(secs);
+        let y = room(&x, delay_ms, 0.5);
+        let echo = Canceller::new();
+        let mut agc = AutoGain::new();
+        let mut mic_in = Vec::new();
+        let mut aec_out = Vec::new();
+        let mut agc_out = Vec::new();
+        for tick in 0..(x.len() / NS_FRAME) {
+            let span = tick * NS_FRAME..(tick + 1) * NS_FRAME;
+            let played: Vec<f32> = x[span.clone()].iter().flat_map(|v| [*v, *v]).collect();
+            echo.played(&played);
+            let mut pcm: Vec<i16> = y[span.clone()]
+                .iter()
+                .map(|v| (v * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                .collect();
+            let before: Vec<f32> = pcm.iter().map(|s| *s as f32).collect();
+            echo.heard(&mut pcm);
+            let mut after: Vec<f32> = pcm.iter().map(|s| *s as f32).collect();
+            if tick * NS_FRAME >= (secs - 4) * NS_RATE as usize {
+                mic_in.extend(before.iter().copied());
+                aec_out.extend(after.iter().copied());
+            }
+            if with_agc {
+                let rms = (after.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / after.len() as f64).sqrt();
+                let boost = agc.feed(rms);
+                for s in after.iter_mut() {
+                    *s = (*s * boost).clamp(-32768.0, 32767.0);
+                }
+            }
+            if tick * NS_FRAME >= (secs - 4) * NS_RATE as usize {
+                agc_out.extend(after);
+            }
+        }
+        let erle = 10.0 * (energy(&mic_in) / energy(&aec_out).max(1e-9)).log10();
+        let after_agc = 10.0 * (energy(&mic_in) / energy(&agc_out).max(1e-9)).log10();
+        (erle, after_agc)
+    }
+
+    /// The same, but with the two sides arriving the way they do in the
+    /// app: the speaker side in device-sized callbacks, the microphone side
+    /// in device-sized chunks that then wait a scheduling delay of up to
+    /// `jitter_ms` before the pump gets to them. Returns ERLE in dB.
+    fn run_jittered(render_ms: usize, capture_ms: usize, jitter_ms: usize) -> f64 {
+        let secs = 12;
+        let rate = NS_RATE as usize;
+        let x = far_end(secs);
+        let r = rate * render_ms / 1000;
+        let c = rate * capture_ms / 1000;
+        // Output buffer + a 40ms device/air path.
+        let delay_ms = render_ms + 40;
+        let y = room(&x, delay_ms, 0.5);
+        let echo = Canceller::new();
+        let mut rng = Lcg(99);
+
+        // (time in samples, is_render, chunk index)
+        let mut events: Vec<(usize, bool, usize)> = Vec::new();
+        for k in 0..x.len() / r {
+            events.push((k * r, true, k));
+        }
+        let mut last = 0usize;
+        for j in 0..y.len() / c {
+            let ready = (j + 1) * c;
+            let wait = (rng.next().abs() * (rate * jitter_ms / 1000) as f32) as usize;
+            let at = (ready + wait).max(last);
+            last = at;
+            events.push((at, false, j));
+        }
+        events.sort_by_key(|e| (e.0, !e.1));
+
+        let mut pending: Vec<f32> = Vec::new();
+        let mut mic_in = Vec::new();
+        let mut out = Vec::new();
+        let tail = (secs - 4) * rate;
+        for (_, is_render, idx) in events {
+            if is_render {
+                let played: Vec<f32> = x[idx * r..(idx + 1) * r].iter().flat_map(|v| [*v, *v]).collect();
+                echo.played(&played);
+            } else {
+                pending.extend_from_slice(&y[idx * c..(idx + 1) * c]);
+                let start = idx * c + c - pending.len();
+                let mut pos = start;
+                while pending.len() >= NS_FRAME {
+                    let frame: Vec<f32> = pending.drain(..NS_FRAME).collect();
+                    let mut pcm: Vec<i16> =
+                        frame.iter().map(|v| (v * 32767.0).clamp(-32768.0, 32767.0) as i16).collect();
+                    let before: Vec<f32> = pcm.iter().map(|s| *s as f32).collect();
+                    echo.heard(&mut pcm);
+                    if pos >= tail {
+                        mic_in.extend(before);
+                        out.extend(pcm.iter().map(|s| *s as f32));
+                    }
+                    pos += NS_FRAME;
+                }
+            }
+        }
+        10.0 * (energy(&mic_in) / energy(&out).max(1e-9)).log10()
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --nocapture"]
+    fn measure_cancellation_against_scheduling() {
+        for (r, c, j) in [
+            (10, 10, 0),
+            (10, 10, 10),
+            (10, 10, 30),
+            (10, 10, 60),
+            (20, 20, 0),
+            (20, 20, 30),
+            (30, 10, 0),
+            (10, 20, 50),
+            (10, 10, 120),
+        ] {
+            println!(
+                "speaker callback {r:>2}ms, mic chunks {c:>2}ms, pump delay up to {j:>3}ms: removes {:>6.1} dB",
+                run_jittered(r, c, j)
+            );
+        }
+    }
+
+    /// Cheap speakers: driven hard they saturate, and their clock is not the
+    /// microphone's. Returns (ERLE, echo return after auto gain) in dB.
+    fn run_real_world(drive: f32, drift_ppm: f64, near_noise: f32) -> (f64, f64) {
+        let secs = 14;
+        let x = far_end(secs);
+        // What actually leaves the speaker: saturated, then resampled by the
+        // drift between the two devices' clocks.
+        let sat: Vec<f32> = x.iter().map(|v| (v * drive).tanh() / drive.max(1.0)).collect();
+        let ratio = 1.0 + drift_ppm / 1e6;
+        let drifted: Vec<f32> = (0..sat.len())
+            .map(|n| {
+                let pos = n as f64 * ratio;
+                let i = pos as usize;
+                let f = (pos - i as f64) as f32;
+                match (sat.get(i), sat.get(i + 1)) {
+                    (Some(a), Some(b)) => a * (1.0 - f) + b * f,
+                    _ => 0.0,
+                }
+            })
+            .collect();
+        let mut rng = Lcg(3);
+        let y: Vec<f32> = room(&drifted, 80, 0.5).iter().map(|v| v + rng.next() * near_noise).collect();
+        let echo = Canceller::new();
+        let mut agc = AutoGain::new();
+        let (mut mic_in, mut aec_out, mut agc_out) = (Vec::new(), Vec::new(), Vec::new());
+        let tail = (secs - 4) * NS_RATE as usize;
+        for tick in 0..(x.len() / NS_FRAME) {
+            let span = tick * NS_FRAME..(tick + 1) * NS_FRAME;
+            let played: Vec<f32> = x[span.clone()].iter().flat_map(|v| [*v, *v]).collect();
+            echo.played(&played);
+            let mut pcm: Vec<i16> =
+                y[span.clone()].iter().map(|v| (v * 32767.0).clamp(-32768.0, 32767.0) as i16).collect();
+            let before: Vec<f32> = pcm.iter().map(|s| *s as f32).collect();
+            echo.heard(&mut pcm);
+            let mut after: Vec<f32> = pcm.iter().map(|s| *s as f32).collect();
+            let rms = (after.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / after.len() as f64).sqrt();
+            let boost = agc.feed_against(rms, true);
+            if tick * NS_FRAME >= tail {
+                mic_in.extend(before);
+                aec_out.extend(after.iter().copied());
+            }
+            for s in after.iter_mut() {
+                *s = (*s * boost).clamp(-32768.0, 32767.0);
+            }
+            if tick * NS_FRAME >= tail {
+                agc_out.extend(after);
+            }
+        }
+        (
+            10.0 * (energy(&mic_in) / energy(&aec_out).max(1e-9)).log10(),
+            10.0 * (energy(&mic_in) / energy(&agc_out).max(1e-9)).log10(),
+        )
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --nocapture"]
+    fn measure_cancellation_in_a_real_room() {
+        for (drive, ppm, noise) in [
+            (1.0, 0.0, 0.0),
+            (3.0, 0.0, 0.0),
+            (6.0, 0.0, 0.0),
+            (1.0, 100.0, 0.0),
+            (1.0, 500.0, 0.0),
+            (3.0, 200.0, 0.002),
+            (6.0, 500.0, 0.004),
+        ] {
+            let (erle, agc) = run_real_world(drive, ppm, noise);
+            println!(
+                "speaker drive {drive:.0}x, clock drift {ppm:>3.0}ppm, room noise {noise:.3}: canceller {erle:>5.1} dB, after auto gain {agc:>6.1} dB"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --nocapture"]
+    fn measure_cancellation_against_delay() {
+        for delay in [0usize, 40, 80, 120, 200, 300, 450] {
+            let (erle, agc) = run(delay, true);
+            println!("delay {delay:>3}ms: canceller removes {erle:>6.1} dB; after auto gain {agc:>6.1} dB");
+        }
     }
 }
 
