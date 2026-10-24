@@ -230,6 +230,41 @@ pub fn describe(ms: i64) -> String {
     format!("{year}-{month:02}-{day:02} {:02}:{:02} UTC", mins / 60, mins % 60)
 }
 
+/// How long ago, the way a person would say it. Rounded down, because "3
+/// weeks" for something set 25 days ago reads as an exaggeration.
+pub fn ago(ms: i64) -> String {
+    let plural = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    let mins = (ms / 60_000).max(1);
+    let hours = mins / 60;
+    let days = hours / 24;
+    if mins < 60 {
+        plural(mins, "minute")
+    } else if hours < 48 {
+        plural(hours, "hour")
+    } else if days < 14 {
+        plural(days, "day")
+    } else if days < 60 {
+        plural(days / 7, "week")
+    } else if days < 365 {
+        plural(days / 30, "month")
+    } else {
+        plural(days / 365, "year")
+    }
+}
+
+/// What a reminder says when it arrives. The text alone wasn't enough:
+/// switchb got "has Adam joined the server yet" with no idea when he'd asked
+/// or how long it had been. So, underneath, when it was set — in the
+/// reader's time, the same way the confirmation told them when it was due.
+pub fn delivery(text: &str, created_at: i64, now: i64, offset_min: i64) -> String {
+    format!(
+        "⏰ {text}
+*you set this {} — {}*",
+        ago(now - created_at),
+        describe_local(created_at, offset_min)
+    )
+}
+
 /// Store one. Returns what to say back.
 pub async fn schedule(
     state: &SharedState,
@@ -296,15 +331,15 @@ pub async fn sweep_forever(state: SharedState) {
 }
 
 async fn sweep_once(state: &SharedState) -> anyhow::Result<()> {
-    let due: Vec<(i64, i64, String)> = sqlx::query_as(
-        "SELECT id, user_id, text FROM reminders \
+    let due: Vec<(i64, i64, String, i64)> = sqlx::query_as(
+        "SELECT id, user_id, text, created_at FROM reminders \
          WHERE delivered_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50",
     )
     .bind(now_ms())
     .fetch_all(&state.db)
     .await?;
 
-    for (id, user_id, text) in due {
+    for (id, user_id, text, created_at) in due {
         // Marked first. A send that fails is better than one delivered twice
         // every thirty seconds because the mark never landed.
         sqlx::query("UPDATE reminders SET delivered_at = ? WHERE id = ?")
@@ -319,7 +354,9 @@ async fn sweep_once(state: &SharedState) -> anyhow::Result<()> {
                 continue;
             }
         };
-        if let Err(e) = crate::bot::post_message(state, channel_id, &format!("⏰ {text}")).await {
+        let offset = offset_for(state, user_id).await;
+        let message = delivery(&text, created_at, now_ms(), offset);
+        if let Err(e) = crate::bot::post_message(state, channel_id, &message).await {
             tracing::warn!("reminder {id} not delivered: {e}");
         }
     }
@@ -450,6 +487,32 @@ mod tests {
         assert_eq!(days_in_month(2000, 2), 29);
         assert_eq!(describe(parse("2/29/2028 leap day", NOW, 0).unwrap().due_at), "2028-02-29 09:00 UTC");
         assert!(parse("2/29/2027 not a leap year", NOW, 0).is_err());
+    }
+
+    #[test]
+    fn ago_reads_the_way_people_say_it() {
+        let min = 60_000;
+        let day = 1_440 * min;
+        assert_eq!(ago(20_000), "1 minute ago", "never \"0 minutes\"");
+        assert_eq!(ago(45 * min), "45 minutes ago");
+        assert_eq!(ago(90 * min), "1 hour ago");
+        assert_eq!(ago(30 * 60 * min), "30 hours ago");
+        assert_eq!(ago(3 * day), "3 days ago");
+        assert_eq!(ago(25 * day), "3 weeks ago", "rounded down, not up to a month");
+        assert_eq!(ago(100 * day), "3 months ago");
+        assert_eq!(ago(400 * day), "1 year ago");
+    }
+
+    #[test]
+    fn a_reminder_says_when_it_was_set_in_the_readers_time() {
+        // Set 2026-08-31 12:00 UTC by someone in Central (UTC-5), arriving
+        // 23 days later.
+        let said = delivery("has Adam joined the server yet", NOW, NOW + 23 * 86_400_000, -300);
+        assert_eq!(
+            said,
+            "⏰ has Adam joined the server yet
+*you set this 3 weeks ago — 2026-08-31 07:00*"
+        );
     }
 
     #[test]
