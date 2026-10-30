@@ -3420,30 +3420,40 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     // column-reverse pins the view to the newest.
                                     // A divider is emitted AFTER its row, which
                                     // in this flipped list puts it above.
-                                    for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                                        {
-                                        let msg_id = msg.id;
-                                        let divider_here = Some(msg_id) == first_unread;
-                                        let day_here = day_starts.contains(&msg_id).then(|| day_label(msg.created_at));
-                                        rsx! {
-                                        div {
-                                            key: "{msg_id}",
-                                            class: if highlight() == Some(msg_id) { "hit-wrap" } else { "" },
-                                            MessageRow {
-                                                failed: failed_sends().contains(&msg.id),
-                                                msg,
-                                                compact,
-                                                me_id,
-                                                me_admin,
+                                    // One element per message, keyed by its id, handed
+                                    // straight to the `for`. A `{ let …; rsx!{…} }` body
+                                    // wraps each item in an unkeyed node, so the list was
+                                    // compared by position whatever the inner key said:
+                                    // a new message rebuilt every row, restarting videos
+                                    // and reloading pictures (Jon). msg-slot is
+                                    // display: contents, so the dividers inside lay out
+                                    // exactly as they did as siblings.
+                                    for (msg, compact, msg_id, divider_here, day_here) in group_messages(&messages())
+                                        .into_iter()
+                                        .rev()
+                                        .map(|(msg, compact)| {
+                                            let id = msg.id;
+                                            let day = day_starts.contains(&id).then(|| day_label(msg.created_at));
+                                            (msg, compact, id, Some(id) == first_unread, day)
+                                        })
+                                    {
+                                        div { key: "{msg_id}", class: "msg-slot",
+                                            div {
+                                                class: if highlight() == Some(msg_id) { "hit-wrap" } else { "" },
+                                                MessageRow {
+                                                    failed: failed_sends().contains(&msg_id),
+                                                    msg,
+                                                    compact,
+                                                    me_id,
+                                                    me_admin,
+                                                }
                                             }
-                                        }
-                                        if divider_here {
-                                            div { class: "new-divider", span { class: "new-pill", "NEW" } }
-                                        }
-                                        if let Some(label) = day_here {
-                                            div { class: "day-divider", span { class: "day-pill", "{label}" } }
-                                        }
-                                        }
+                                            if divider_here {
+                                                div { class: "new-divider", span { class: "new-pill", "NEW" } }
+                                            }
+                                            if let Some(label) = day_here {
+                                                div { class: "day-divider", span { class: "day-pill", "{label}" } }
+                                            }
                                         }
                                     }
                                 }

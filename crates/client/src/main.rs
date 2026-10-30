@@ -6204,22 +6204,38 @@ fn MainView(session: api::Session) -> Element {
                                 .collect()
                         };
                         rsx! {
-                            for (msg, compact) in group_messages(&messages()).into_iter().rev() {
-                                {
-                                    let is_target = highlight_msg() == Some(msg.id);
-                                    let divider_here = Some(msg.id) == first_unread;
-                                    let day_here = day_starts.contains(&msg.id).then(|| day_label(msg.created_at));
-                                    let msg_id = msg.id;
-                                    rsx! {
-                                        div { class: if is_target { "hit-wrap" } else { "" },
-                                            MessageRow { key: "{msg_id}", msg, compact, can_pin }
-                                        }
-                                        if divider_here {
-                                            div { class: "new-divider", span { class: "new-pill", "NEW" } }
-                                        }
-                                        if let Some(label) = day_here {
-                                            div { class: "day-divider", span { class: "day-pill", "{label}" } }
-                                        }
+                            // Each message is ONE element keyed by its id, and the
+                            // `for` hands that element over directly. Both halves
+                            // matter, and both were wrong: the key sat on
+                            // MessageRow a level down, and the loop body was a
+                            // `{ let …; rsx!{…} }` block — which wraps every item in
+                            // an unkeyed node, so the list was compared by position
+                            // whatever the inner key said. A new message then gave
+                            // every row its neighbour's message and rebuilt it: the
+                            // video you were watching restarted at 0:00, pictures
+                            // reloaded at zero height and the view jumped (Jon:
+                            // "kicks me out of any video or image"). Measured on one
+                            // message: every row replaced; now, one row added.
+                            // msg-slot is display: contents, so the dividers inside
+                            // lay out exactly as they did as siblings.
+                            for (msg, compact, msg_id, is_target, divider_here, day_here) in group_messages(&messages())
+                                .into_iter()
+                                .rev()
+                                .map(|(msg, compact)| {
+                                    let id = msg.id;
+                                    let day = day_starts.contains(&id).then(|| day_label(msg.created_at));
+                                    (msg, compact, id, highlight_msg() == Some(id), Some(id) == first_unread, day)
+                                })
+                            {
+                                div { key: "{msg_id}", class: "msg-slot",
+                                    div { class: if is_target { "hit-wrap" } else { "" },
+                                        MessageRow { msg, compact, can_pin }
+                                    }
+                                    if divider_here {
+                                        div { class: "new-divider", span { class: "new-pill", "NEW" } }
+                                    }
+                                    if let Some(label) = day_here {
+                                        div { class: "day-divider", span { class: "day-pill", "{label}" } }
                                     }
                                 }
                             }

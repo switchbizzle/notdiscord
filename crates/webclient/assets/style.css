@@ -472,13 +472,15 @@ select.text-input { appearance: none; background: var(--n-900); }
     overflow-x: hidden;
     display: flex; flex-direction: column-reverse;
     padding: 12px 12px 6px;
-    /* No scroll anchoring. In a column-reverse list a message arriving
-     * from someone else inserts a node at the top of the DOM, and the
-     * browser's anchoring then flung anyone scrolled up in history all the
-     * way to the oldest message (Jon: "slides waaaay up"). Off, the view
-     * holds still while reading, and column-reverse keeps you pinned at
-     * the bottom when you're already there. */
-    overflow-anchor: none;
+    /* Scroll anchoring is on (the browser default) again. v0.98.2 turned
+     * it off because a new message flung anyone scrolled up all the way to
+     * the oldest one (Jon: "slides waaaay up") — but the real cause was the
+     * list rebuilding every row on each message, which destroyed whatever
+     * the browser had anchored to. With rows keyed properly (msg-slot), a
+     * new message is one inserted node: measured with anchoring on, the
+     * line you're reading moves 0px and nothing flings; with it off, every
+     * arrival nudged you by its own height. At the bottom you stay pinned
+     * and see it arrive either way. */
 }
 /* Hold a message for its actions. Selection and the iOS callout are off
  * so the hold reads as a hold and not as "select this word" — "Copy text"
@@ -489,6 +491,9 @@ select.text-input { appearance: none; background: var(--n-900); }
 .msg-hover { display: none; }
 .msg.pressing { background: var(--n-900); margin: 0 -12px; padding: 0 12px; border-radius: var(--r-md); }
 .msg.pressing:not(.compact) { margin-top: 14px; }
+/* One keyed box per message for the list to track; no box of its own, so the
+ * row and its dividers lay out as if they were the list's children. */
+.msg-slot { display: contents; }
 /* The message a permalink landed on, so it's obvious which line was meant.
  * Wraps the row rather than restyling it, the way the desktop marks a hit. */
 .hit-wrap {

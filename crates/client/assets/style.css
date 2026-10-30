@@ -915,6 +915,9 @@ button.sidebar-title:hover { background: #35373c; }
     overflow-wrap: anywhere;
 }
 .hit-wrap { background: rgba(88, 101, 242, 0.14); border-left: 3px solid #5865f2; }
+/* One keyed box per message for the list to track; no box of its own, so the
+   row and its dividers lay out as if they were the list's children. */
+.msg-slot { display: contents; }
 
 .messages {
     flex: 1;
