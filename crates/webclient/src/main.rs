@@ -872,12 +872,12 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, Strin
                 let lower = token.to_lowercase();
                 let path = lower.split(['?', '#']).next().unwrap_or("");
                 if [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| path.ends_with(e)) {
-                    images.push(token.to_owned());
+                    images.push(https_media(token));
                     pulled = true;
                     continue;
                 }
                 if [".mp4", ".webm", ".mov"].iter().any(|e| path.ends_with(e)) {
-                    videos.push(token.to_owned());
+                    videos.push(https_media(token));
                     pulled = true;
                     continue;
                 }
@@ -899,6 +899,22 @@ fn extract_media(content: &str) -> (Vec<String>, Vec<String>, Vec<(String, Strin
         }
     }
     (images, videos, files, lines.join("\n").trim().to_owned())
+}
+
+/// The address to *embed* something from: http becomes https.
+///
+/// The app is served over https, and one picture or video pulled in over
+/// plain http is enough for the browser to mark the whole page "not fully
+/// secure" — which is what a ShareX link to http://shx.switchb.xyz did on
+/// 2026-10-30. Hosts that still answer http almost all answer https too
+/// (that one 301s straight there), and where one doesn't, the browser would
+/// have refused or failed the plain request anyway. Only what we load is
+/// changed: the link in the message stays exactly as it was typed.
+fn https_media(url: &str) -> String {
+    match url.strip_prefix("http://") {
+        Some(rest) => format!("https://{rest}"),
+        None => url.to_owned(),
+    }
 }
 
 /// Links in a message worth asking the server for a card about: web URLs that
@@ -2952,7 +2968,7 @@ fn Main(session: Signal<Option<api::Session>>) -> Element {
                                     div { class: "np-card",
                                         div { class: "np-top",
                                             if let Some(art) = track.as_ref().and_then(|t| t.art.clone()) {
-                                                img { class: "np-art", src: "{art}" }
+                                                img { class: "np-art", src: "{https_media(&art)}" }
                                             } else {
                                                 div { class: "np-art", Icon { name: "music", size: 26 } }
                                             }
@@ -5092,7 +5108,7 @@ fn Avatar(user: User, #[props(default = "")] variant: &'static str) -> Element {
         format!("avatar {variant}")
     };
     match user.avatar.clone() {
-        Some(url) => rsx! { img { class: "{class} sized", src: "{url}" } },
+        Some(url) => rsx! { img { class: "{class} sized", src: "{https_media(&url)}" } },
         None => rsx! {
             div {
                 class: "{class} initial",
@@ -5156,7 +5172,7 @@ fn LinkCard(url: String) -> Element {
             } else {
                 if let Some(image) = preview.image.clone() {
                     div { class: "link-card-media",
-                        img { class: "link-card-img", src: "{image}", loading: "lazy" }
+                        img { class: "link-card-img", src: "{https_media(&image)}", loading: "lazy" }
                         if embed.is_some() {
                             button {
                                 class: "link-card-play",
@@ -5554,7 +5570,7 @@ fn MessageRow(msg: Message, compact: bool, failed: bool, me_id: i64, me_admin: b
                     let boxed = msg
                         .media
                         .iter()
-                        .find(|m| m.url == src)
+                        .find(|m| https_media(&m.url) == src)
                         .map(|m| image_box_style(m.width, m.height, is_sticker));
                     let img_class = match (is_sticker, boxed.is_some()) {
                         (true, _) => "msg-img sticker-msg",
