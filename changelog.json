@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.10",
+    "date": "2026-11-13",
+    "changes": [
+      "🧹 One-off messages in the bar over the chat clear themselves after a few seconds (switchb). \"that file is over this server's 124 MB limit\" stayed up long after the limit was raised and the retry had worked — now it goes away on its own",
+      "A real connection problem still stays up for as long as it lasts, and disappears the moment you're back"
+    ]
+  },
+  {
     "version": "0.99.9",
     "date": "2026-10-30",
     "changes": [

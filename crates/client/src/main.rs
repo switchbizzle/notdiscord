@@ -294,6 +294,10 @@ async fn within_upload_limit(bytes: u64, session: Signal<api::Session>, mut limi
     !shared::over_upload_limit(bytes, limit_mb())
 }
 
+/// How long a one-off notice stays in the banner before it gives way to the
+/// connection's own state again.
+const NOTICE_SECS: u64 = 10;
+
 /// See MainView: bumped when the local date changes.
 #[derive(Clone, Copy)]
 pub struct DayTick(pub Signal<u32>);
@@ -1267,6 +1271,27 @@ fn MainView(session: api::Session) -> Element {
     let mut gif_results = use_signal(Vec::<GifResult>::new);
     let mut gif_status = use_signal(String::new);
     let mut status = use_signal(|| "connecting…".to_string());
+    // The connection's own state, kept apart from `status`. `status` is what
+    // the banner shows, and ninety-odd places put one-off notices in it ("that
+    // file is over this server's 124 MB limit") — which then stayed up until
+    // the connection next changed state, so a refusal from hours ago still
+    // sat over the chat after the retry had worked (switchb, 2026-11-13). Now
+    // a notice fades back to this after NOTICE_SECS; a real connection
+    // problem stays up for exactly as long as it lasts.
+    let mut conn = use_signal(|| "connecting…".to_string());
+    use_effect(move || {
+        let shown = status();
+        if shown == *conn.peek() {
+            return;
+        }
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(NOTICE_SECS)).await;
+            // Only if nothing newer has replaced it in the meantime.
+            if *status.peek() == shown {
+                status.set(conn.peek().clone());
+            }
+        });
+    });
     // The message being replied to, shared with the message rows via context.
     // Declared up here because it is composer state, and the composer is
     // parked per channel below.
@@ -1987,12 +2012,15 @@ fn MainView(session: api::Session) -> Element {
         let window = notif_window.clone();
         async move {
         loop {
+            conn.set("connecting…".into());
             status.set("connecting…".into());
             let Ok((mut socket, _)) = connect_async(api::ws_url(&session())).await else {
+                conn.set("server unreachable, retrying…".into());
                 status.set("server unreachable, retrying…".into());
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 continue;
             };
+            conn.set("online".into());
             status.set("online".into());
 
             // Voice presence is connection-scoped on the server: it drops us
@@ -2050,6 +2078,7 @@ fn MainView(session: api::Session) -> Element {
                             // The server pings every 20s, so hearing nothing
                             // for this long means the path is gone even though
                             // the socket never said so.
+                            conn.set("connection went quiet, reconnecting…".into());
                             status.set("connection went quiet, reconnecting…".into());
                             break;
                         }
@@ -2523,6 +2552,7 @@ fn MainView(session: api::Session) -> Element {
                     }
                 }
             }
+            conn.set("disconnected, retrying…".into());
             status.set("disconnected, retrying…".into());
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
