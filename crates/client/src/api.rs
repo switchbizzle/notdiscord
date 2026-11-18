@@ -1107,6 +1107,59 @@ pub async fn upload(session: &Session, filename: &str, bytes: Vec<u8>) -> Result
     Ok(format!("{}{}", session.base_url, uploaded.url))
 }
 
+/// Upload, counting bytes into `sent` as they go out, so the composer can show
+/// how far along a big file is.
+///
+/// The plain `upload` hands the file over whole and says nothing until the
+/// server answers — for a 350 MB zip that was minutes of nothing at all, and
+/// switchb sent the same file twice because the first looked like it had
+/// vanished. Streamed in chunks instead, each counted as reqwest takes it.
+/// No retry: a body that is half sent can't be quietly sent again from the
+/// start, and re-sending hundreds of megabytes behind someone's back is the
+/// opposite of what this is for. A failure is reported, and they choose.
+pub async fn upload_counted(
+    session: &Session,
+    filename: &str,
+    bytes: Vec<u8>,
+    sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Result<String, String> {
+    const CHUNK: usize = 256 * 1024;
+    let total = bytes.len();
+    let progress = sent.clone();
+    let data = std::sync::Arc::new(bytes);
+    let chunks = futures_util::stream::iter((0..total).step_by(CHUNK).map(move |start| {
+        let end = (start + CHUNK).min(data.len());
+        sent.fetch_add((end - start) as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok::<_, std::io::Error>(data[start..end].to_vec())
+    }));
+    let resp = http()
+        .post(format!("{}/api/upload", session.base_url))
+        .query(&[("name", filename)])
+        .bearer_auth(&session.token)
+        // Stated up front, so nothing between here and the server has to
+        // buffer the whole thing to find out how long it is.
+        .header(reqwest::header::CONTENT_LENGTH, total as u64)
+        .body(reqwest::Body::wrap_stream(chunks))
+        .send()
+        .await
+        .map_err(|e| {
+            // reqwest's own wording ("error sending request for url …") says
+            // nothing a person can act on. Say what happened, and how far it
+            // got, since the next decision is whether to try again.
+            const MB: f64 = 1024.0 * 1024.0;
+            let got = progress.load(std::sync::atomic::Ordering::Relaxed) as f64 / MB;
+            if e.is_connect() {
+                "upload failed: couldn't reach the server".to_owned()
+            } else if e.is_timeout() {
+                format!("upload failed: timed out after {got:.0} of {:.0} MB", total as f64 / MB)
+            } else {
+                format!("upload failed: the connection dropped at {got:.0} of {:.0} MB — try again", total as f64 / MB)
+            }
+        })?;
+    let uploaded: UploadResponse = handle(resp).await?;
+    Ok(format!("{}{}", session.base_url, uploaded.url))
+}
+
 pub async fn create_channel(session: &Session, name: String, kind: &str, private: bool) -> Result<Channel, String> {
     let resp = send_retry(http()
         .post(format!("{}/api/channels", session.base_url))

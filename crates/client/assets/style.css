@@ -1485,6 +1485,27 @@ ul.md-list { list-style-type: disc; }
 .pending-remove:hover { color: #fa777c; background: #313338; }
 .pending-hint { color: #949ba4; font-size: 11px; margin-left: auto; }
 
+/* A file on its way up: name, a bar, how much of how much. */
+.upload-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #232428;
+    border-radius: 8px;
+    padding: 8px 10px;
+    flex: 1 1 280px;
+    max-width: 420px;
+    min-width: 0;
+}
+.upload-card.failed { box-shadow: inset 3px 0 0 #f23f43; }
+.upload-body { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
+.upload-title { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.upload-to { color: #949ba4; font-size: 11px; white-space: nowrap; }
+.upload-bar { height: 6px; background: #1e1f22; border-radius: 3px; overflow: hidden; }
+.upload-fill { height: 100%; background: #5865f2; border-radius: 3px; transition: width 0.25s linear; }
+.upload-amount { color: #949ba4; font-size: 11px; font-variant-numeric: tabular-nums; }
+.upload-error { color: #fa777c; font-size: 12px; }
+
 .compose { display: flex; gap: 8px; padding: 0 16px 20px; }
 .compose input {
     flex: 1;

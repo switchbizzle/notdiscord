@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.99.11",
+    "date": "2026-11-18",
+    "changes": [
+      "📦 Uploads show their progress (switchb). Sending a big file used to clear it from the message box and then say nothing for minutes — now a card above the box shows the file, a bar, and how many MB of how many have gone",
+      "If an upload fails, the card turns red, says what happened and how far it got, and stays until you dismiss it — no more quietly wondering whether to send it again"
+    ]
+  },
+  {
     "version": "0.99.10",
     "date": "2026-11-13",
     "changes": [

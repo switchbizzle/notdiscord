@@ -345,6 +345,38 @@ struct NowPlaying {
 }
 
 /// A file staged in the compose area, awaiting user confirmation to send.
+/// A file on its way to the server, shown as a card above the message box
+/// until it lands — or, if it fails, until whoever sent it dismisses it.
+#[derive(Clone)]
+struct UploadJob {
+    id: u64,
+    /// Where it's going, as the header names it ("#general", "@space_goat"):
+    /// the card stays visible from any channel, because a failure that only
+    /// shows where you no longer are is a failure nobody sees.
+    to: String,
+    name: String,
+    total: u64,
+    sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    error: Option<String>,
+}
+
+fn next_upload_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// "212 / 380 MB" — or KB for small files, where megabytes would read 0.
+fn upload_amount(sent: u64, total: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if total < 1024 * 1024 {
+        format!("{} / {} KB", sent / 1024, total.div_ceil(1024))
+    } else if total < 100 * 1024 * 1024 {
+        format!("{:.1} / {:.1} MB", sent as f64 / MB, total as f64 / MB)
+    } else {
+        format!("{:.0} / {:.0} MB", sent as f64 / MB, total as f64 / MB)
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct PendingFile {
     name: String,
@@ -1264,6 +1296,19 @@ fn MainView(session: api::Session) -> Element {
     let mut new_channel_voice = use_signal(|| false);
     let mut new_channel_private = use_signal(|| false);
     let mut uploading = use_signal(|| false);
+    let mut uploads = use_signal(Vec::<UploadJob>::new);
+    // The byte counts live in atomics the upload bumps from its own task, so
+    // nothing re-renders on its own; this does, four times a second, and only
+    // while something is actually in flight.
+    let mut upload_tick = use_signal(|| 0u32);
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if uploads.peek().iter().any(|u| u.error.is_none()) {
+                *upload_tick.write() += 1;
+            }
+        }
+    });
     let mut pending_files = use_signal(Vec::<PendingFile>::new);
     let mut drag_over = use_signal(|| false);
     let mut gif_open = use_signal(|| false);
@@ -2617,13 +2662,45 @@ fn MainView(session: api::Session) -> Element {
         replying_to.set(None);
         draft.set(String::new());
         pending_files.set(Vec::new());
+        let to = if channel.kind == "dm" {
+            format!("@{}", dm_peer_name(&channel, session.peek().user.id))
+        } else {
+            format!("#{}", channel.name)
+        };
+        // Every file gets its card now, before any of them start, so a batch
+        // shows as a queue rather than appearing one at a time.
+        let jobs: Vec<(UploadJob, PendingFile)> = files
+            .into_iter()
+            .map(|file| {
+                let job = UploadJob {
+                    id: next_upload_id(),
+                    to: to.clone(),
+                    name: file.name.clone(),
+                    total: file.bytes.len() as u64,
+                    sent: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    error: None,
+                };
+                (job, file)
+            })
+            .collect();
+        uploads.write().extend(jobs.iter().map(|(job, _)| job.clone()));
         spawn(async move {
-            if !files.is_empty() {
+            if !jobs.is_empty() {
                 uploading.set(true);
-                for file in files {
-                    match api::upload(&session(), &file.name, file.bytes).await {
-                        Ok(url) => ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url, reply_to: None }),
-                        Err(e) => status.set(e),
+                for (job, file) in jobs {
+                    match api::upload_counted(&session(), &file.name, file.bytes, job.sent.clone()).await {
+                        Ok(url) => {
+                            uploads.write().retain(|u| u.id != job.id);
+                            ws.send(ClientEvent::SendMessage { channel_id: channel.id, content: url, reply_to: None });
+                        }
+                        // Kept on its card, not flashed in the notice bar: a
+                        // failure at the end of a five-minute upload must still
+                        // be there when you look back.
+                        Err(e) => {
+                            if let Some(u) = uploads.write().iter_mut().find(|u| u.id == job.id) {
+                                u.error = Some(e);
+                            }
+                        }
                     }
                 }
                 uploading.set(false);
@@ -6575,6 +6652,76 @@ fn MainView(session: api::Session) -> Element {
                             title: "Cancel reply",
                             onclick: move |_| replying_to.set(None),
                             "✕"
+                        }
+                    }
+                }
+                if !uploads().is_empty() {
+                    {
+                        let _ = upload_tick();
+                        let here = selected().map(|c| {
+                            if c.kind == "dm" {
+                                format!("@{}", dm_peer_name(&c, session().user.id))
+                            } else {
+                                format!("#{}", c.name)
+                            }
+                        });
+                        // One keyed element per job, handed straight to the
+                        // `for` (see the message list for why that matters).
+                        let cards: Vec<(u64, String, Option<String>, Option<String>, u64, u64)> = uploads()
+                            .iter()
+                            .map(|u| {
+                                let elsewhere = (Some(&u.to) != here.as_ref()).then(|| u.to.clone());
+                                let sent = u.sent.load(std::sync::atomic::Ordering::Relaxed).min(u.total);
+                                (u.id, u.name.clone(), elsewhere, u.error.clone(), sent, u.total)
+                            })
+                            .collect();
+                        rsx! {
+                            div { class: "pending-row upload-row",
+                                for (id, name, elsewhere, error, sent, total) in cards {
+                                    div {
+                                        key: "{id}",
+                                        class: if error.is_some() { "upload-card failed" } else { "upload-card" },
+                                        span { class: "pending-icon", Icon { name: "file", size: 22 } }
+                                        div { class: "upload-body",
+                                            div { class: "upload-title",
+                                                span { class: "pending-name", "{name}" }
+                                                if let Some(to) = elsewhere {
+                                                    span { class: "upload-to", "→ {to}" }
+                                                }
+                                            }
+                                            if let Some(e) = error.clone() {
+                                                span { class: "upload-error", "{e}" }
+                                            } else {
+                                                div { class: "upload-bar",
+                                                    div {
+                                                        class: "upload-fill",
+                                                        style: "width: {(sent * 100).checked_div(total).unwrap_or(100)}%",
+                                                    }
+                                                }
+                                                span { class: "upload-amount",
+                                                    if sent == 0 {
+                                                        "waiting…"
+                                                    } else if sent >= total {
+                                                        // Handed over; the server is still
+                                                        // taking delivery and saving it.
+                                                        "finishing…"
+                                                    } else {
+                                                        "{upload_amount(sent, total)} · {sent * 100 / total.max(1)}%"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if error.is_some() {
+                                            button {
+                                                class: "pending-remove",
+                                                title: "Dismiss",
+                                                onclick: move |_| uploads.write().retain(|u| u.id != id),
+                                                "✕"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
